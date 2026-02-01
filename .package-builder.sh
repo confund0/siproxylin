@@ -14,9 +14,23 @@ PKG_NAME="Siproxylin"
 PKG_ID="com.siproxylin"
 PYTHON_VERSION="3.11"
 
-# Default version (can be overridden by environment)
-: "${SIPROXYLIN_VERSION:=dev}"
-: "${SIPROXYLIN_CODENAME:=🍺}"
+# Version from version.sh (mandatory for builds)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "${SCRIPT_DIR}/version.sh" ]; then
+    source "${SCRIPT_DIR}/version.sh"
+    # Normalize: strip v, validate, add v back
+    CLEAN="${SIPROXYLIN_VERSION#v}"
+    if [[ "$CLEAN" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        SIPROXYLIN_VERSION="v${CLEAN}"
+    elif [ "$CLEAN" != "dev" ]; then
+        log_error "Invalid version format: $SIPROXYLIN_VERSION (expected X.Y.Z or 'dev')"
+        return 1
+    fi
+else
+    log_error "version.sh not found - required for builds"
+    log_info "Create version.sh with SIPROXYLIN_VERSION and SIPROXYLIN_CODENAME"
+    return 1
+fi
 
 # APT cache directory for Linux builds (saves ~300MB downloads)
 # This is used by appimage-builder to cache downloaded .deb packages

@@ -1,0 +1,40 @@
+#!/bin/bash
+# Pre-commit hook: Validate version.sh changes
+# Ensures version increases and codename changes
+
+# Only run if version.sh changed
+git diff --cached --name-only | grep -q "^version\.sh$" || exit 0
+
+# Source staged version.sh
+eval "$(git show :version.sh | grep '^SIPROXYLIN_')"
+
+# Normalize and validate format
+CURR="${SIPROXYLIN_VERSION#v}"
+if ! [[ "$CURR" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "ERROR: Invalid version format: $SIPROXYLIN_VERSION (expected X.Y.Z)" >&2
+    exit 1
+fi
+CURR="v$CURR"
+
+# Get previous from latest tag
+PREV=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+PREV_CODE=$(git tag -l --format='%(contents)' "$PREV" 2>/dev/null | head -1)
+
+# Version must increase
+if ! [ "$(printf '%s\n' "${CURR#v}" "${PREV#v}" | sort -V | tail -1)" = "${CURR#v}" ]; then
+    echo "ERROR: Version must increase: $PREV → $CURR" >&2
+    exit 1
+fi
+if [ "$CURR" = "$PREV" ]; then
+    echo "ERROR: Version unchanged: $CURR" >&2
+    exit 1
+fi
+
+# Codename must change
+if [ "$SIPROXYLIN_CODENAME" = "$PREV_CODE" ]; then
+    echo "ERROR: Codename must change (was '$PREV_CODE')" >&2
+    exit 1
+fi
+
+echo "✓ Version bump: $PREV → $CURR ($SIPROXYLIN_CODENAME)"
+exit 0

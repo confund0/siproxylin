@@ -1,0 +1,25 @@
+#!/bin/bash
+# Pre-push hook: Validate tags match version.sh
+
+while read local_ref local_sha remote_ref remote_sha; do
+    if [[ "$local_ref" =~ refs/tags/(.+)$ ]]; then
+        TAG="${BASH_REMATCH[1]}"
+        TAG_CLEAN="${TAG#v}"
+
+        if [ ! -f "version.sh" ]; then
+            echo "ERROR: version.sh not found" >&2
+            exit 1
+        fi
+
+        source version.sh
+        FILE_CLEAN="${SIPROXYLIN_VERSION#v}"
+
+        if [ "$TAG_CLEAN" != "$FILE_CLEAN" ]; then
+            echo "ERROR: Tag $TAG doesn't match version.sh $SIPROXYLIN_VERSION" >&2
+            exit 1
+        fi
+        echo "✓ Tag $TAG matches version.sh"
+    fi
+done
+
+exit 0

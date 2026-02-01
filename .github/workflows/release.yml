@@ -70,7 +70,9 @@ jobs:
           file \
           desktop-file-utils \
           fuse \
-          squashfs-tools
+          squashfs-tools \
+          zsync \
+          gnupg
 
     - name: Install Go 1.24
       run: |
@@ -92,13 +94,24 @@ jobs:
       run: |
         pip install --break-system-packages appimage-builder
 
-    - name: Get version from tag
+    - name: Load version from version.sh
       id: get_version
-      run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+      run: |
+        if [ ! -f version.sh ]; then
+          echo "ERROR: version.sh not found"
+          exit 1
+        fi
+        source ./version.sh
+        # Normalize version
+        CLEAN="${SIPROXYLIN_VERSION#v}"
+        if ! [[ "$CLEAN" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "ERROR: Invalid version format in version.sh: $SIPROXYLIN_VERSION"
+          exit 1
+        fi
+        echo "VERSION=v${CLEAN}" >> $GITHUB_OUTPUT
+        echo "CODENAME=$SIPROXYLIN_CODENAME" >> $GITHUB_OUTPUT
 
     - name: Build AppImage
-      env:
-        SIPROXYLIN_VERSION: ${{ steps.get_version.outputs.VERSION }}
       run: |
         export PATH=/usr/local/go-tools/bin:/usr/local/go/bin:$PATH
         chmod +x build-appimage.sh

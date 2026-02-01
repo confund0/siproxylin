@@ -335,6 +335,15 @@ main() {
 
     # Step 7: Copy application files
     log_step "7/10" "Copying application files..."
+
+    # Copy version.sh to AppDir root (so version.py can find it)
+    if [ ! -f "version.sh" ]; then
+        log_error "version.sh not found"
+        exit 1
+    fi
+    cp version.sh "$APPDIR/"
+    log_success "version.sh copied to AppDir root"
+
     copy_python_code "$APPDIR" "usr/share/$PKG_ID"
     copy_go_binary "$APPDIR" "linux" "usr/local/bin"
     # Note: Icon and desktop file handled by setup_appdir_root() in Step 8
