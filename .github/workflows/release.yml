@@ -57,10 +57,10 @@ jobs:
           fuse \
           squashfs-tools
 
-    - name: Install Go 1.23
+    - name: Install Go 1.24
       run: |
-        wget https://go.dev/dl/go1.23.0.linux-amd64.tar.gz
-        tar -C /usr/local -xzf go1.23.0.linux-amd64.tar.gz
+        wget https://go.dev/dl/go1.24.12.linux-amd64.tar.gz
+        tar -C /usr/local -xzf go1.24.12.linux-amd64.tar.gz
         export PATH=/usr/local/go/bin:$PATH
         go version
 
