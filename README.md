@@ -2,8 +2,6 @@
 
 **A privacy-focused XMPP desktop client with per-account proxies and enforced call relaying.**
 
-Built in 7 weeks with AI assistance, 100+ files, 35k+ lines of code, and questionable amounts of vodka.
-
 ---
 
 ## Quick Start
