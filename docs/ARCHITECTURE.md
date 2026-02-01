@@ -1,6 +1,6 @@
 # Architecture
 
-Siproxylin is a privacy-focused XMPP desktop client built with a modular architecture that separates concerns between networking, business logic, and user interface.
+Siproxylin tries to follow a modular architecture that separates concerns between networking, business logic, and user interface.
 
 ## Design Principles
 
@@ -15,39 +15,39 @@ Siproxylin is a privacy-focused XMPP desktop client built with a modular archite
 ```
 ┌─────────────────────────────────────────────────────┐
 │                  GUI Layer (Qt6)                    │
-│  - Main Window, Dialogs, Widgets                   │
-│  - Contact List, Chat View, Call Window            │
+│  - Main Window, Dialogs, Widgets                    │
+│  - Contact List, Chat View, Call Window             │
 └─────────────────┬───────────────────────────────────┘
                   │ Qt Signals/Slots
                   ▼
 ┌─────────────────────────────────────────────────────┐
 │              Core Layer (Business Logic)            │
-│  - Account Management (Brewery)                    │
-│  - Feature Barrels (Messages, Calls, OMEMO, etc.)  │
+│  - Account Management (Brewery)                     │
+│  - Feature Barrels (Messages, Calls, OMEMO, etc.)   │
 └─────────────────┬───────────────────────────────────┘
                   │ Callbacks
                   ▼
 ┌─────────────────────────────────────────────────────┐
 │            XMPP Layer (DrunkXMPP)                   │
-│  - Connection Management (slixmpp)                 │
-│  - Protocol Implementation (XEPs)                  │
-│  - OMEMO Encryption (python-omemo)                 │
+│  - Connection Management (slixmpp)                  │
+│  - Protocol Implementation (XEPs)                   │
+│  - OMEMO Encryption (python-omemo)                  │
 └─────────────────┬───────────────────────────────────┘
                   │ Network I/O
                   ▼
 ┌─────────────────────────────────────────────────────┐
 │              Media Layer (Go + GStreamer)           │
-│  - Audio/Video Calls (Pion WebRTC)                 │
-│  - Media Processing (GStreamer pipelines)          │
-│  - gRPC bridge to Python                           │
+│  - Audio/Video Calls (Pion WebRTC)                  │
+│  - Media Processing (GStreamer pipelines)           │
+│  - gRPC bridge to Python                            │
 └─────────────────────────────────────────────────────┘
 ```
 
 ## Directory Structure
 
 ```
-siproxylin/
-├── app/
+|
+├── siproxylin/
 │   ├── core/               # Business logic layer
 │   │   ├── brewery.py      # Account orchestration
 │   │   └── barrels/        # Feature components
@@ -278,13 +278,12 @@ Messages follow Dino-compatible state model:
 
 ### Code Quality Rules
 
-1. **Use library APIs**: No manual XML parsing (use slixmpp methods)
-2. **Use logger**: Never `print()` (see `app/utils/logger.py`)
-3. **Use get_db()**: Never create new SQLite connections
-4. **Async callbacks**: All DrunkXMPP callbacks must be `async`
-5. **Let handlers update state**: Don't manually set message `marked` field
-
-See `docs/ADR.md` for complete architectural decision records.
+1. **Use library APIs**: Avoid manual XML parsing (use slixmpp methods)
+2. **Make use of drunk_xmpp/slixmpp_patches** in case some method is missing or contains a bug
+3. **Use logger**: Never `print()` (see `app/utils/logger.py`)
+4. **Use get_db()**: Never create new SQLite connections
+5. **Async callbacks**: All DrunkXMPP callbacks must be `async`
+6. **Let handlers update state**: Don't manually set message `marked` field
 
 ## External Dependencies
 
@@ -309,7 +308,7 @@ All dependencies are AGPL-3.0 compatible.
 
 - **Database**: Single connection with `check_same_thread=False`
 - **Avatar Cache**: LRU cache (128 entries, 24h expiry)
-- **Message History**: Load last 100 messages, infinite scroll for older
+- **Message History**: Load last 300 messages, infinite scroll for older
 - **Roster**: In-memory model, DB queries only on load
 - **Typing Indicators**: 5-second debounce to reduce traffic
 
