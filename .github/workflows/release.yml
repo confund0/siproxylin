@@ -61,8 +61,17 @@ jobs:
       run: |
         wget https://go.dev/dl/go1.23.0.linux-amd64.tar.gz
         tar -C /usr/local -xzf go1.23.0.linux-amd64.tar.gz
-        echo "/usr/local/go/bin" >> $GITHUB_PATH
-        /usr/local/go/bin/go version
+        export PATH=/usr/local/go/bin:$PATH
+        go version
+
+    - name: Install Go protobuf plugins
+      run: |
+        export PATH=/usr/local/go/bin:$PATH
+        export GOPATH=/usr/local/go-tools
+        go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+        go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+        echo "/usr/local/go-tools/bin" >> $GITHUB_PATH
+        ls -la /usr/local/go-tools/bin/
 
     - name: Install appimage-builder
       run: |
@@ -70,6 +79,7 @@ jobs:
 
     - name: Build AppImage
       run: |
+        export PATH=/usr/local/go-tools/bin:/usr/local/go/bin:$PATH
         chmod +x build-appimage.sh
         ./build-appimage.sh
 
