@@ -1,0 +1,92 @@
+# XMPP Configuration
+xmpp:
+  # Your JID (username@domain)
+  #jid: "test@siproxylin.net"
+
+  # Your password
+  #password: "SomeCoolPsw@+"
+
+  # XMPP server (optional, auto-discovered from JID if not specified)
+  # Leave commented to use SRV record auto-discovery
+  # server: xmpp.conversations.im
+
+  # XMPP server port (default: 5222)
+  # port: 5223
+
+  # Maximum reconnect delay in seconds (default: 300)
+  reconnect_max_delay: 300
+
+  # Keepalive ping interval in seconds (default: 60)
+  keepalive_interval: 60
+
+  # SASL authentication mechanism (optional)
+  # Options: SCRAM-SHA-1-PLUS, SCRAM-SHA-1, PLAIN
+  # SCRAM-SHA-1-PLUS requires proper TLS channel binding support
+  # If you get "Invalid channel binding" errors, use SCRAM-SHA-1
+  # Default: SCRAM-SHA-1 (most compatible)
+  # Update: auto negotaion has been fixed while working on account deletions in recent updates. Should be safe to comment this one out
+  sasl_mech: "SCRAM-SHA-1"
+
+  # Proxy Configuration (optional)
+  # Uncomment to route XMPP connection through a proxy
+  proxy:
+    # Proxy type: HTTP or SOCKS5
+    # Leave commented or set to null to disable proxy
+    # type: "HTTP"
+    # type: "SOCKS5"
+
+    # Proxy server hostname/IP
+    # host: "127.0.0.1"
+
+    # Proxy server port
+    #port: 9050
+
+    # Proxy authentication (optional)
+    #username: "proxyuser"
+    #password: "proxypass"
+
+  # OMEMO Encryption Configuration
+  omemo:
+    # Enable OMEMO encryption support
+    enabled: true
+
+    # OMEMO key storage path - local storage in ./omemo/
+    # This file stores encryption keys, device IDs, and trust information
+    # IMPORTANT: Keep this file secure and backed up!
+    storage_path: "./omemo/keys.json"
+
+  # Message Editing Configuration (XEP-0308)
+  message_editing:
+    # Allow editing any message by ID (not just the last one)
+    # Most XMPP clients only support editing the last message and will return
+    # errors if you try to edit older messages. Keep this false unless you know
+    # the recipient's client supports it.
+    # Default: false (only last message can be edited)
+    allow_any_message: false
+
+  # Multi-User Chat (MUC) Configuration (XEP-0045)
+  # Rooms listed here will be auto-joined on connect
+  rooms:
+    # Example room configuration (commented out):
+    # "room@conference.server.com":
+    #   nick: "MyNickname"
+    #   password: "roompassword"  # Optional, use "none" or omit for public rooms
+
+# Logging Configuration
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
+
+  # Console logging (stdout/stderr)
+  console:
+    enabled: true
+
+  # File logging 
+  file:
+    enabled: true
+    path: "test-drunk-xmpp-logs/drunk-xmpp.log"
+
+  # XML/Protocol logging (full XMPP stanzas)
+  xml:
+    enabled: true
+    path: "test-drunk-xmpp-logs/xmpp-protocol.log"
