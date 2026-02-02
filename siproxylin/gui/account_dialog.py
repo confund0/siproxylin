@@ -1,5 +1,5 @@
 """
-Account creation/editing dialog for DRUNK-XMPP-GUI.
+Account creation/editing dialog for Siproxylin.
 
 Allows configuration of:
 - Basic XMPP settings (JID, password, server override)

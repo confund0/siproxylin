@@ -1,5 +1,5 @@
 """
-Incoming presence subscription request dialog for DRUNK-XMPP-GUI.
+Incoming presence subscription request dialog for Siproxylin.
 
 Shows when someone requests to see our presence status (RFC 6121 §3.1.2).
 """

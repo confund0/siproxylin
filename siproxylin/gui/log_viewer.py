@@ -1,5 +1,5 @@
 """
-Log viewer window for DRUNK-XMPP-GUI.
+Log viewer window for Siproxylin.
 
 Non-modal window for viewing application and XML logs with:
 - Real-time tail (updates as new lines appear)

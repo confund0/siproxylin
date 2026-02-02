@@ -1,5 +1,5 @@
 """
-Spell checking highlighter for DRUNK-XMPP-GUI.
+Spell checking highlighter for Siproxylin.
 
 Uses PyEnchant to highlight misspelled words with red wavy underlines.
 """

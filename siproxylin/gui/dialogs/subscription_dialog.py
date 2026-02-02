@@ -1,5 +1,5 @@
 """
-Presence subscription management dialog for DRUNK-XMPP-GUI.
+Presence subscription management dialog for Siproxylin.
 
 Allows managing presence subscription state with a contact (RFC 6121).
 """

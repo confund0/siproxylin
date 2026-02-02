@@ -1,5 +1,5 @@
 """
-MUC (Multi-User Chat) details dialog for DRUNK-XMPP-GUI.
+MUC (Multi-User Chat) details dialog for Siproxylin.
 
 Shows room information, participants, and settings with a tabbed interface.
 """

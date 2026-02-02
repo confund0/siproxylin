@@ -1,5 +1,5 @@
 """
-GUI data models for DRUNK-XMPP-GUI.
+GUI data models for Siproxylin.
 
 Clean separation of data and presentation.
 """

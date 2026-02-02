@@ -1,5 +1,5 @@
 """
-Contacts Manager dialog for DRUNK-XMPP-GUI.
+Contacts Manager dialog for Siproxylin.
 
 Shows all contacts across all accounts with ability to:
 - View contact details (JID, name, account, subscription, blocked status, presence)

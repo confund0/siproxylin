@@ -1,5 +1,5 @@
 """
-Tooltip event filter for DRUNK-XMPP-GUI.
+Tooltip event filter for Siproxylin.
 
 Provides custom tooltip delay behavior.
 """

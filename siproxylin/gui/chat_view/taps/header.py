@@ -1,5 +1,5 @@
 """
-Chat header widget for DRUNK-XMPP-GUI.
+Chat header widget for Siproxylin.
 
 Displays contact/room information and conversation controls.
 """

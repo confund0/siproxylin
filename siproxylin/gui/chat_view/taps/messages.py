@@ -1,5 +1,5 @@
 """
-Message display widget for DRUNK-XMPP-GUI.
+Message display widget for Siproxylin.
 
 Displays message history with timestamps, encryption indicators, file transfers, and calls.
 """

@@ -1,4 +1,4 @@
-"""Custom widgets for DRUNK-XMPP-GUI."""
+"""Custom widgets for Siproxylin."""
 
 from .message_delegate import MessageBubbleDelegate
 

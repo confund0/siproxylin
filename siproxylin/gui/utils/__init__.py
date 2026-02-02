@@ -1,4 +1,4 @@
-"""GUI utilities for DRUNK-XMPP-GUI."""
+"""GUI utilities for Siproxylin."""
 
 from .tooltip_filter import TooltipEventFilter
 

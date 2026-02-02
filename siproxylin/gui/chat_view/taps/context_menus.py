@@ -1,5 +1,5 @@
 """
-Context menu manager for DRUNK-XMPP-GUI chat view.
+Context menu manager for Siproxylin chat view.
 
 Handles right-click menus for messages and input field.
 """

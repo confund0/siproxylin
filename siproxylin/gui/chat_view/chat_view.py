@@ -1,5 +1,5 @@
 """
-Chat view widget for DRUNK-XMPP-GUI.
+Chat view widget for Siproxylin.
 
 Displays message history for a conversation with timestamps and encryption indicators.
 """

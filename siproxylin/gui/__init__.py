@@ -1,5 +1,5 @@
 """
-GUI module for DRUNK-XMPP-GUI.
+GUI module for Siproxylin.
 """
 
 from .main_window import MainWindow

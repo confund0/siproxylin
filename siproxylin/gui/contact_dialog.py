@@ -1,5 +1,5 @@
 """
-Contact management dialog for DRUNK-XMPP-GUI.
+Contact management dialog for Siproxylin.
 
 Allows adding new contacts to roster and managing existing contacts.
 """

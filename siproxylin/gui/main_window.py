@@ -1,5 +1,5 @@
 """
-Main application window for DRUNK-XMPP-GUI.
+Main application window for Siproxylin.
 
 Layout:
 - Menu bar (File, Edit, View)
@@ -86,7 +86,7 @@ class MainWindow(QMainWindow):
         self.app_start_time = time.time()
 
         # Window setup
-        self.setWindowTitle("DRUNK-XMPP-GUI")
+        self.setWindowTitle("Siproxylin")
         self.setGeometry(100, 100, 1200, 800)
 
         # Setup UI

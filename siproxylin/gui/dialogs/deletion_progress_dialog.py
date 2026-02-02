@@ -1,5 +1,5 @@
 """
-Account deletion progress dialog for DRUNK-XMPP-GUI.
+Account deletion progress dialog for Siproxylin.
 
 Shows real-time progress of server and local deletion operations.
 """

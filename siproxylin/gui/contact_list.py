@@ -1,5 +1,5 @@
 """
-Contact list widget for DRUNK-XMPP-GUI.
+Contact list widget for Siproxylin.
 
 Displays roster contacts with presence indicators, grouped by account.
 """

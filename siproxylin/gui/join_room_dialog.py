@@ -1,5 +1,5 @@
 """
-Join/Create MUC room dialog for DRUNK-XMPP-GUI.
+Join/Create MUC room dialog for Siproxylin.
 """
 
 import asyncio

@@ -1,5 +1,5 @@
 """
-Spell-checked QTextEdit widget for DRUNK-XMPP-GUI.
+Spell-checked QTextEdit widget for Siproxylin.
 
 Integrates EnchantHighlighter with context menu for spelling suggestions.
 """

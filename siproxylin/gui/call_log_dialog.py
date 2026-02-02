@@ -1,5 +1,5 @@
 """
-Call Log dialog for DRUNK-XMPP-GUI.
+Call Log dialog for Siproxylin.
 
 Shows call history across all accounts with ability to:
 - View call details (JID, direction, state, duration, date/time)
