@@ -81,6 +81,7 @@ AppDir:
     - cp -r drunk_xmpp AppDir/usr/share/siproxylin/
     - cp -r drunk_call_hook AppDir/usr/share/siproxylin/
     - cp main.py AppDir/usr/share/siproxylin/
+    - cp version.sh AppDir/usr/share/siproxylin/
     # Copy Go call service binary
     - mkdir -p AppDir/usr/local/bin
     - cp drunk_call_service/bin/drunk-call-service-linux AppDir/usr/local/bin/

@@ -277,6 +277,9 @@ copy_python_code() {
     log_info "Copying main.py"
     cp main.py "$full_target/"
 
+    log_info "Copying version.sh"
+    cp version.sh "$full_target/"
+
     log_success "Python code copied to $target_path"
     return 0
 }
