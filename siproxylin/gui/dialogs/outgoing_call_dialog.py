@@ -48,7 +48,7 @@ class OutgoingCallDialog(QDialog):
         self.media_types = media_types
 
         self.setWindowTitle("Outgoing Call")
-        self.setModal(True)  # Block interaction with main window
+        self.setModal(False)  # Allow interaction with main window while dialog is open
         self.setFixedSize(400, 200)
 
         # Prevent closing via X button (must use Cancel button)
