@@ -305,6 +305,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         on_subscription_request_callback: Optional[Callable] = None,
         on_subscription_changed_callback: Optional[Callable] = None,
         on_presence_changed_callback: Optional[Callable] = None,
+        on_nickname_update_callback: Optional[Callable] = None,
         enable_omemo: bool = True,
         allow_any_message_editing: bool = False,
         muc_history_default: int = 0,
@@ -341,6 +342,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             on_muc_joined_callback: Optional callback for MUC room joined (room_jid, nick) - Fires after self-presence received (status code 110)
             on_room_config_changed_callback: Optional callback for room config changes (room_jid, room_name) - XEP-0045 status code 104
             on_avatar_update_callback: Optional callback for avatar updates (jid, avatar_data) - XEP-0084/0153
+            on_nickname_update_callback: Optional callback for nickname updates (jid, nickname) - XEP-0172
             on_reaction_callback: Optional callback for message reactions (from_jid, message_id, emojis) - XEP-0444
             enable_omemo: Enable OMEMO encryption (default: True)
             muc_history_default: Default number of history messages to request when joining MUCs (default: 0)
@@ -409,6 +411,10 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.on_subscription_request_callback = on_subscription_request_callback
         self.on_subscription_changed_callback = on_subscription_changed_callback
         self.on_presence_changed_callback = on_presence_changed_callback
+        self.on_nickname_update_callback = on_nickname_update_callback
+
+        # Nickname cache (XEP-0172: User Nickname)
+        self.nickname_cache: Dict[str, str] = {}
 
         # Call-related state (CallsMixin)
         self.on_call_incoming: Optional[Callable] = None
@@ -416,7 +422,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.on_call_terminated: Optional[Callable] = None
         self.call_sessions: Dict[str, Dict[str, Any]] = {}
 
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger('drunk-xmpp.client')
         self.joined_rooms = set()
         self.reconnect_attempts = 0
         self.omemo_enabled = enable_omemo
@@ -503,6 +509,8 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.register_plugin('xep_0060')  # Publish-Subscribe (required by xep_0402)
         self.register_plugin('xep_0085')  # Chat State Notifications (typing indicators)
         self.register_plugin('xep_0163')  # Personal Eventing Protocol (required by xep_0402)
+        self.register_plugin('xep_0172')  # User Nickname (PEP-based nicknames)
+        self.logger.info("XEP-0172 plugin registered")
         self.register_plugin('xep_0184')  # Message Delivery Receipts
         self.register_plugin('xep_0223')  # Persistent Storage of Private Data via PubSub (required by xep_0402)
         self.register_plugin('xep_0333')  # Chat Markers (read receipts)
@@ -578,6 +586,10 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.add_event_handler("presence_available", self._on_presence_changed)
         self.add_event_handler("presence_unavailable", self._on_presence_changed)
         self.add_event_handler("changed_status", self._on_presence_changed)
+
+        # XEP-0172: User Nickname (PEP events)
+        self.add_event_handler("user_nick_publish", self._on_user_nick_publish)
+        self.logger.info("Registered event handler for 'user_nick_publish'")
 
         if self.omemo_enabled:
             self.add_event_handler("omemo_initialized", self._on_omemo_initialized)
@@ -973,6 +985,49 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                 await self.on_presence_changed_callback(from_jid, show)
             except Exception as e:
                 self.logger.error(f"Error in presence changed callback: {e}")
+
+    async def _on_user_nick_publish(self, msg):
+        """
+        Handler for XEP-0172 user nickname PEP events.
+
+        Called when a contact publishes or updates their nickname via PEP.
+
+        Args:
+            msg: Message stanza containing the PEP event
+        """
+        self.logger.info(f"Nickname PEP event received from {msg['from']}")
+        try:
+            from_jid = msg['from'].bare  # Get bare JID of the contact
+
+            # Extract nickname from PEP event
+            # The event contains pubsub items with UserNick payload
+            items = msg['pubsub_event']['items']
+
+            # Iterate over items (usually just one for nickname updates)
+            for item in items:
+                # Access UserNick stanza via plugin_attrib 'nick'
+                nick_stanza = item['nick']
+                if nick_stanza is not None:
+                    # Extract nickname using slixmpp interface
+                    nickname = nick_stanza['nick']
+                    if nickname:
+                        nickname = nickname.strip()
+                        if nickname:
+                            # Update cache
+                            self.nickname_cache[from_jid] = nickname
+                            self.logger.info(f"Updated nickname for {from_jid}: {nickname}")
+
+                            # Notify callback
+                            if self.on_nickname_update_callback:
+                                try:
+                                    await self.on_nickname_update_callback(from_jid, nickname)
+                                except Exception as e:
+                                    self.logger.exception(f"Error in nickname update callback: {e}")
+
+        except Exception as e:
+            self.logger.error(f"Error handling nickname PEP event: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
 
     async def _rejoin_room_delayed(self, room_jid: str, delay: int):
         """Rejoin a room after delay."""

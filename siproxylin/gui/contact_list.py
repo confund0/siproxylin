@@ -291,13 +291,24 @@ class ContactListWidget(QWidget):
                     account = self.account_manager.get_account(account_id)
                     if account:
                         presence = account.get_contact_presence(contact['bare_jid'])
+                        # Use 3-source priority: roster.name > contact_nickname > jid
+                        if contact['name']:
+                            # Roster name has highest priority
+                            display_name = contact['name']
+                        elif contact['bare_jid'] in account.contact_nicknames:
+                            # Contact's self-set nickname (XEP-0172)
+                            display_name = account.contact_nicknames[contact['bare_jid']]
+                        else:
+                            # Fall back to JID
+                            display_name = contact['bare_jid']
                     else:
                         presence = 'unavailable'
+                        display_name = contact['name'] or contact['bare_jid']
 
                     # Create ContactDisplayData
                     contact_data = ContactDisplayData(
                         jid=contact['bare_jid'],
-                        name=contact['name'] or contact['bare_jid'],
+                        name=display_name,
                         account_id=contact['account_id'],
                         item_type='contact',
                         is_muc=False,

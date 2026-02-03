@@ -348,29 +348,22 @@ class ContactsManagerDialog(QDialog):
 
         # Get contact data
         data = self.table.item(row, 0).data(Qt.UserRole)
-        roster_id = data['roster_id']
         account_id = data['account_id']
         jid = data['jid']
 
-        # Load full contact data
-        contact = self.db.fetchone("""
-            SELECT r.id, r.name, r.subscription, r.blocked, j.bare_jid
-            FROM roster r
-            JOIN jid j ON r.jid_id = j.id
-            WHERE r.id = ?
-        """, (roster_id,))
-
-        if not contact:
-            QMessageBox.warning(self, "Error", "Contact not found in database.")
-            return
-
         # Import here to avoid circular imports
-        from .contact_dialog import ContactDialog
+        from .contact_details_dialog import ContactDetailsDialog
 
-        dialog = ContactDialog(account_id, contact_data=dict(contact), parent=self)
-        if dialog.exec() == QDialog.Accepted:
-            self._load_contacts()
-            self.contact_modified.emit()
+        dialog = ContactDetailsDialog(account_id, jid, parent=self)
+        dialog.contact_saved.connect(lambda aid, jid, name, see_theirs, they_see: self._on_contact_modified())
+        dialog.block_status_changed.connect(lambda aid, jid, blocked: self._on_contact_modified())
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.show()
+
+    def _on_contact_modified(self):
+        """Handle contact modification from dialog."""
+        self._load_contacts()
+        self.contact_modified.emit()
 
     def _on_toggle_block(self):
         """Block or unblock selected contact."""

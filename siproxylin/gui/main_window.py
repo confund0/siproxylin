@@ -28,7 +28,7 @@ from .account_dialog import AccountDialog
 from .registration_wizard import RegistrationWizard
 from .contact_dialog import ContactDialog
 from .join_room_dialog import JoinRoomDialog
-from .omemo_keys_dialog import OMEMOKeysDialog
+from .contact_details_dialog import ContactDetailsDialog
 from .dialogs.subscription_dialog import SubscriptionDialog
 from .dialogs.subscription_request_dialog import SubscriptionRequestDialog
 from .dialogs import IncomingCallDialog, OutgoingCallDialog
@@ -124,6 +124,7 @@ class MainWindow(QMainWindow):
             account.presence_changed.connect(self._on_presence_changed)
             account.muc_invite_received.connect(self._on_muc_invite_received)
             account.avatar_updated.connect(self._on_avatar_updated)
+            account.nickname_updated.connect(self._on_nickname_updated)
             account.subscription_request_received.connect(self._on_subscription_request_received)
             account.subscription_changed.connect(self._on_subscription_changed)
 
@@ -666,11 +667,10 @@ class MainWindow(QMainWindow):
                     self.contact_manager.remove_contact(account_id, account.client, jid)
                 )
             else:
-                # Update contact name (for both new and existing contacts)
-                if name:
-                    asyncio.create_task(
-                        self.contact_manager.update_contact_name(account_id, account.client, jid, name)
-                    )
+                # Always update contact name (even if empty - clears roster.name on server)
+                asyncio.create_task(
+                    self.contact_manager.update_contact_name(account_id, account.client, jid, name or '')
+                )
 
                 # Handle subscription changes using shared method
                 self._update_subscription(account_id, jid, can_see_theirs, they_can_see_ours)
@@ -1084,20 +1084,12 @@ class MainWindow(QMainWindow):
         """
         logger.debug(f"View details requested: {jid} (roster_id: {roster_id})")
 
-        # Sync OMEMO devices to database before showing dialog (if connected)
-        account = self.account_manager.get_account(account_id)
-        if account and account.client:
-            asyncio.create_task(self._sync_and_show_omemo_dialog(account, jid))
-        else:
-            # Offline - show what's in DB (devices synced from previous session)
-            from .omemo_keys_dialog import OMEMOKeysDialog
-            dialog = OMEMOKeysDialog(account_id, jid, self)
-            dialog.setAttribute(Qt.WA_DeleteOnClose)
-            dialog.show()
+        # TEST: Use new unified ContactDetailsDialog
+        self._test_open_contact_details_dialog(account_id, jid)
 
     def _on_view_omemo_keys(self, account_id: int, jid: str):
         """
-        Handle View OMEMO Keys from context menu.
+        Handle View OMEMO Keys from gear button in chat header.
 
         Args:
             account_id: Account ID
@@ -1105,14 +1097,15 @@ class MainWindow(QMainWindow):
         """
         logger.debug(f"View OMEMO keys requested for {jid}")
 
-        # Sync OMEMO devices to database before showing dialog
+        # Use unified ContactDetailsDialog (opens to OMEMO tab)
         account = self.account_manager.get_account(account_id)
         if account and account.client:
-            # Sync devices for contact and own devices
-            asyncio.create_task(self._sync_and_show_omemo_dialog(account, jid))
+            asyncio.create_task(self._sync_and_show_contact_details_dialog(account, jid))
         else:
-            # No connection, just show what's in DB
-            dialog = OMEMOKeysDialog(account_id, jid, self)
+            # Offline - show what's in DB
+            dialog = ContactDetailsDialog(account_id, jid, self)
+            dialog.contact_saved.connect(self._on_contact_saved)
+            dialog.block_status_changed.connect(self._on_block_status_changed)
             dialog.setAttribute(Qt.WA_DeleteOnClose)
             dialog.show()
 
@@ -1150,22 +1143,47 @@ class MainWindow(QMainWindow):
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.show()
 
-    async def _sync_and_show_omemo_dialog(self, account, jid: str):
-        """Sync OMEMO devices and show dialog."""
+    def _test_open_contact_details_dialog(self, account_id: int, jid: str):
+        """
+        TEST METHOD: Open new unified ContactDetailsDialog.
+
+        This method opens the new ContactDetailsDialog which combines:
+        - Contact info
+        - Settings (name, notifications, etc.)
+        - Presence subscription
+        - OMEMO keys
+
+        Once tested, this will replace _on_edit_contact_from_roster and _on_view_omemo_keys.
+        """
+        logger.debug(f"TEST: Opening ContactDetailsDialog for {jid}")
+
+        # Sync OMEMO devices to database before showing dialog (if connected)
+        account = self.account_manager.get_account(account_id)
+        if account and account.client:
+            asyncio.create_task(self._sync_and_show_contact_details_dialog(account, jid))
+        else:
+            # Offline - show what's in DB
+            dialog = ContactDetailsDialog(account_id, jid, self)
+            dialog.contact_saved.connect(self._on_contact_saved)
+            dialog.block_status_changed.connect(self._on_block_status_changed)
+            dialog.setAttribute(Qt.WA_DeleteOnClose)
+            dialog.show()
+
+    async def _sync_and_show_contact_details_dialog(self, account, jid: str):
+        """Helper to sync OMEMO devices then show ContactDetailsDialog."""
         try:
-            # Sync contact's devices (normalize JID to lowercase for OMEMO)
-            await account.sync_omemo_devices_to_db(jid.lower())
-
-            # Sync our own devices (normalize JID to lowercase for OMEMO)
-            own_jid = account.account_data['bare_jid'].lower()
-            await account.sync_omemo_devices_to_db(own_jid)
-
+            # Sync OMEMO devices
+            if account.omemo_available:
+                await account.sync_omemo_devices(jid)
+                own_jid = account.client.boundjid.bare
+                await account.sync_omemo_devices(own_jid)
         except Exception as e:
-            logger.error(f"Failed to sync OMEMO devices: {e}")
+            logger.warning(f"Failed to sync OMEMO devices: {e}")
 
         # Show dialog with synced data
-        # Use .show() instead of .exec() to avoid blocking asyncio event loop
-        dialog = OMEMOKeysDialog(account.account_id, jid, self)
+        dialog = ContactDetailsDialog(account.account_id, jid, self)
+        dialog.contact_saved.connect(self._on_contact_saved)
+        dialog.block_status_changed.connect(self._on_block_status_changed)
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.show()
 
@@ -1206,28 +1224,9 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            # Send XEP-0191 block/unblock to server
-            if currently_blocked:
-                asyncio.create_task(account.client.unblock_contact(jid))
-            else:
-                asyncio.create_task(account.client.block_contact(jid))
-
-            logger.debug(f"Sent {action.lower()} IQ for {jid}")
-
-            # Update database
-            new_blocked = 0 if currently_blocked else 1
-            self.db.execute(
-                "UPDATE roster SET blocked = ? WHERE id = ?",
-                (new_blocked, roster_id)
-            )
-            self.db.commit()
-
-            # Refresh contact list to update UI
-            self.contact_list.refresh()
-
-            # If this contact's chat is currently open, update its UI state
-            if self.chat_view.current_account_id == account_id and self.chat_view.current_jid == jid:
-                self.chat_view.update_blocked_status(new_blocked == 1)
+            # Use unified method to apply block/unblock
+            new_blocked = not currently_blocked
+            self._apply_block_status(account_id, jid, new_blocked)
 
             QMessageBox.information(self, "Success", f"Contact {action.lower()}ed successfully")
 
@@ -1726,6 +1725,13 @@ class MainWindow(QMainWindow):
         logger.debug(f"Roster updated for account {account_id}, refreshing contact list")
         self.contact_list.refresh()
 
+        # If the currently open chat is from this account, update its header display name
+        if self.chat_view.current_account_id == account_id and self.chat_view.current_jid:
+            jid = self.chat_view.current_jid
+            logger.debug(f"Updating chat header display name for open chat: {jid}")
+            # Use unified display name refresh (applies 3-source priority)
+            self._refresh_contact_display_name(account_id, jid)
+
     @Slot(int, str, bool)
     def _on_message_received(self, account_id: int, from_jid: str, is_marker: bool = False):
         """
@@ -1989,7 +1995,60 @@ class MainWindow(QMainWindow):
         # Update presence indicator in contact list (event-driven, not polling!)
         self.contact_list.update_presence_single(account_id, jid, presence)
 
+    def _refresh_contact_display_name(self, account_id: int, jid: str):
+        """
+        Unified method to refresh display name for a contact.
+
+        Applies 3-source priority: roster.name → nickname → JID
+        Updates contact list and chat header if applicable.
+
+        Args:
+            account_id: Account ID
+            jid: Contact bare JID
+        """
+        # Get account
+        account = self.account_manager.get_account(account_id)
+        if not account:
+            return
+
+        # Get roster name (highest priority)
+        roster_name = None
+        if account.client:
+            roster = account.client.client_roster
+            if jid in roster:
+                try:
+                    roster_name = roster[jid]['name'] or None
+                except (KeyError, TypeError):
+                    pass
+
+        # Get display name using 3-source priority
+        display_name = account.get_contact_display_name(jid, roster_name=roster_name)
+
+        # Refresh contact list (for now, reload entire roster - can optimize later)
+        self.contact_list.load_roster()
+
+        # If this chat is open, update header
+        if (self.chat_view.current_account_id == account_id and
+            self.chat_view.current_jid == jid):
+            logger.debug(f"Updating chat header display name for open chat: {jid}")
+            base_name = f"💬 {display_name}"
+            self.chat_view.header.update_display_name(base_name)
+            self.chat_view.header.roster_name = roster_name
+
     @Slot(int, str)
+    def _on_nickname_updated(self, account_id: int, jid: str, nickname: str):
+        """
+        Handle nickname update signal from account (XEP-0172).
+
+        Args:
+            account_id: Account ID
+            jid: JID whose nickname was updated
+            nickname: New nickname (empty string if cleared)
+        """
+        logger.debug(f"Nickname updated for {jid} on account {account_id}: {nickname if nickname else '(cleared)'}")
+        # Use unified display name refresh
+        self._refresh_contact_display_name(account_id, jid)
+
     def _on_avatar_updated(self, account_id: int, jid: str):
         """
         Handle avatar update signal from account.
@@ -2172,6 +2231,58 @@ class MainWindow(QMainWindow):
         dialog.subscription_changed.connect(self._on_subscription_dialog_changed)
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.show()
+
+    def _apply_block_status(self, account_id: int, jid: str, should_block: bool):
+        """
+        Unified method to block/unblock a contact.
+        Used by both context menu and ContactDetailsDialog.
+
+        Args:
+            account_id: Account ID
+            jid: Contact JID
+            should_block: True to block, False to unblock
+        """
+        action = "block" if should_block else "unblock"
+        logger.debug(f"Applying {action} for {jid}")
+
+        # Send XEP-0191 IQ to server
+        account = self.account_manager.get_account(account_id)
+        if account and account.is_connected():
+            try:
+                if should_block:
+                    asyncio.create_task(account.client.block_contact(jid))
+                else:
+                    asyncio.create_task(account.client.unblock_contact(jid))
+                logger.debug(f"Sent {action} IQ for {jid}")
+            except Exception as e:
+                logger.error(f"Failed to send {action} IQ: {e}")
+
+        # Update database
+        self.db.execute("""
+            UPDATE roster SET blocked = ?
+            WHERE account_id = ? AND jid_id = (SELECT id FROM jid WHERE bare_jid = ?)
+        """, (1 if should_block else 0, account_id, jid))
+        self.db.commit()
+
+        # If this contact's chat is currently open, update its UI state
+        if self.chat_view.current_account_id == account_id and self.chat_view.current_jid == jid:
+            self.chat_view.update_blocked_status(should_block)
+            logger.debug(f"Updated chat view blocked status for {jid}")
+
+        # Refresh contact list to update blocked indicator
+        self.contact_list.refresh()
+
+    def _on_block_status_changed(self, account_id: int, jid: str, is_blocked: bool):
+        """
+        Handle block status change from ContactDetailsDialog.
+        Delegates to unified _apply_block_status() method.
+
+        Args:
+            account_id: Account ID
+            jid: Contact JID
+            is_blocked: New blocked status
+        """
+        self._apply_block_status(account_id, jid, is_blocked)
 
     def _update_subscription(self, account_id: int, jid: str, can_see_theirs: bool, they_can_see_ours: bool):
         """

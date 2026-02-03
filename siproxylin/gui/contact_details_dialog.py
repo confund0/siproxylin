@@ -1,8 +1,8 @@
 """
-OMEMO keys dialog for viewing and managing device fingerprints.
+Contact Details Dialog - Comprehensive contact management.
 
-Shows OMEMO devices for a contact with fingerprints, trust levels,
-and ability to trust/distrust devices.
+Shows contact information, OMEMO devices, conversation settings,
+presence subscription, and allows renaming contacts.
 """
 
 import logging
@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QWidget, QFormLayout, QCheckBox, QLineEdit,
     QGroupBox
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
 from ..db.database import get_db
@@ -21,11 +21,16 @@ from ..core import get_account_manager
 from ..utils.avatar import get_avatar_pixmap
 
 
-logger = logging.getLogger('siproxylin.omemo_keys_dialog')
+logger = logging.getLogger('siproxylin.contact_details_dialog')
 
 
-class OMEMOKeysDialog(QDialog):
-    """Dialog for viewing and managing OMEMO device keys."""
+class ContactDetailsDialog(QDialog):
+    """Dialog for viewing and managing contact details."""
+
+    # Signal emitted when contact is saved (account_id, jid, name, can_see_theirs, they_can_see_ours)
+    contact_saved = Signal(int, str, str, bool, bool)
+    # Signal emitted when block status changes (account_id, jid, is_blocked)
+    block_status_changed = Signal(int, str, bool)
 
     def __init__(self, account_id: int, jid: str, parent=None):
         super().__init__(parent)
@@ -33,6 +38,12 @@ class OMEMOKeysDialog(QDialog):
         self.jid = jid
         self.db = get_db()
         self.account_manager = get_account_manager()
+
+        # Load subscription state early (needed for UI creation)
+        self.current_we_see, self.current_they_see, self.we_requested, self.they_requested = self._load_subscription_state()
+
+        # Track original blocked status to detect changes
+        self.original_blocked = False
 
         # Get contact name from roster
         contact_info = self.db.fetchone("""
@@ -62,19 +73,23 @@ class OMEMOKeysDialog(QDialog):
         self.settings_tab = self._create_settings_tab()
         self.tabs.addTab(self.settings_tab, "Settings")
 
+        # Presence tab (subscription management)
+        self.presence_tab = self._create_presence_tab()
+        self.tabs.addTab(self.presence_tab, "Presence")
+
         # Contact devices tab
         contact_tab = QWidget()
         contact_layout = QVBoxLayout(contact_tab)
         self.contact_table = self._create_device_table()
         contact_layout.addWidget(self.contact_table)
-        self.tabs.addTab(contact_tab, "OMEMO - Contact's Devices")
+        self.tabs.addTab(contact_tab, "OMEMO - Peer")
 
         # Our devices tab
         own_tab = QWidget()
         own_layout = QVBoxLayout(own_tab)
         self.own_table = self._create_device_table()
         own_layout.addWidget(self.own_table)
-        self.tabs.addTab(own_tab, "OMEMO - My Devices")
+        self.tabs.addTab(own_tab, "OMEMO - Own")
 
         # Buttons
         button_layout = QHBoxLayout()
@@ -404,16 +419,17 @@ class OMEMOKeysDialog(QDialog):
         layout = QVBoxLayout(tab)
         layout.setContentsMargins(15, 15, 15, 15)
 
-        # Local Settings
-        local_group = QGroupBox("Local Settings")
-        local_layout = QFormLayout(local_group)
+        # Contact Information
+        contact_group = QGroupBox("Contact Information")
+        contact_layout = QFormLayout(contact_group)
 
-        # Local alias
-        self.alias_input = QLineEdit()
-        self.alias_input.setPlaceholderText("Optional local nickname for this contact")
-        local_layout.addRow("Local Alias:", self.alias_input)
+        # Contact name (roster name)
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("Friendly display name (syncs with server roster)")
+        self.name_input.setToolTip("Set a display name for this contact (synced across all your devices via XMPP roster)")
+        contact_layout.addRow("Contact Name:", self.name_input)
 
-        layout.addWidget(local_group)
+        layout.addWidget(contact_group)
 
         # Conversation Settings
         conv_group = QGroupBox("Conversation Settings")
@@ -423,13 +439,13 @@ class OMEMOKeysDialog(QDialog):
         self.notifications_checkbox = QCheckBox("Enable notifications for this contact")
         conv_layout.addRow("Notifications:", self.notifications_checkbox)
 
-        # Typing indicators
-        self.typing_send_checkbox = QCheckBox("Send typing notifications to this contact")
-        conv_layout.addRow("Typing (send):", self.typing_send_checkbox)
-
         # Read receipts
         self.read_receipts_checkbox = QCheckBox("Send read receipts to this contact")
         conv_layout.addRow("Read receipts:", self.read_receipts_checkbox)
+
+        # Typing notifications
+        self.typing_send_checkbox = QCheckBox("Send typing notifications to this contact")
+        conv_layout.addRow("Typing (send):", self.typing_send_checkbox)
 
         layout.addWidget(conv_group)
 
@@ -459,6 +475,102 @@ class OMEMOKeysDialog(QDialog):
         actions_layout.addWidget(remove_button)
 
         layout.addWidget(actions_group)
+
+        layout.addStretch()
+        return tab
+
+    def _load_subscription_state(self) -> tuple:
+        """Load current subscription state from database (reusing SubscriptionDialog pattern).
+
+        Returns:
+            (we_see_theirs, they_see_ours, we_requested, they_requested) tuple of booleans
+        """
+        row = self.db.fetchone("""
+            SELECT we_see_their_presence, they_see_our_presence,
+                   we_requested_subscription, they_requested_subscription
+            FROM roster
+            WHERE account_id = ? AND jid_id = (SELECT id FROM jid WHERE bare_jid = ?)
+        """, (self.account_id, self.jid))
+
+        if row:
+            we_see = bool(row['we_see_their_presence'])
+            they_see = bool(row['they_see_our_presence'])
+            we_requested = bool(row['we_requested_subscription'])
+            they_requested = bool(row['they_requested_subscription'])
+            return (we_see, they_see, we_requested, they_requested)
+        return (False, False, False, False)
+
+    def _create_presence_tab(self):
+        """Create the Presence tab for subscription management (reusing SubscriptionDialog pattern)."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(15, 15, 15, 15)
+
+        # Header
+        header_label = QLabel("<b>Presence Subscription</b>")
+        header_label.setStyleSheet("font-size: 11pt; padding-bottom: 10px;")
+        layout.addWidget(header_label)
+
+        layout.addSpacing(10)
+
+        # Subscription Management
+        subscription_group = QGroupBox("Subscription Settings")
+        subscription_layout = QVBoxLayout(subscription_group)
+
+        # Checkbox 1: We can see their presence
+        self.see_theirs_checkbox = QCheckBox("I can see their presence")
+        self.see_theirs_checkbox.setToolTip("Receive their online/offline status updates")
+        self.see_theirs_checkbox.setChecked(self.current_we_see or self.we_requested)
+        subscription_layout.addWidget(self.see_theirs_checkbox)
+
+        # Status label for checkbox 1
+        self.see_theirs_status = QLabel()
+        if self.current_we_see:
+            self.see_theirs_status.setText("     ✓ Active")
+            self.see_theirs_status.setStyleSheet("color: #5cb85c; font-size: 9pt; margin-left: 20px;")
+        elif self.we_requested:
+            self.see_theirs_status.setText("     ⏳ Pending (waiting for approval)")
+            self.see_theirs_status.setStyleSheet("color: #f0ad4e; font-size: 9pt; margin-left: 20px;")
+        else:
+            self.see_theirs_status.setText("     (not subscribed)")
+            self.see_theirs_status.setStyleSheet("color: #888; font-size: 9pt; margin-left: 20px;")
+        subscription_layout.addWidget(self.see_theirs_status)
+
+        subscription_layout.addSpacing(10)
+
+        # Checkbox 2: They can see our presence
+        self.they_see_ours_checkbox = QCheckBox("They can see my presence")
+        self.they_see_ours_checkbox.setToolTip("Share your online/offline status with them")
+        self.they_see_ours_checkbox.setChecked(self.current_they_see)
+        subscription_layout.addWidget(self.they_see_ours_checkbox)
+
+        # Status label for checkbox 2
+        self.they_see_ours_status = QLabel()
+        if self.current_they_see:
+            self.they_see_ours_status.setText("     ✓ Active")
+            self.they_see_ours_status.setStyleSheet("color: #5cb85c; font-size: 9pt; margin-left: 20px;")
+        elif self.they_requested:
+            self.they_see_ours_status.setText("     ⚠ Pending request from contact")
+            self.they_see_ours_status.setStyleSheet("color: #f0ad4e; font-size: 9pt; margin-left: 20px;")
+        else:
+            self.they_see_ours_status.setText("     (not authorized)")
+            self.they_see_ours_status.setStyleSheet("color: #888; font-size: 9pt; margin-left: 20px;")
+        subscription_layout.addWidget(self.they_see_ours_status)
+
+        layout.addWidget(subscription_group)
+
+        layout.addSpacing(20)
+
+        # Info box
+        info_label = QLabel(
+            "💡 <b>How it works:</b><br>"
+            "• Checking a box sends a request to the contact or server<br>"
+            "• Unchecking a box revokes/cancels the subscription<br>"
+            "• Changes are applied when you click Save"
+        )
+        info_label.setStyleSheet("color: #666; font-size: 9pt; padding: 10px; background-color: #f5f5f5; border-radius: 5px;")
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
 
         layout.addStretch()
         return tab
@@ -574,22 +686,22 @@ class OMEMOKeysDialog(QDialog):
             conversation_id = conv['id']
             # Load conversation settings
             self.notifications_checkbox.setChecked(bool(conv['notification']))
-            self.typing_send_checkbox.setChecked(bool(conv['send_typing']))
             self.read_receipts_checkbox.setChecked(bool(conv['send_marker']))
+            self.typing_send_checkbox.setChecked(bool(conv['send_typing']))
 
-            # Get local alias
-            alias = self.db.get_conversation_setting(conversation_id, 'local_alias', default='')
-            self.alias_input.setText(alias)
-
-        # Get blocked status from roster
+        # Get roster name and blocked status
         roster = self.db.fetchone("""
-            SELECT blocked
+            SELECT name, blocked
             FROM roster
             WHERE account_id = ? AND jid_id = ?
         """, (self.account_id, jid_id))
 
         if roster:
-            self.block_checkbox.setChecked(bool(roster['blocked']))
+            # Load contact name from roster
+            self.name_input.setText(roster['name'] or '')
+            # Load and store original blocked status
+            self.original_blocked = bool(roster['blocked'])
+            self.block_checkbox.setChecked(self.original_blocked)
 
     def _save_settings(self):
         """Save contact settings to database."""
@@ -615,26 +727,29 @@ class OMEMOKeysDialog(QDialog):
                 conversation_id
             ))
 
-            # Save local alias
-            self.db.set_conversation_setting(conversation_id, 'local_alias', self.alias_input.text())
+            # Get contact name and subscription states
+            new_name = self.name_input.text().strip()
+            can_see_theirs = self.see_theirs_checkbox.isChecked()
+            they_can_see_ours = self.they_see_ours_checkbox.isChecked()
 
-            # Update blocked status
-            self.db.execute("""
-                UPDATE roster
-                SET blocked = ?
-                WHERE account_id = ? AND jid_id = ?
-            """, (
-                1 if self.block_checkbox.isChecked() else 0,
-                self.account_id,
-                jid_id
-            ))
+            # Check if block status changed
+            new_blocked = self.block_checkbox.isChecked()
+            blocked_changed = (new_blocked != self.original_blocked)
 
             self.db.commit()
 
-            logger.info(f"Saved settings for contact {self.jid}")
-            QMessageBox.information(self, "Settings Saved", "Contact settings have been saved.")
+            # Emit unified signal for all contact changes (name + subscription)
+            # This will be handled by main_window._on_contact_saved() which syncs to server
+            self.contact_saved.emit(self.account_id, self.jid, new_name, can_see_theirs, they_can_see_ours)
 
-            # TODO: If blocked status changed, send IQ to server (XEP-0191)
+            # If block status changed, emit signal
+            # This will be handled by main_window._apply_block_status() which updates DB and chat view
+            if blocked_changed:
+                self.block_status_changed.emit(self.account_id, self.jid, new_blocked)
+                logger.info(f"Block status changed for {self.jid}: blocked={new_blocked}")
+
+            logger.info(f"Saved settings for contact {self.jid} (name='{new_name}', can_see_theirs={can_see_theirs}, they_can_see_ours={they_can_see_ours})")
+            QMessageBox.information(self, "Settings Saved", "Contact settings have been saved.")
 
         except Exception as e:
             logger.error(f"Failed to save settings: {e}")

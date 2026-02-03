@@ -60,6 +60,7 @@ class XMPPAccount(QObject):
     presence_changed = Signal(int, str, str)  # (account_id, jid, presence) - contact presence changed
     muc_invite_received = Signal(int, str, str, str, str)  # (account_id, room_jid, inviter_jid, reason, password)
     avatar_updated = Signal(int, str)  # (account_id, jid) - avatar fetched/updated
+    nickname_updated = Signal(int, str, str)  # (account_id, jid, nickname) - contact nickname updated (XEP-0172)
     subscription_request_received = Signal(int, str)  # (account_id, from_jid) - incoming subscription request
     subscription_changed = Signal(int, str, str)  # (account_id, from_jid, change_type) - subscription state changed
 
@@ -104,6 +105,9 @@ class XMPPAccount(QObject):
             app_log_enabled=app_log_enabled
         )
 
+        # Nickname cache (XEP-0172: User Nickname) - in-memory only
+        self.contact_nicknames: Dict[str, str] = {}
+
         # Create signal dictionary for barrels
         self._signals = {
             'connection_state_changed': self.connection_state_changed,
@@ -112,6 +116,7 @@ class XMPPAccount(QObject):
             'subscription_request_received': self.subscription_request_received,
             'subscription_changed': self.subscription_changed,
             'avatar_updated': self.avatar_updated,
+            'nickname_updated': self.nickname_updated,
             'message_received': self.message_received,
             'chat_state_changed': self.chat_state_changed,
             'call_incoming': self.call_incoming,
@@ -248,6 +253,7 @@ class XMPPAccount(QObject):
             'on_room_config_changed_callback': self.muc.on_room_config_changed,
             'on_message_correction_callback': self.messages._on_message_correction,
             'on_avatar_update_callback': self.avatars.on_avatar_update,
+            'on_nickname_update_callback': self._on_nickname_update,
             'on_reaction_callback': self.messages._on_reaction,
             'on_subscription_request_callback': self._on_subscription_request,
             'on_subscription_changed_callback': self._on_subscription_changed,
@@ -754,6 +760,56 @@ class XMPPAccount(QObject):
     async def _fetch_roster_avatars(self):
         """Fetch roster avatars - delegates to AvatarBarrel."""
         await self.avatars.fetch_roster_avatars()
+
+    # =========================================================================
+    # Nickname Management (XEP-0172: User Nickname)
+    # =========================================================================
+
+    async def _on_nickname_update(self, jid: str, nickname: Optional[str]):
+        """
+        Handle contact nickname update from XEP-0172 PEP event.
+
+        Updates in-memory cache and emits signal to refresh UI.
+
+        Args:
+            jid: Bare JID of the contact
+            nickname: The nickname text, or None if cleared
+        """
+        if nickname:
+            self.contact_nicknames[jid] = nickname
+            self.app_logger.info(f"Nickname updated for {jid}: {nickname}")
+        else:
+            # Nickname was cleared
+            if jid in self.contact_nicknames:
+                del self.contact_nicknames[jid]
+                self.app_logger.info(f"Nickname cleared for {jid}")
+
+        # Emit signal to refresh UI (pass empty string instead of None for Qt signal compatibility)
+        self.nickname_updated.emit(self.account_id, jid, nickname if nickname else '')
+
+    def get_contact_display_name(self, jid: str, roster_name: Optional[str] = None) -> str:
+        """
+        Get display name for a contact using 3-source priority.
+
+        Priority: roster.name > contact_nickname > jid
+
+        Args:
+            jid: Bare JID of the contact
+            roster_name: Optional roster name if already available (avoids DB query)
+
+        Returns:
+            Display name to show in UI
+        """
+        # 1. Check roster name (highest priority)
+        if roster_name:
+            return roster_name
+
+        # 2. Check nickname cache (middle priority)
+        if jid in self.contact_nicknames:
+            return self.contact_nicknames[jid]
+
+        # 3. Fall back to JID (lowest priority)
+        return jid
 
     async def _on_subscription_request(self, from_jid: str):
         """Handle subscription request - delegates to PresenceBarrel."""

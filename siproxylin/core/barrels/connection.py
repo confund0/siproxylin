@@ -168,6 +168,7 @@ class ConnectionBarrel:
                 on_room_config_changed_callback=callbacks.get('on_room_config_changed_callback'),
                 on_message_correction_callback=callbacks.get('on_message_correction_callback'),
                 on_avatar_update_callback=callbacks.get('on_avatar_update_callback'),
+                on_nickname_update_callback=callbacks.get('on_nickname_update_callback'),
                 on_reaction_callback=callbacks.get('on_reaction_callback'),
                 on_subscription_request_callback=callbacks.get('on_subscription_request_callback'),
                 on_subscription_changed_callback=callbacks.get('on_subscription_changed_callback'),

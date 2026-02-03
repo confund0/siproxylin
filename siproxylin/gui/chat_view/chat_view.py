@@ -100,7 +100,6 @@ class ChatViewWidget(QWidget):
         self.header.call_requested.connect(self._handle_call_request)
         self.header.encryption_toggled.connect(self._handle_encryption_toggle)
         self.header.info_clicked.connect(self._handle_info_click)
-        self.header.typing_indicator_toggled.connect(self._handle_typing_toggle)
         self.header.search_message_clicked.connect(self._handle_search_result)
 
         chat_layout.addWidget(self.header)
@@ -346,18 +345,27 @@ class ChatViewWidget(QWidget):
             """, (account_id, jid))
 
             if contact:
-                display_name = contact['name'] or contact['bare_jid']
+                # Use 3-source priority: roster.name > contact_nickname > jid
+                account = self.account_manager.get_account(account_id)
+                if account:
+                    display_name = account.get_contact_display_name(jid, roster_name=contact['name'])
+                else:
+                    display_name = contact['name'] or contact['bare_jid']
                 base_contact_name = f"💬 {display_name}"
+                # Store roster name for later use (e.g., nickname updates)
+                roster_name = contact['name']
                 # Check blocked status and update UI
                 is_blocked = bool(contact['blocked'])
                 self._set_input_enabled(not is_blocked)
             else:
                 base_contact_name = f"💬 {jid}"
+                roster_name = None
                 # Not in roster, assume not blocked
                 is_blocked = False
                 self._set_input_enabled(True)
 
         # Load header with all conversation info
+        # Note: send_typing is still loaded from DB above but not passed to header (no button anymore)
         self.header.load_contact(
             account_id=account_id,
             jid=jid,
@@ -365,7 +373,7 @@ class ChatViewWidget(QWidget):
             conversation_id=self.current_conversation_id,
             base_name=base_contact_name,
             encryption_enabled=encryption_enabled,
-            send_typing=send_typing
+            roster_name=roster_name
         )
 
         # Update blocked indicator if needed (for 1-1 chats only)
@@ -601,16 +609,23 @@ class ChatViewWidget(QWidget):
             # Show non-blocking (allows asyncio to continue processing XMPP)
             dialog.show()
         else:
-            # Open contact details dialog (OMEMO keys - same as roster right-click "View Details")
+            # Open contact details dialog (same as roster right-click "View Details")
             # Use .show() instead of .exec() to avoid blocking asyncio event loop
-            logger.debug("Opening contact details dialog (OMEMO keys)")
-            from ..omemo_keys_dialog import OMEMOKeysDialog
+            logger.debug("Opening contact details dialog")
+            from ..contact_details_dialog import ContactDetailsDialog
 
-            dialog = OMEMOKeysDialog(
+            dialog = ContactDetailsDialog(
                 account_id=self.current_account_id,
                 jid=self.current_jid,
                 parent=self
             )
+
+            # Connect signals to main window handlers
+            main_window = self.window()
+            if main_window and hasattr(main_window, '_on_contact_saved'):
+                dialog.contact_saved.connect(main_window._on_contact_saved)
+            if main_window and hasattr(main_window, '_on_block_status_changed'):
+                dialog.block_status_changed.connect(main_window._on_block_status_changed)
 
             # Auto-delete when closed (Qt handles cleanup)
             dialog.setAttribute(Qt.WA_DeleteOnClose)
@@ -621,11 +636,6 @@ class ChatViewWidget(QWidget):
     def _set_input_enabled_from_blocked(self, is_blocked: bool):
         """Update input field enabled state based on blocked status (inverse)."""
         self._set_input_enabled(not is_blocked)
-
-    def _handle_typing_toggle(self, enabled: bool):
-        """Handle typing indicator toggle from header."""
-        logger.debug(f"Typing indicator toggled: {enabled}")
-        # Header already updated DB, nothing else needed
 
     # Public methods (called from main_window.py)
 

@@ -329,14 +329,12 @@ class ChatHeaderWidget(QFrame):
     - call_requested(call_type: str)  # "audio" or "video"
     - encryption_toggled(enabled: bool)
     - info_clicked()
-    - typing_indicator_toggled(enabled: bool)
     """
 
     # Define signals
     call_requested = Signal(str)  # "audio" or "video"
     encryption_toggled = Signal(bool)
     info_clicked = Signal()
-    typing_indicator_toggled = Signal(bool)
     search_message_clicked = Signal(int, int)  # (message_id, content_item_id) to load around
 
     def __init__(self, db, account_manager, spell_check_manager, parent=None, theme_name='dark'):
@@ -525,17 +523,6 @@ class ChatHeaderWidget(QFrame):
         separator.setObjectName("headerSeparator")
         right_layout.addWidget(separator)
 
-        # Typing indicators toggle button
-        self.typing_indicator_toggle = QToolButton()
-        self.typing_indicator_toggle.setObjectName("typingIndicatorToggle")
-        self.typing_indicator_toggle.setCheckable(True)
-        self.typing_indicator_toggle.setChecked(True)  # Enabled by default
-        self.typing_indicator_toggle.clicked.connect(self._on_typing_indicator_toggle)
-        # Tooltip set dynamically in set_typing_notifications_enabled()
-        self.typing_indicator_toggle.setText("✏️")
-        self.typing_indicator_toggle.setFixedSize(32, 32)
-        right_layout.addWidget(self.typing_indicator_toggle)
-
         # Spell check button (shows flag emoji, e.g., "🇺🇸", "🇷🇺")
         # Font size and styling controlled by theme (18pt for flag visibility)
         self.spell_check_button = QToolButton()
@@ -573,11 +560,10 @@ class ChatHeaderWidget(QFrame):
         self.spell_check_button.installEventFilter(self.tooltip_filter)
         self.audio_call_button.installEventFilter(self.tooltip_filter)
         self.video_call_button.installEventFilter(self.tooltip_filter)
-        self.typing_indicator_toggle.installEventFilter(self.tooltip_filter)
         self.header_encryption_button.installEventFilter(self.tooltip_filter)
         self.info_button.installEventFilter(self.tooltip_filter)
 
-    def load_contact(self, account_id, jid, is_muc, conversation_id, base_name, encryption_enabled, send_typing):
+    def load_contact(self, account_id, jid, is_muc, conversation_id, base_name, encryption_enabled, roster_name=None):
         """
         Load and display contact/room information.
 
@@ -588,7 +574,7 @@ class ChatHeaderWidget(QFrame):
             conversation_id: Conversation ID (for settings)
             base_name: Display name (without typing indicator)
             encryption_enabled: Initial encryption state
-            send_typing: Initial typing indicator preference
+            roster_name: Roster name from database (for priority calculation)
         """
         # Store conversation state
         self.current_account_id = account_id
@@ -596,6 +582,7 @@ class ChatHeaderWidget(QFrame):
         self.current_is_muc = is_muc
         self.current_conversation_id = conversation_id
         self.base_contact_name = base_name
+        self.roster_name = roster_name
 
         # Reset typing state
         self.is_contact_typing = False
@@ -615,10 +602,6 @@ class ChatHeaderWidget(QFrame):
         # Set encryption button state
         self.header_encryption_button.setChecked(encryption_enabled)
         self.set_encryption_enabled(encryption_enabled)
-
-        # Set typing indicator toggle state
-        self.typing_indicator_toggle.setChecked(bool(send_typing))
-        self.set_typing_notifications_enabled(bool(send_typing))
 
         # Update visibility based on conversation type
         if is_muc:
@@ -643,6 +626,23 @@ class ChatHeaderWidget(QFrame):
         self.update_spell_check_button()
 
         logger.debug(f"Header loaded: {jid} (is_muc={is_muc})")
+
+    def update_display_name(self, new_name: str):
+        """
+        Update the contact display name without reloading the entire header.
+
+        Useful for XEP-0172 nickname updates where only the name changes.
+
+        Args:
+            new_name: New display name
+        """
+        self.base_contact_name = new_name
+        # Update label (preserve typing indicator if active)
+        if self.is_contact_typing:
+            self.contact_label.setText(f"{self.base_contact_name} ⌨️ typing...")
+        else:
+            self.contact_label.setText(self.base_contact_name)
+        logger.debug(f"Updated display name to: {new_name}")
 
     def clear(self):
         """Clear header (no conversation selected)."""
@@ -740,20 +740,6 @@ class ChatHeaderWidget(QFrame):
         else:
             self.header_encryption_button.setText("🔓")
             self.header_encryption_button.setToolTip("OMEMO encryption disabled")
-
-    def set_typing_notifications_enabled(self, enabled: bool):
-        """
-        Update typing notifications button state and tooltip.
-
-        Args:
-            enabled: True if typing notifications are enabled
-        """
-        if enabled:
-            self.typing_indicator_toggle.setStyleSheet("")
-            self.typing_indicator_toggle.setToolTip("Typing notifications: ON")
-        else:
-            self.typing_indicator_toggle.setStyleSheet("color: gray;")
-            self.typing_indicator_toggle.setToolTip("Typing notifications: OFF")
 
     def _update_avatar(self):
         """Load and display avatar for current contact/room."""
@@ -988,29 +974,6 @@ class ChatHeaderWidget(QFrame):
 
         # Emit signal to parent
         self.encryption_toggled.emit(encryption_enabled)
-
-    def _on_typing_indicator_toggle(self):
-        """Handle typing indicator toggle button click."""
-        if not self.current_conversation_id:
-            return
-
-        # Get current state from button
-        enabled = self.typing_indicator_toggle.isChecked()
-
-        # Save to database
-        send_typing_value = 1 if enabled else 0
-        self.db.execute("""
-            UPDATE conversation SET send_typing = ? WHERE id = ?
-        """, (send_typing_value, self.current_conversation_id))
-        self.db.commit()
-
-        # Update button style and tooltip
-        self.set_typing_notifications_enabled(enabled)
-
-        logger.info(f"Typing notifications {'enabled' if enabled else 'disabled'} for conversation {self.current_conversation_id}")
-
-        # Emit signal to parent
-        self.typing_indicator_toggled.emit(enabled)
 
     def _on_info_button_clicked(self):
         """Handle info/settings button click - emit signal for parent to handle."""
