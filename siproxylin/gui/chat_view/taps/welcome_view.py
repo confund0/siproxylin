@@ -128,7 +128,7 @@ class WelcomeView(QWidget):
 
         # Inject version info
         from ....version import VERSION, BUILD_CODENAME
-        version_str = f'v{VERSION} "{BUILD_CODENAME}"'
+        version_str = f'{VERSION} - "{BUILD_CODENAME}"'
         html = html.replace('{VERSION}', version_str)
 
         return html
