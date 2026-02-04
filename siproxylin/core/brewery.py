@@ -865,7 +865,8 @@ class AccountBrewery:
         Default settings (can be overridden via optional_settings):
             enabled: 1
             resource: auto-generated if not provided
-            alias: None
+            nickname: None
+            muc_nickname: None
             server_override: None
             port: None
             proxy_type: None
@@ -912,7 +913,8 @@ class AccountBrewery:
         # Set defaults (can be overridden by optional_settings)
         defaults = {
             'enabled': 1,
-            'alias': None,
+            'nickname': None,
+            'muc_nickname': None,
             'server_override': None,
             'port': None,
             'proxy_type': None,
@@ -941,18 +943,19 @@ class AccountBrewery:
         # Create account in database
         cursor = self.db.execute("""
             INSERT INTO account (
-                bare_jid, password, alias, resource, enabled,
+                bare_jid, password, nickname, muc_nickname, resource, enabled,
                 server_override, port,
                 proxy_type, proxy_host, proxy_port, proxy_username, proxy_password,
                 ignore_tls_errors, require_strong_tls, client_cert_path,
                 omemo_enabled, omemo_mode, omemo_blind_trust,
                 webrtc_enabled, carbons_enabled, typing_notifications, read_receipts,
                 log_level, log_retention_days, log_app_enabled, log_xml_enabled
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             bare_jid,
             password_encoded,
-            settings['alias'],
+            settings['nickname'],
+            settings['muc_nickname'],
             resource,
             settings['enabled'],
             settings['server_override'],
@@ -1008,7 +1011,7 @@ class AccountBrewery:
 
         Example:
             brewery.update_account(1, log_level='DEBUG', carbons_enabled=1)
-            brewery.update_account(2, password='newpass', alias='Work Account')
+            brewery.update_account(2, password='newpass', nickname='Work Account')
 
         Note:
             - Password will be automatically base64 encoded
