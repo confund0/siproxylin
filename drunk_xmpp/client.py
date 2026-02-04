@@ -1379,8 +1379,8 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                     self.logger.debug(f"Detected aesgcm:// URL in private message body: {line[:60]}...")
                     break
 
-        # Skip empty messages (no body and no attachment), and history messages
-        if (not metadata.has_body and not metadata.has_attachment) or metadata.is_history:
+        # Skip empty messages (no body and no attachment)
+        if not metadata.has_body and not metadata.has_attachment:
             return
 
         # Log message
