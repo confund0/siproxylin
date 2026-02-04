@@ -158,7 +158,7 @@ class ContactsManagerDialog(QDialog):
                 r.subscription,
                 r.blocked,
                 a.bare_jid as account_jid,
-                a.alias as account_alias,
+                a.nickname as account_alias,
                 a.enabled as account_enabled
             FROM roster r
             JOIN jid j ON r.jid_id = j.id

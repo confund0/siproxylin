@@ -1,6 +1,6 @@
 # Build & Packaging Documentation
 
-> **Last Updated:** 2026-02-01
+> **Last Updated:** 2026-02-03
 
 ---
 
@@ -18,6 +18,26 @@ cd drunk_call_service && ./build.sh && cd ..
 pip install -r requirements.txt
 python main.py
 ```
+
+---
+
+## Alpine Linux Build (Experimental)
+
+**Status:** Work in progress (currently in git stash)
+
+**Goal:** Native musl build for Alpine Linux users
+
+**Known issues:**
+- Encountering method reference issues that may be related to Python version differences (3.11 on Debian vs 3.12 on Alpine)
+- Root cause not yet identified
+- glibc AppImage won't run on Alpine without workarounds
+
+**Planned approach:**
+- System packages: py3-pyside6, gstreamer-dev, python3-dev, build-base
+- Create venv with `--system-site-packages` to use system PySide6
+- Build Go call service natively
+
+**Note:** This is a theoretical section. Implementation is pending resolution of Python version compatibility issues.
 
 ---
 
@@ -68,6 +88,20 @@ python main.py
 **Fallback behavior:**
 - **Dev mode**: version.sh missing → shows "dev - 🍺"
 - **Build mode**: version.sh missing → ERROR and exit
+
+**Version normalization:**
+- Accepts both "v0.0.4" and "0.0.4" in version.sh
+- Always normalizes to "v0.0.4" format
+- Strips 'v' for semver comparisons, adds back for display/filenames
+
+**Implementation:**
+- `version.sh` - Root file with `SIPROXYLIN_VERSION` and `SIPROXYLIN_CODENAME`
+- `siproxylin/version.py` - Reads version.sh at runtime (dev) or in AppDir (AppImage)
+- `.githooks/pre-commit` - Validates version increased, codename changed
+- `.githooks/pre-push` - Validates tag matches version.sh
+- `.package-builder.sh` - Sources version.sh (mandatory for builds)
+- `build-appimage.sh` - Copies version.sh into AppDir
+- `.github/workflows/release.yml` - Reads version.sh instead of parsing tag
 
 ---
 
@@ -126,11 +160,19 @@ git push origin v0.0.4
 ```
 
 **What happens:**
-1. Workflow extracts version from tag (`v0.0.4` → `0.0.4`)
-2. Builds AppImage with cached dependencies (`.package-builder-apt/`, `AppDir/`)
-3. Creates GitHub release with `Siproxylin-0.0.4-x86_64.AppImage`
+1. Workflow reads version from `version.sh`
+2. Builds AppImage with cached dependencies (`.package-builder-apt/`, `AppDir/`, `appimagetool`)
+3. Creates GitHub release with `Siproxylin-v0.0.4-x86_64.AppImage`
 
-**Cache:** Speeds up builds by preserving APT packages (~300MB) and AppDir between runs
+**Cache strategy:**
+- Conservative: APT debs (~300MB), appimagetool, Go binary
+- Invalidates on: appimage.yml changes, Go source changes
+- Speeds up builds significantly
+
+**CI-specific settings:**
+- `APPIMAGE_EXTRACT_AND_RUN=1` for appimagetool (no FUSE in containers)
+- `permissions: contents: write` for creating releases
+- `shell: bash` to avoid sh/bash incompatibilities
 
 ---
 

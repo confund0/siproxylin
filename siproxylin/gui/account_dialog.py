@@ -168,10 +168,15 @@ class AccountDialog(QDialog):
         self.show_password_checkbox.stateChanged.connect(self._on_show_password_changed)
         layout.addRow("", self.show_password_checkbox)
 
-        # Alias (optional)
-        self.alias_input = QLineEdit()
-        self.alias_input.setPlaceholderText("Friendly name (optional)")
-        layout.addRow("Alias:", self.alias_input)
+        # Nickname (XEP-0172) - published to XMPP server
+        self.nickname_input = QLineEdit()
+        self.nickname_input.setPlaceholderText("Published to contacts (XEP-0172)")
+        layout.addRow("Nickname:", self.nickname_input)
+
+        # MUC Nickname (optional) - used for group chat joins
+        self.muc_nickname_input = QLineEdit()
+        self.muc_nickname_input.setPlaceholderText("For group chats (optional, uses nickname if empty)")
+        layout.addRow("MUC Nickname:", self.muc_nickname_input)
 
         # Resource (optional)
         self.resource_input = QLineEdit()
@@ -815,7 +820,8 @@ class AccountDialog(QDialog):
 
         # Extract all settings from form
         settings = {
-            'alias': self.alias_input.text().strip() or None,
+            'nickname': self.nickname_input.text().strip() or None,
+            'muc_nickname': self.muc_nickname_input.text().strip() or None,
             'resource': resource,
             'enabled': int(self.enabled_checkbox.isChecked()),
             'server_override': self.server_override_input.text().strip() or None,
@@ -867,7 +873,8 @@ class AccountDialog(QDialog):
             password = base64.b64decode(account['password']).decode()
             self.password_input.setText(password)
 
-        self.alias_input.setText(account['alias'] or '')
+        self.nickname_input.setText(account['nickname'] or '')
+        self.muc_nickname_input.setText(account['muc_nickname'] or '')
         self.resource_input.setText(account['resource'] or '')
         self.enabled_checkbox.setChecked(bool(account['enabled']))
 

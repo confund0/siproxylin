@@ -136,13 +136,13 @@ class CallLogDialog(QDialog):
 
         # Get all accounts
         accounts = self.db.fetchall("""
-            SELECT id, bare_jid, alias
+            SELECT id, bare_jid, nickname
             FROM account
             ORDER BY id
         """)
 
         for account in accounts:
-            display_name = account['alias'] or account['bare_jid']
+            display_name = account['nickname'] or account['bare_jid']
             self.account_filter.addItem(display_name, account['id'])
 
     def _load_calls(self):
@@ -164,7 +164,7 @@ class CallLogDialog(QDialog):
                 c.type,
                 j.bare_jid,
                 a.bare_jid as account_jid,
-                a.alias as account_alias
+                a.nickname as account_alias
             FROM call c
             JOIN jid j ON c.counterpart_id = j.id
             LEFT JOIN account a ON c.account_id = a.id

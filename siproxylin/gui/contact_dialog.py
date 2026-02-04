@@ -43,10 +43,10 @@ class ContactDialog(QDialog):
 
         # Get account name for window title
         account_row = self.db.fetchone(
-            "SELECT bare_jid, alias FROM account WHERE id = ?",
+            "SELECT bare_jid, nickname FROM account WHERE id = ?",
             (self.account_id,)
         )
-        account_name = account_row['alias'] or account_row['bare_jid'] if account_row else f"Account {account_id}"
+        account_name = account_row['nickname'] or account_row['bare_jid'] if account_row else f"Account {account_id}"
 
         # Window setup
         if self.roster_id:

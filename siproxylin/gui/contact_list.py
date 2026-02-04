@@ -173,12 +173,12 @@ class ContactListWidget(QWidget):
 
         # Get all accounts
         accounts = self.db.fetchall(
-            "SELECT id, bare_jid, alias FROM account WHERE enabled = 1 ORDER BY id"
+            "SELECT id, bare_jid, nickname FROM account WHERE enabled = 1 ORDER BY id"
         )
 
         for account in accounts:
             account_id = account['id']
-            account_label = account['alias'] or account['bare_jid']
+            account_label = account['nickname'] or account['bare_jid']
 
             # Get unread counts for this account
             unread_by_jid = {}

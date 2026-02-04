@@ -466,7 +466,7 @@ class MucBarrel:
             for bm in bookmarks:
                 room_jid = bm.get('jid')
                 name = bm.get('name', '')
-                nick = bm.get('nick') or self.account_data.get('alias') or self.account_data.get('bare_jid', '').split('@')[0] or 'User'
+                nick = bm.get('nick') or self.account_data.get('muc_nickname') or self.account_data.get('nickname') or self.account_data.get('bare_jid', '').split('@')[0] or 'User'
                 autojoin = bm.get('autojoin', False)
 
                 if not room_jid:

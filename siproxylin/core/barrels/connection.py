@@ -169,6 +169,7 @@ class ConnectionBarrel:
                 on_message_correction_callback=callbacks.get('on_message_correction_callback'),
                 on_avatar_update_callback=callbacks.get('on_avatar_update_callback'),
                 on_nickname_update_callback=callbacks.get('on_nickname_update_callback'),
+                own_nickname=self.account_data.get('nickname'),
                 on_reaction_callback=callbacks.get('on_reaction_callback'),
                 on_subscription_request_callback=callbacks.get('on_subscription_request_callback'),
                 on_subscription_changed_callback=callbacks.get('on_subscription_changed_callback'),

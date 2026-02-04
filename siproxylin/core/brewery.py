@@ -811,6 +811,19 @@ class XMPPAccount(QObject):
         # 3. Fall back to JID (lowest priority)
         return jid
 
+    async def publish_own_nickname(self, nickname: Optional[str] = None):
+        """
+        Publish own nickname via XEP-0172.
+
+        Args:
+            nickname: Nickname to publish. If None, reads from account database.
+                     Empty string clears the nickname.
+        """
+        if self.connection and self.connection.client:
+            await self.connection.client.publish_nickname(nickname)
+        else:
+            self.logger.warning("Cannot publish nickname: not connected")
+
     async def _on_subscription_request(self, from_jid: str):
         """Handle subscription request - delegates to PresenceBarrel."""
         await self.presence._on_subscription_request(from_jid)

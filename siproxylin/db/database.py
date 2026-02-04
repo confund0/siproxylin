@@ -24,7 +24,7 @@ class Database:
     Handles schema initialization, migrations, and query execution.
     """
 
-    SCHEMA_VERSION = 11  # Current schema version
+    SCHEMA_VERSION = 12  # Current schema version
 
     def __init__(self, db_path: Optional[Path] = None):
         """

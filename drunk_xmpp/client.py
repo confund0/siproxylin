@@ -306,6 +306,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         on_subscription_changed_callback: Optional[Callable] = None,
         on_presence_changed_callback: Optional[Callable] = None,
         on_nickname_update_callback: Optional[Callable] = None,
+        own_nickname: Optional[str] = None,
         enable_omemo: bool = True,
         allow_any_message_editing: bool = False,
         muc_history_default: int = 0,
@@ -343,6 +344,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             on_room_config_changed_callback: Optional callback for room config changes (room_jid, room_name) - XEP-0045 status code 104
             on_avatar_update_callback: Optional callback for avatar updates (jid, avatar_data) - XEP-0084/0153
             on_nickname_update_callback: Optional callback for nickname updates (jid, nickname) - XEP-0172
+            own_nickname: Optional nickname to publish via XEP-0172 on connect
             on_reaction_callback: Optional callback for message reactions (from_jid, message_id, emojis) - XEP-0444
             enable_omemo: Enable OMEMO encryption (default: True)
             muc_history_default: Default number of history messages to request when joining MUCs (default: 0)
@@ -415,6 +417,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
 
         # Nickname cache (XEP-0172: User Nickname)
         self.nickname_cache: Dict[str, str] = {}
+        self.own_nickname = own_nickname
 
         # Call-related state (CallsMixin)
         self.on_call_incoming: Optional[Callable] = None
@@ -641,6 +644,10 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.send_presence()
         await self.get_roster()
 
+        # Publish nickname if configured (XEP-0172)
+        if self.own_nickname:
+            await self.publish_nickname()
+
         # Fetch bookmarks from server (XEP-0402)
         if self.on_bookmarks_received_callback:
             try:
@@ -666,6 +673,11 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         await self.plugin['xep_0115'].update_caps()
         self.send_presence()
         await self.get_roster()
+
+        # Re-publish nickname after session resumption (XEP-0172)
+        if self.own_nickname:
+            await self.publish_nickname()
+
         self.logger.debug("Presence and roster refreshed after session resumption")
 
     async def _on_session_end(self, event):
@@ -1028,6 +1040,31 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             self.logger.error(f"Error handling nickname PEP event: {e}")
             import traceback
             self.logger.error(traceback.format_exc())
+
+    async def publish_nickname(self, nickname: Optional[str] = None):
+        """
+        Publish user's own nickname via XEP-0172.
+
+        Args:
+            nickname: Nickname to publish. If None, uses self.own_nickname.
+                     Empty string clears the nickname.
+        """
+        try:
+            nick_to_publish = nickname if nickname is not None else self.own_nickname
+
+            if nick_to_publish:
+                # Publish nickname
+                await self.plugin['xep_0172'].publish_nick(nick=nick_to_publish)
+                self.logger.info(f"Published nickname: {nick_to_publish}")
+                self.own_nickname = nick_to_publish
+            else:
+                # Clear nickname by calling stop()
+                self.plugin['xep_0172'].stop()
+                self.logger.info("Cleared published nickname")
+                self.own_nickname = None
+
+        except Exception as e:
+            self.logger.warning(f"Failed to publish nickname: {e}")
 
     async def _rejoin_room_delayed(self, room_jid: str, delay: int):
         """Rejoin a room after delay."""
@@ -1605,6 +1642,35 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                 metadata.is_encrypted = True
                 metadata.encryption_type = 'omemo'
 
+                # Check if message is encrypted for us before attempting decryption
+                # Parse OMEMO header to get recipient device IDs
+                try:
+                    from xml.etree import ElementTree as ET
+                    encrypted_el = actual_msg.xml.find('.//{eu.siacs.conversations.axolotl}encrypted')
+                    if encrypted_el is not None:
+                        # Get all recipient device IDs from <key rid="..."> elements
+                        recipient_device_ids = set()
+                        for key_el in encrypted_el.findall('.//{eu.siacs.conversations.axolotl}key'):
+                            rid = key_el.attrib.get('rid')
+                            if rid:
+                                recipient_device_ids.add(int(rid))
+
+                        # Get our own device ID
+                        session_manager = await xep_0384.get_session_manager()
+                        our_device_info, _ = await session_manager.get_own_device_information()
+                        our_device_id = our_device_info.device_id
+
+                        # Skip if message is not encrypted for us
+                        if our_device_id not in recipient_device_ids:
+                            self.logger.debug(
+                                f"Skipping carbon_received: OMEMO encrypted for devices {recipient_device_ids}, "
+                                f"not for our device {our_device_id}"
+                            )
+                            return
+                except Exception as e:
+                    self.logger.warning(f"Failed to parse OMEMO header for device check: {e}")
+                    # Continue with decryption attempt (might be slixmpp API change)
+
                 try:
                     # Decrypt the message
                     decrypted_msg, device_info = await xep_0384.decrypt_message(actual_msg)
@@ -1618,6 +1684,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                     body = "[Failed to decrypt OMEMO message]"
                     actual_msg['body'] = body
                     self.logger.error(f"Failed to decrypt OMEMO carbon_received from {from_jid}: {e}")
+                    # Note: We continue storing - this indicates a real OMEMO issue that should be visible
 
         # Update has_body after potential decryption
         metadata.has_body = bool(body)
@@ -1746,6 +1813,35 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                 metadata.is_encrypted = True
                 metadata.encryption_type = 'omemo'
 
+                # Check if message is encrypted for us before attempting decryption
+                # Parse OMEMO header to get recipient device IDs
+                try:
+                    from xml.etree import ElementTree as ET
+                    encrypted_el = actual_msg.xml.find('.//{eu.siacs.conversations.axolotl}encrypted')
+                    if encrypted_el is not None:
+                        # Get all recipient device IDs from <key rid="..."> elements
+                        recipient_device_ids = set()
+                        for key_el in encrypted_el.findall('.//{eu.siacs.conversations.axolotl}key'):
+                            rid = key_el.attrib.get('rid')
+                            if rid:
+                                recipient_device_ids.add(int(rid))
+
+                        # Get our own device ID
+                        session_manager = await xep_0384.get_session_manager()
+                        our_device_info, _ = await session_manager.get_own_device_information()
+                        our_device_id = our_device_info.device_id
+
+                        # Skip if message is not encrypted for us
+                        if our_device_id not in recipient_device_ids:
+                            self.logger.debug(
+                                f"Skipping carbon_sent: OMEMO encrypted for devices {recipient_device_ids}, "
+                                f"not for our device {our_device_id}"
+                            )
+                            return
+                except Exception as e:
+                    self.logger.warning(f"Failed to parse OMEMO header for device check: {e}")
+                    # Continue with decryption attempt (might be slixmpp API change)
+
                 try:
                     # Decrypt the message
                     decrypted_msg, device_info = await xep_0384.decrypt_message(actual_msg)
@@ -1759,6 +1855,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                     body = "[Failed to decrypt OMEMO message]"
                     actual_msg['body'] = body
                     self.logger.error(f"Failed to decrypt OMEMO carbon_sent to {to_jid}: {e}")
+                    # Note: We continue storing - this indicates a real OMEMO issue that should be visible
 
         # Update has_body after potential decryption
         metadata.has_body = bool(body)

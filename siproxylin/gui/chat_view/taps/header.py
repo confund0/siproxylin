@@ -592,9 +592,9 @@ class ChatHeaderWidget(QFrame):
         self.contact_label.setFont(font)
 
         # Update account label (now shown under contact name with "Via:" prefix)
-        account_info = self.db.fetchone("SELECT bare_jid, alias FROM account WHERE id = ?", (account_id,))
+        account_info = self.db.fetchone("SELECT bare_jid, nickname FROM account WHERE id = ?", (account_id,))
         if account_info:
-            account_display = account_info['alias'] or account_info['bare_jid']
+            account_display = account_info['nickname'] or account_info['bare_jid']
             self.account_label.setText(f"Via: {account_display}")
         else:
             self.account_label.setText("")

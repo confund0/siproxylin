@@ -332,6 +332,7 @@ class ChatViewWidget(QWidget):
             """, (account_id, jid))
             display_name = muc_room['name'] if (muc_room and muc_room['name']) else jid
             base_contact_name = f"👥 {display_name}"
+            roster_name = None  # MUCs don't have roster names
             is_blocked = False
             # MUCs cannot be blocked - always enable input (users leave room instead)
             self._set_input_enabled(True)

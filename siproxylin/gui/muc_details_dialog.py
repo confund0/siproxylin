@@ -621,8 +621,9 @@ class MUCDetailsDialog(QDialog):
                 else:
                     # Get account data for default nick
                     account = self.account_manager.get_account(self.account_id)
-                    account_data = self.db.fetchone("SELECT alias, bare_jid FROM account WHERE id = ?", (self.account_id,))
-                    nick = (account_data.get('alias') or
+                    account_data = self.db.fetchone("SELECT muc_nickname, nickname, bare_jid FROM account WHERE id = ?", (self.account_id,))
+                    nick = (account_data.get('muc_nickname') or
+                           account_data.get('nickname') or
                            account_data.get('bare_jid', '').split('@')[0] or
                            'User') if account_data else 'User'
 
@@ -658,8 +659,9 @@ class MUCDetailsDialog(QDialog):
                 if bookmark and bookmark['nick']:
                     nick_db = bookmark['nick']
                 else:
-                    account_data = self.db.fetchone("SELECT alias, bare_jid FROM account WHERE id = ?", (self.account_id,))
-                    nick_db = (account_data.get('alias') or
+                    account_data = self.db.fetchone("SELECT muc_nickname, nickname, bare_jid FROM account WHERE id = ?", (self.account_id,))
+                    nick_db = (account_data.get('muc_nickname') or
+                              account_data.get('nickname') or
                               account_data.get('bare_jid', '').split('@')[0] or
                               'User') if account_data else 'User'
 

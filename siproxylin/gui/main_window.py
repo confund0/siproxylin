@@ -240,7 +240,7 @@ class MainWindow(QMainWindow):
         self.edit_menu.addSeparator()
 
         # Get all accounts from database
-        accounts = self.db.fetchall("SELECT id, bare_jid, alias FROM account ORDER BY id")
+        accounts = self.db.fetchall("SELECT id, bare_jid, nickname FROM account ORDER BY id")
 
         if not accounts:
             # No accounts yet
@@ -251,7 +251,7 @@ class MainWindow(QMainWindow):
             # Add menu item for each account
             for account in accounts:
                 account_id = account['id']
-                account_label = account['alias'] or account['bare_jid']
+                account_label = account['nickname'] or account['bare_jid']
 
                 edit_account_action = QAction(f"Account {account_id}: {account_label}...", self)
                 edit_account_action.triggered.connect(
@@ -377,7 +377,7 @@ class MainWindow(QMainWindow):
         accounts_log_menu = logs_menu.addMenu("&Accounts")
 
         # Get all accounts from database
-        accounts = self.db.fetchall("SELECT id, bare_jid, alias FROM account ORDER BY id")
+        accounts = self.db.fetchall("SELECT id, bare_jid, nickname FROM account ORDER BY id")
 
         if not accounts:
             # No accounts yet
@@ -388,7 +388,7 @@ class MainWindow(QMainWindow):
             # Add app log entry for each account
             for account in accounts:
                 account_id = account['id']
-                account_label = account['alias'] or account['bare_jid']
+                account_label = account['nickname'] or account['bare_jid']
 
                 # View -> Logs -> Accounts -> {account_label}
                 app_log_action = QAction(f"{account_label}", self)
@@ -706,9 +706,9 @@ class MainWindow(QMainWindow):
                 if not account or not account.is_connected():
                     continue
 
-            account_data = self.db.fetchone("SELECT bare_jid, alias FROM account WHERE id = ?", (account_id,))
+            account_data = self.db.fetchone("SELECT bare_jid, nickname FROM account WHERE id = ?", (account_id,))
             if account_data:
-                display_name = account_data['alias'] or account_data['bare_jid']
+                display_name = account_data['nickname'] or account_data['bare_jid']
                 accounts.append(f"Account {account_id}: {display_name}")
                 account_ids.append(account_id)
 
@@ -2118,10 +2118,12 @@ class MainWindow(QMainWindow):
                 )
                 return
 
-            # Get account nickname for MUC (with fallbacks)
-            account_data = self.db.fetchone("SELECT alias, bare_jid FROM account WHERE id = ?", (account_id,))
-            if account_data and account_data['alias']:
-                nick = account_data['alias']
+            # Get account nickname for MUC (with fallbacks: muc_nickname > nickname > JID localpart)
+            account_data = self.db.fetchone("SELECT muc_nickname, nickname, bare_jid FROM account WHERE id = ?", (account_id,))
+            if account_data and account_data['muc_nickname']:
+                nick = account_data['muc_nickname']
+            elif account_data and account_data['nickname']:
+                nick = account_data['nickname']
             elif account_data and account_data['bare_jid']:
                 # Fallback: use localpart of JID
                 nick = account_data['bare_jid'].split('@')[0]
