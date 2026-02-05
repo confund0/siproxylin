@@ -374,6 +374,10 @@ class ChatHeaderWidget(QFrame):
         self.muc_info_refresh_timer.timeout.connect(self._refresh_muc_info_once)
         self.muc_refresh_attempts = 0
 
+        # Track MUC join error signal connection
+        self._muc_error_connection = None
+        self._muc_error_account_id = None  # Track which account we're connected to
+
         # Search result delegates (created in _setup_ui, stored for theme updates)
         self.search_dropdown_delegate = None
         self.search_modal_delegate = None
@@ -612,19 +616,51 @@ class ChatHeaderWidget(QFrame):
 
         # Update visibility based on conversation type
         if is_muc:
+            # MUC room: show MUC-specific UI elements
             self.presence_indicator.hide()
-            self._update_muc_info()
             self.participant_count_label.show()
+            # Note: join_room_button visibility is managed by _update_muc_info() based on join status
+            self._update_muc_info()
 
             # Start refresh timer if participant count is not loaded yet
             self.muc_refresh_attempts = 0
             self.muc_info_refresh_timer.start(2000)  # Check every 2 seconds
+
+            # Connect to MUC join error signal for this account
+            # Disconnect previous signal if connected to different account
+            if self._muc_error_connection and self._muc_error_account_id is not None:
+                prev_account = self.account_manager.get_account(self._muc_error_account_id)
+                if prev_account:
+                    try:
+                        prev_account.muc_join_error.disconnect(self._muc_error_connection)
+                    except:
+                        pass  # Signal may not be connected
+
+            # Connect to new account's signal
+            account = self.account_manager.get_account(account_id)
+            if account:
+                self._muc_error_connection = self._on_muc_join_error
+                account.muc_join_error.connect(self._muc_error_connection)
+                self._muc_error_account_id = account_id
         else:
+            # 1-1 chat: show presence indicator, hide MUC elements
             self._update_presence_indicator()
             self.presence_indicator.show()
             self.participant_count_label.hide()
             self.room_subject_label.hide()
+            self.join_room_button.hide()
             self.muc_info_refresh_timer.stop()
+
+            # Disconnect MUC error signal when not in MUC
+            if self._muc_error_connection and self._muc_error_account_id is not None:
+                account = self.account_manager.get_account(self._muc_error_account_id)
+                if account:
+                    try:
+                        account.muc_join_error.disconnect(self._muc_error_connection)
+                    except:
+                        pass
+                self._muc_error_connection = None
+                self._muc_error_account_id = None
 
         # Load and display avatar
         self._update_avatar()
@@ -919,8 +955,10 @@ class ChatHeaderWidget(QFrame):
 
                 # Update UI will happen automatically via roster_updated signal
                 # and _update_muc_info will be called by the refresh timer
+                # Error handling is done via muc_join_error signal (see _on_muc_join_error)
 
             except Exception as e:
+                # This catches exceptions from the join call itself (not server errors)
                 logger.error(f"Failed to join room {self.current_jid}: {e}")
                 QMessageBox.critical(self, "Join Failed", f"Failed to join room:\n{e}")
 
@@ -931,6 +969,43 @@ class ChatHeaderWidget(QFrame):
         # Use QTimer to schedule the async task (avoids nested task issues)
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, lambda: asyncio.create_task(do_join()))
+
+    def _on_muc_join_error(self, room_jid: str, friendly_msg: str, server_details: str):
+        """
+        Handle MUC join error signal.
+
+        Called when server rejects our join attempt (e.g., members-only, banned, etc.).
+
+        Args:
+            room_jid: Room JID that failed to join
+            friendly_msg: User-friendly error message
+            server_details: Server error details (condition code + text)
+        """
+        # Only handle errors for the currently displayed room
+        if room_jid != self.current_jid:
+            return
+
+        logger.warning(f"MUC join error for {room_jid}: {friendly_msg}")
+
+        # Stop the MUC roster refresh timer (join failed, no roster to load)
+        if self.muc_info_refresh_timer.isActive():
+            self.muc_info_refresh_timer.stop()
+            logger.debug(f"Stopped MUC roster timer for {room_jid} (join failed)")
+
+        # Re-enable join button
+        self.join_room_button.setEnabled(True)
+        self.join_room_button.setText("Join Room")
+
+        # Format error message: friendly message on first line, server details in parentheses on second
+        error_message = f"{friendly_msg}\n\n({server_details})"
+
+        # Show non-blocking error dialog (use .show() instead of .exec() to avoid blocking async event loop)
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Critical)
+        msg_box.setWindowTitle("Cannot Join Room")
+        msg_box.setText(error_message)
+        msg_box.setStandardButtons(QMessageBox.Ok)
+        msg_box.show()  # Non-blocking
 
     def _on_spell_check_button_clicked(self):
         """Show spell check menu when button is clicked."""

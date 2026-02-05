@@ -165,6 +165,7 @@ class ConnectionBarrel:
                 on_bookmarks_received_callback=callbacks.get('on_bookmarks_received_callback'),
                 on_muc_invite_callback=callbacks.get('on_muc_invite_callback'),
                 on_muc_joined_callback=callbacks.get('on_muc_joined_callback'),
+                on_muc_join_error_callback=callbacks.get('on_muc_join_error_callback'),
                 on_room_config_changed_callback=callbacks.get('on_room_config_changed_callback'),
                 on_message_correction_callback=callbacks.get('on_message_correction_callback'),
                 on_avatar_update_callback=callbacks.get('on_avatar_update_callback'),

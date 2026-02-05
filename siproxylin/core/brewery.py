@@ -59,6 +59,7 @@ class XMPPAccount(QObject):
     chat_state_changed = Signal(int, str, str)  # (account_id, from_jid, state) - typing indicators
     presence_changed = Signal(int, str, str)  # (account_id, jid, presence) - contact presence changed
     muc_invite_received = Signal(int, str, str, str, str)  # (account_id, room_jid, inviter_jid, reason, password)
+    muc_join_error = Signal(str, str, str)  # (room_jid, friendly_message, server_error_text)
     avatar_updated = Signal(int, str)  # (account_id, jid) - avatar fetched/updated
     nickname_updated = Signal(int, str, str)  # (account_id, jid, nickname) - contact nickname updated (XEP-0172)
     subscription_request_received = Signal(int, str)  # (account_id, from_jid) - incoming subscription request
@@ -119,6 +120,7 @@ class XMPPAccount(QObject):
             'nickname_updated': self.nickname_updated,
             'message_received': self.message_received,
             'chat_state_changed': self.chat_state_changed,
+            'muc_join_error': self.muc_join_error,
             'call_incoming': self.call_incoming,
             'call_initiated': self.call_initiated,
             'call_accepted': self.call_accepted,
@@ -250,6 +252,7 @@ class XMPPAccount(QObject):
             'on_bookmarks_received_callback': self.muc.sync_bookmarks,
             'on_muc_invite_callback': self.muc.on_muc_invite,
             'on_muc_joined_callback': self.muc.on_muc_joined,
+            'on_muc_join_error_callback': self.muc.on_muc_join_error,
             'on_room_config_changed_callback': self.muc.on_room_config_changed,
             'on_message_correction_callback': self.messages._on_message_correction,
             'on_avatar_update_callback': self.avatars.on_avatar_update,

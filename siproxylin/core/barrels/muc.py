@@ -767,6 +767,47 @@ class MucBarrel:
                 import traceback
                 self.logger.error(traceback.format_exc())
 
+    async def on_muc_join_error(self, room_jid: str, error_condition: str, error_text: str):
+        """
+        Handle MUC join errors and emit Qt signal for UI.
+
+        Called by DrunkXMPP when joining a room fails due to server rejection.
+
+        Args:
+            room_jid: Room JID that failed to join
+            error_condition: XMPP error condition (e.g., 'registration-required', 'forbidden')
+            error_text: Human-readable error message from server
+        """
+        if self.logger:
+            self.logger.warning(f"MUC join error for {room_jid}: {error_condition} - {error_text}")
+
+        # Map XMPP error conditions to user-friendly messages
+        error_map = {
+            'registration-required': 'Membership required to join this room',
+            'forbidden': 'You are banned from this room',
+            'not-authorized': 'Password incorrect or authorization failed',
+            'conflict': 'Nickname already in use',
+            'service-unavailable': 'Room does not exist or is unavailable',
+            'item-not-found': 'Room does not exist',
+            'not-allowed': 'You are not allowed to join this room',
+            'jid-malformed': 'Invalid room address',
+        }
+
+        # Get user-friendly message (fallback to generic message if not mapped)
+        friendly_msg = error_map.get(error_condition, 'Failed to join room')
+
+        # Build server details for second line (always include condition code)
+        server_details = f"Server message: {error_condition}"
+        if error_text:
+            server_details += f": {error_text}"
+
+        # Emit signal for GUI to display error dialog
+        if 'muc_join_error' in self.signals:
+            self.signals['muc_join_error'].emit(room_jid, friendly_msg, server_details)
+        else:
+            if self.logger:
+                self.logger.warning("muc_join_error signal not registered - error not propagated to UI")
+
     # =========================================================================
     # MUC Service Layer API (for GUI abstraction)
     # =========================================================================

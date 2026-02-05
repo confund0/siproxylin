@@ -298,6 +298,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         on_bookmarks_received_callback: Optional[Callable] = None,
         on_muc_invite_callback: Optional[Callable] = None,
         on_muc_joined_callback: Optional[Callable] = None,
+        on_muc_join_error_callback: Optional[Callable] = None,
         on_message_correction_callback: Optional[Callable] = None,
         on_room_config_changed_callback: Optional[Callable] = None,
         on_avatar_update_callback: Optional[Callable] = None,
@@ -407,6 +408,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.on_bookmarks_received_callback = on_bookmarks_received_callback
         self.on_muc_invite_callback = on_muc_invite_callback
         self.on_muc_joined_callback = on_muc_joined_callback
+        self.on_muc_join_error_callback = on_muc_join_error_callback
         self.on_message_correction_callback = on_message_correction_callback
         self.on_room_config_changed_callback = on_room_config_changed_callback
         self.on_avatar_update_callback = on_avatar_update_callback
@@ -584,7 +586,9 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.add_event_handler("muc::%s::self-presence" % '*', self._on_muc_presence)
         self.add_event_handler("muc::%s::got-online" % '*', self._on_muc_presence)
         self.add_event_handler("muc::%s::got-offline" % '*', self._on_muc_presence)
-        self.add_event_handler("muc::%s::presence-error" % '*', self._on_muc_error)
+        # MUC join errors: presence_error is the only event that fires for MUC errors
+        # (muc::*::presence-error exists but slixmpp's XEP-0045 doesn't propagate it)
+        self.add_event_handler("presence_error", self._on_muc_error)
         self.add_event_handler("groupchat_invite", self._on_groupchat_invite)
 
         # Subscription events (roster management)
@@ -906,10 +910,35 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             self.logger.error(traceback.format_exc())
 
     async def _on_muc_error(self, presence):
-        """Handler for MUC presence errors."""
+        """
+        Handler for MUC presence errors.
+
+        Called when joining a room fails (e.g., banned, members-only, password incorrect).
+        This handles the generic 'presence_error' event and filters for MUC rooms.
+        """
         room = presence['from'].bare
+
+        # Only process if this is a MUC room we're trying to join
+        if room not in self.rooms:
+            return  # Not a MUC room
+
         error = presence['error']
-        self.logger.error(f"MUC error in {room}: {error['condition']} - {error.get('text', '')}")
+        if not error:
+            return  # No error in presence
+
+        condition = error['condition']
+        text = error.get('text', '')
+
+        self.logger.error(f"MUC join error for {room}: {condition} - {text}")
+
+        # Fire callback for UI notification
+        if self.on_muc_join_error_callback:
+            try:
+                await self.on_muc_join_error_callback(room, condition, text)
+            except Exception as e:
+                self.logger.error(f"Error in on_muc_join_error_callback: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
 
     async def _on_groupchat_invite(self, inv):
         """

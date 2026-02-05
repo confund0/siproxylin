@@ -43,6 +43,7 @@ class XMPPAccount(QObject):
     chat_state_changed = Signal(int, str, str)  # (account_id, from_jid, state)
     presence_changed = Signal(int, str, str)  # (account_id, jid, presence)
     muc_invite_received = Signal(int, str, str, str, str)  # (account_id, room, inviter, reason, password)
+    muc_join_error = Signal(str, str, str)  # (room_jid, friendly_message, server_error_text)
     avatar_updated = Signal(int, str)  # (account_id, jid)
     subscription_request_received = Signal(int, str)  # (account_id, from_jid)
     subscription_changed = Signal(int, str, str)  # (account_id, from_jid, change_type)
