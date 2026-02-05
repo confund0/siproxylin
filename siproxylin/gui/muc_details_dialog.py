@@ -124,6 +124,11 @@ class MUCDetailsDialog(QDialog):
         self.room_jid_label.setStyleSheet("color: gray;")
         info_layout.addWidget(self.room_jid_label)
 
+        # Our affiliation and role status
+        self.our_status_label = QLabel()
+        self.our_status_label.setStyleSheet("color: #0066cc; font-size: 10pt;")
+        info_layout.addWidget(self.our_status_label)
+
         info_layout.addStretch()
         header_layout.addLayout(info_layout)
         header_layout.addStretch()
@@ -139,9 +144,21 @@ class MUCDetailsDialog(QDialog):
         subject_layout.addWidget(self.subject_label)
         layout.addWidget(subject_group)
 
-        # Room Features
+        # Room Features (with Refresh button)
         features_group = QGroupBox("Room Features (XEP-0045)")
-        features_layout = QFormLayout(features_group)
+        features_main_layout = QVBoxLayout(features_group)
+
+        # Refresh button at top
+        refresh_button_layout = QHBoxLayout()
+        refresh_button_layout.addStretch()
+        self.refresh_config_button = QPushButton("🔄 Refresh Configuration")
+        self.refresh_config_button.setToolTip("Manually refresh room configuration from server")
+        self.refresh_config_button.clicked.connect(self._on_refresh_config)
+        refresh_button_layout.addWidget(self.refresh_config_button)
+        features_main_layout.addLayout(refresh_button_layout)
+
+        # Features form
+        features_layout = QFormLayout()
         features_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
         self.persistent_label = QLabel()
@@ -162,6 +179,7 @@ class MUCDetailsDialog(QDialog):
         self.nonanonymous_label = QLabel()
         features_layout.addRow("Non-anonymous:", self.nonanonymous_label)
 
+        features_main_layout.addLayout(features_layout)
         layout.addWidget(features_group)
 
         # OMEMO Compatibility
@@ -356,6 +374,56 @@ class MUCDetailsDialog(QDialog):
             self.omemo_compatible_label.setStyleSheet("color: gray;")
             self.subject_label.setText("(Subject not yet available)")
 
+        # Display our affiliation and role in the room
+        affiliation = account.muc.get_own_affiliation(self.room_jid)
+        role = account.muc.get_own_role(self.room_jid)
+
+        if affiliation and role:
+            # Format affiliation with emoji/icon
+            affiliation_icons = {
+                'owner': '👑',
+                'admin': '⚙️',
+                'member': '👤',
+                'none': '👻',
+                'outcast': '🚫'
+            }
+            role_icons = {
+                'moderator': '🛡️',
+                'participant': '💬',
+                'visitor': '👁️',
+                'none': '🔇'
+            }
+
+            affiliation_icon = affiliation_icons.get(affiliation, '❓')
+            role_icon = role_icons.get(role, '❓')
+
+            # Capitalize first letter of affiliation/role
+            affiliation_display = affiliation.capitalize()
+            role_display = role.capitalize()
+
+            self.our_status_label.setText(
+                f"{affiliation_icon} {affiliation_display} · {role_icon} {role_display}"
+            )
+        else:
+            self.our_status_label.setText("⏳ Status not yet available")
+
+        # Update refresh button state based on ownership
+        # Only owners can query room configuration (XEP-0045 §10)
+        is_owner = account.muc.is_room_owner(self.room_jid)
+        self.refresh_config_button.setEnabled(is_owner)
+
+        if is_owner:
+            self.refresh_config_button.setToolTip("Refresh room configuration from server (owner privilege)")
+        else:
+            if affiliation:
+                self.refresh_config_button.setToolTip(
+                    f"Only room owners can refresh configuration (you are: {affiliation})"
+                )
+            else:
+                self.refresh_config_button.setToolTip(
+                    "Only room owners can refresh configuration (not yet joined)"
+                )
+
         # Load avatar
         try:
             avatar_pixmap = get_avatar_pixmap(
@@ -545,6 +613,49 @@ class MUCDetailsDialog(QDialog):
             import traceback
             logger.error(traceback.format_exc())
             QMessageBox.critical(self, "Error", f"Failed to save settings: {e}")
+
+    def _on_refresh_config(self):
+        """Manually refresh room configuration from server."""
+        account = self.account_manager.get_account(self.account_id)
+        if not account:
+            QMessageBox.warning(self, "Error", "Account not found")
+            return
+
+        # Disable button during refresh
+        self.refresh_config_button.setEnabled(False)
+        self.refresh_config_button.setText("🔄 Refreshing...")
+
+        async def do_refresh():
+            try:
+                # Fetch and cache room config
+                success = await account.muc.fetch_and_store_room_config(self.room_jid)
+
+                if success:
+                    # Reload room info to display updated values
+                    self._load_room_info()
+                    QMessageBox.information(
+                        self,
+                        "Refresh Complete",
+                        "Room configuration has been refreshed from the server."
+                    )
+                else:
+                    QMessageBox.warning(
+                        self,
+                        "Refresh Failed",
+                        "Could not fetch room configuration. You may not have owner permissions."
+                    )
+
+            except Exception as e:
+                logger.error(f"Failed to refresh room config: {e}")
+                QMessageBox.critical(self, "Error", f"Failed to refresh: {e}")
+
+            finally:
+                # Re-enable button
+                self.refresh_config_button.setEnabled(True)
+                self.refresh_config_button.setText("🔄 Refresh Configuration")
+
+        # Run async task
+        asyncio.create_task(do_refresh())
 
     def _on_leave_room(self):
         """Handle Leave Room button click - emit signal for main_window to handle."""

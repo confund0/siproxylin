@@ -438,6 +438,13 @@ class ChatHeaderWidget(QFrame):
         self.participant_count_label.hide()
         subtitle_layout.addWidget(self.participant_count_label)
 
+        # Join Room button (MUC only, shown when not joined)
+        self.join_room_button = QPushButton("Join Room")
+        self.join_room_button.setStyleSheet("QPushButton { background-color: #5cb85c; color: white; padding: 4px 12px; border-radius: 3px; }")
+        self.join_room_button.clicked.connect(self._on_join_room_clicked)
+        self.join_room_button.hide()
+        subtitle_layout.addWidget(self.join_room_button)
+
         # Blocked indicator (XEP-0191, 1-1 chats only)
         self.blocked_indicator = QLabel("🚫 Blocked")
         self.blocked_indicator.setStyleSheet("color: #ff6b6b; font-weight: bold; font-size: 10pt;")
@@ -806,8 +813,10 @@ class ChatHeaderWidget(QFrame):
                 room_joined = self.current_jid in account.client.joined_rooms
 
                 if not room_joined:
-                    # Still joining room
-                    self.participant_count_label.setText("👥 ⏳ Joining...")
+                    # Room is bookmarked but not joined - show status and join button
+                    self.participant_count_label.setText("👥 Not joined")
+                    self.participant_count_label.show()
+                    self.join_room_button.show()
                     return False
 
                 # Query slixmpp's in-memory MUC roster (XEP-0045) - same as muc_details_dialog.py
@@ -833,11 +842,15 @@ class ChatHeaderWidget(QFrame):
 
                     total_count = len(unique_jids) + anonymous_count
                     self.participant_count_label.setText(f"👥 {total_count}")
+                    self.participant_count_label.show()
+                    self.join_room_button.hide()  # Hide join button when successfully joined
                     logger.debug(f"MUC participant count updated: {total_count} ({len(unique_jids)} identified + {anonymous_count} anonymous)")
                     return True
                 else:
                     # Empty roster (shouldn't happen after join)
                     self.participant_count_label.setText("👥 0")
+                    self.participant_count_label.show()
+                    self.join_room_button.hide()  # Hide join button
                     return False
 
             except Exception as e:
@@ -872,6 +885,52 @@ class ChatHeaderWidget(QFrame):
             if self.muc_refresh_attempts >= 15:
                 self.muc_info_refresh_timer.stop()
                 logger.warning(f"MUC roster not loaded after 30 seconds for {self.current_jid}, stopping refresh timer")
+
+    def _on_join_room_clicked(self):
+        """Handle Join Room button click for bookmarked-but-not-joined MUC rooms."""
+        if not self.current_is_muc or not self.current_jid or not self.current_account_id:
+            return
+
+        account = self.account_manager.get_account(self.current_account_id)
+        if not account:
+            return
+
+        # Get bookmark info to get nickname
+        bookmark = account.muc.get_bookmark(self.current_jid)
+        if not bookmark:
+            logger.warning(f"No bookmark found for {self.current_jid}")
+            return
+
+        nick = bookmark.nick or account.jid.split('@')[0]
+        password = bookmark.password
+
+        logger.info(f"Joining MUC room {self.current_jid} as {nick} (triggered from chat header)")
+
+        # Disable button during join
+        self.join_room_button.setEnabled(False)
+        self.join_room_button.setText("Joining...")
+
+        async def do_join():
+            try:
+                # Use _perform_room_join directly (no DB transaction needed for rejoining)
+                # Room is already bookmarked, we just need to send join presence
+                await account.muc._perform_room_join(self.current_jid, nick, password)
+                logger.info(f"Successfully initiated join for {self.current_jid}")
+
+                # Update UI will happen automatically via roster_updated signal
+                # and _update_muc_info will be called by the refresh timer
+
+            except Exception as e:
+                logger.error(f"Failed to join room {self.current_jid}: {e}")
+                QMessageBox.critical(self, "Join Failed", f"Failed to join room:\n{e}")
+
+                # Re-enable button on error
+                self.join_room_button.setEnabled(True)
+                self.join_room_button.setText("Join Room")
+
+        # Use QTimer to schedule the async task (avoids nested task issues)
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: asyncio.create_task(do_join()))
 
     def _on_spell_check_button_clicked(self):
         """Show spell check menu when button is clicked."""

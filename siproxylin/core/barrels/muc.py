@@ -118,6 +118,9 @@ class MucBarrel:
         """
         Add a room to the client's configuration and join it.
 
+        This is typically called when user manually joins a room via GUI.
+        Room metadata (features, config) will be fetched in on_muc_joined callback.
+
         Args:
             room_jid: Room JID
             nick: Nickname to use
@@ -126,62 +129,16 @@ class MucBarrel:
         if not self.client:
             raise RuntimeError("Not connected")
 
-        # Check if room is already joined (to avoid duplicate MAM retrieval)
-        already_joined = room_jid in self.client.rooms
-
         if self.logger:
-            if already_joined:
-                self.logger.debug(f"Room already joined: {room_jid}, skipping MAM retrieval")
-            else:
-                self.logger.info(f"Adding and joining room: {room_jid} as {nick}")
+            self.logger.info(f"Adding and joining room: {room_jid} as {nick}")
 
         # Start database transaction for atomicity
         db = get_db()
         try:
             db.execute("BEGIN")
 
-            # Add to client's rooms dictionary
-            self.client.rooms[room_jid] = {
-                'nick': nick,
-                'password': password
-            }
-
-            # Join the room (no-op if already joined in slixmpp)
-            await self.client.join_room(room_jid, nick, password)
-
-            # Query room features ONCE and reuse result
-            disco_info = None
-            room_features = None
-            if not already_joined:
-                try:
-                    # Get room features (includes disco#info)
-                    room_features = await self.client.get_room_features(room_jid)
-
-                    # Update room OMEMO compatibility flags
-                    await self._update_room_features_from_dict(room_jid, room_features)
-
-                    # Extract room name if available
-                    room_name = room_features.get('name')
-                    if room_name:
-                        await self._update_bookmark_name(room_jid, room_name)
-
-                except Exception as e:
-                    if self.logger:
-                        self.logger.warning(f"Failed to query room features for {room_jid}: {e}")
-
-                # Attempt to fetch room configuration (owner-only, non-blocking)
-                try:
-                    await self.fetch_and_store_room_config(room_jid)
-                except Exception as e:
-                    if self.logger:
-                        self.logger.debug(f"Could not fetch room config for {room_jid}: {e}")
-
-            # Mark room for MAM retrieval after self-presence is received
-            # MAM will be retrieved by on_muc_joined callback to ensure OMEMO sessions are ready
-            if not already_joined:
-                self._pending_mam_rooms.add(room_jid)
-                if self.logger:
-                    self.logger.debug(f"Room {room_jid} marked for MAM retrieval after join completes")
+            # Perform the join (adds to rooms dict, sends presence, marks for MAM)
+            await self._perform_room_join(room_jid, nick, password)
 
             # Commit transaction
             db.commit()
@@ -310,20 +267,97 @@ class MucBarrel:
                 self.logger.error(traceback.format_exc())
             return False
 
+    async def _perform_room_join(self, room_jid: str, nick: str, password: str = None) -> bool:
+        """
+        Core room join logic (no metadata fetching).
+
+        This is a helper method that handles the mechanics of joining a room:
+        - Adds to client.rooms dict
+        - Sends join presence
+        - Marks for MAM retrieval
+
+        Metadata fetching (features, config) happens later in on_muc_joined callback.
+
+        Args:
+            room_jid: Room JID
+            nick: Nickname to use
+            password: Room password (optional)
+
+        Returns:
+            True if this is a NEW join (not already joined), False if already joined
+        """
+        if not self.client:
+            raise RuntimeError("Not connected")
+
+        # Check if room is already joined (to avoid duplicate MAM retrieval)
+        already_joined = room_jid in self.client.rooms
+
+        if self.logger:
+            if already_joined:
+                self.logger.debug(f"Room already joined: {room_jid}, skipping duplicate join")
+            else:
+                self.logger.info(f"Joining room: {room_jid} as {nick}")
+
+        # Add to client's rooms dictionary
+        self.client.rooms[room_jid] = {
+            'nick': nick,
+            'password': password
+        }
+
+        # Join the room (DrunkXMPP handles duplicate join protection)
+        await self.client.join_room(room_jid, nick, password)
+
+        # Mark room for MAM retrieval after self-presence is received
+        # (only for new joins, not re-joins of already joined rooms)
+        if not already_joined:
+            self._pending_mam_rooms.add(room_jid)
+            if self.logger:
+                self.logger.debug(f"Room {room_jid} marked for MAM retrieval after join completes")
+
+        return not already_joined  # True = new join, False = already joined
+
     async def on_muc_joined(self, room_jid: str, nick: str):
         """
         Callback fired when MUC room join is complete (self-presence received).
         This is called by DrunkXMPP after status code 110 presence is received,
         ensuring OMEMO device sessions are established before MAM retrieval.
 
+        Fetches room metadata (features, config) and then retrieves MAM history.
+
         Args:
             room_jid: Room JID
             nick: Our nickname in the room
         """
         if self.logger:
-            self.logger.debug(f"MUC join complete for {room_jid} as {nick}, checking for pending MAM")
+            self.logger.debug(f"MUC join complete for {room_jid} as {nick}")
 
-        # Check if this room has pending MAM retrieval
+        # Phase 1: Fetch room metadata (features and config)
+        # Do this AFTER join is confirmed (we're now an occupant)
+        try:
+            # Query room features (disco#info) for OMEMO compatibility
+            room_features = await self.client.get_room_features(room_jid)
+            await self._update_room_features_from_dict(room_jid, room_features)
+
+            # Update bookmark name if available
+            room_name = room_features.get('name')
+            if room_name:
+                await self._update_bookmark_name(room_jid, room_name)
+
+            if self.logger:
+                self.logger.debug(f"✓ Room features updated for {room_jid}")
+
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"Failed to fetch room features for {room_jid}: {e}")
+
+        # Phase 2: Fetch room configuration (owner-only, may fail gracefully)
+        try:
+            await self.fetch_and_store_room_config(room_jid)
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"Could not fetch room config for {room_jid}: {e}")
+
+        # Phase 3: Retrieve MAM history (if this was a new join)
         if room_jid in self._pending_mam_rooms:
             self._pending_mam_rooms.remove(room_jid)
             if self.logger:
@@ -520,7 +554,9 @@ class MucBarrel:
     async def auto_join_bookmarked_rooms(self):
         """
         Auto-join rooms marked for autojoin in database.
-        Called on session start.
+
+        Called on session start (after OMEMO ready).
+        Room metadata (features, config) will be fetched in on_muc_joined callback.
         """
         if self.logger:
             self.logger.info("Checking for rooms to auto-join...")
@@ -550,39 +586,8 @@ class MucBarrel:
                 self.logger.info(f"Auto-joining room: {room_jid} as {nick}")
 
             try:
-                # Add to client's rooms dictionary first (so duplicate join detection works)
-                self.client.rooms[room_jid] = {
-                    'nick': nick,
-                    'password': password
-                }
-
-                await self.client.join_room(room_jid, nick, password)
-
-                # Mark room for MAM retrieval after self-presence is received
-                # MAM will be retrieved by on_muc_joined callback to ensure OMEMO sessions are ready
-                self._pending_mam_rooms.add(room_jid)
-                if self.logger:
-                    self.logger.debug(f"Room {room_jid} marked for MAM retrieval after join completes")
-
-                # Query room features for OMEMO compatibility (XEP-0384)
-                try:
-                    room_features = await self.client.get_room_features(room_jid)
-                    await self._update_room_features_from_dict(room_jid, room_features)
-
-                    # Update room name if available
-                    room_name = room_features.get('name')
-                    if room_name:
-                        await self._update_bookmark_name(room_jid, room_name)
-                except Exception as e:
-                    if self.logger:
-                        self.logger.warning(f"Failed to query room features for {room_jid}: {e}")
-
-                # Attempt to fetch room configuration (owner-only, non-blocking)
-                try:
-                    await self.fetch_and_store_room_config(room_jid)
-                except Exception as e:
-                    if self.logger:
-                        self.logger.debug(f"Could not fetch room config for {room_jid}: {e}")
+                # Perform the join (adds to rooms dict, sends presence, marks for MAM)
+                await self._perform_room_join(room_jid, nick, password)
 
             except Exception as e:
                 if self.logger:
@@ -707,15 +712,27 @@ class MucBarrel:
     async def on_room_config_changed(self, room_jid: str, room_name: str):
         """
         Handle room configuration change (status code 104).
-        Updates the bookmark name in the database.
+
+        Refreshes cached room config and updates bookmark name in database.
+        This is called automatically when the server sends status code 104.
 
         Args:
             room_jid: The bare JID of the room
             room_name: The new room name from disco#info
         """
         if self.logger:
-            self.logger.info(f"Room config changed: {room_jid} -> {room_name}")
+            self.logger.info(f"Room config changed (status 104): {room_jid} -> {room_name}")
 
+        # Refresh room configuration cache (owner-only, may fail gracefully)
+        try:
+            await self.fetch_and_store_room_config(room_jid)
+            if self.logger:
+                self.logger.info(f"✓ Refreshed room config cache for {room_jid}")
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"Could not refresh room config for {room_jid}: {e}")
+
+        # Update bookmark name in database
         try:
             db = get_db()
 
@@ -738,7 +755,7 @@ class MucBarrel:
 
             db.commit()
 
-            # Emit roster_updated to refresh GUI
+            # Emit roster_updated to refresh GUI (updates room list and details dialog)
             self.signals['roster_updated'].emit(self.account_id)
 
             if self.logger:
@@ -1076,6 +1093,59 @@ class MucBarrel:
                 self.logger.error(f"Failed to get participants for {room_jid}: {e}")
 
         return participants
+
+    def get_own_affiliation(self, room_jid: str) -> Optional[str]:
+        """
+        Get our own affiliation in a room.
+
+        Args:
+            room_jid: Room JID
+
+        Returns:
+            Affiliation string (owner, admin, member, none, outcast) or None if not joined
+        """
+        if not self.client:
+            return None
+        return self.client.own_affiliations.get(room_jid)
+
+    def get_own_role(self, room_jid: str) -> Optional[str]:
+        """
+        Get our own role in a room.
+
+        Args:
+            room_jid: Room JID
+
+        Returns:
+            Role string (moderator, participant, visitor, none) or None if not joined
+        """
+        if not self.client:
+            return None
+        return self.client.own_roles.get(room_jid)
+
+    def is_room_owner(self, room_jid: str) -> bool:
+        """
+        Check if we have owner affiliation in a room.
+
+        Args:
+            room_jid: Room JID
+
+        Returns:
+            True if we are an owner, False otherwise
+        """
+        return self.get_own_affiliation(room_jid) == 'owner'
+
+    def is_room_admin(self, room_jid: str) -> bool:
+        """
+        Check if we have admin affiliation in a room.
+
+        Args:
+            room_jid: Room JID
+
+        Returns:
+            True if we are an admin (or owner), False otherwise
+        """
+        affiliation = self.get_own_affiliation(room_jid)
+        return affiliation in ('owner', 'admin')
 
     def get_bookmark(self, room_jid: str) -> Optional[Bookmark]:
         """

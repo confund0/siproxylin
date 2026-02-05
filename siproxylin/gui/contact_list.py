@@ -259,6 +259,11 @@ class ContactListWidget(QWidget):
                 for room in rooms:
                     room_item = QTreeWidgetItem(account_item)
 
+                    # Check if room is actually joined (not just bookmarked)
+                    account = self.account_manager.get_account(account_id)
+                    is_joined = (account and account.client and
+                                room['bare_jid'] in account.client.joined_rooms)
+
                     # Create ContactDisplayData for MUC
                     room_data = ContactDisplayData(
                         jid=room['bare_jid'],
@@ -269,7 +274,8 @@ class ContactListWidget(QWidget):
                         roster_id=room['roster_id'],
                         bookmark_id=room['bookmark_id'],
                         autojoin=bool(room['autojoin']) if room['autojoin'] is not None else False,
-                        unread_count=unread_by_jid.get(room['bare_jid'], 0)
+                        unread_count=unread_by_jid.get(room['bare_jid'], 0),
+                        presence='available' if is_joined else 'unavailable'
                     )
 
                     # Store data model and update display

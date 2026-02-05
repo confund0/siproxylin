@@ -445,6 +445,12 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         # Key: room_jid (bare), Value: occupant_id string
         self.own_occupant_ids = {}
 
+        # Track our own affiliation and role per room (XEP-0045)
+        # Key: room_jid (bare), Value: affiliation string (owner, admin, member, none, outcast)
+        # Value: role string (moderator, participant, visitor, none)
+        self.own_affiliations = {}
+        self.own_roles = {}
+
         # Track user-initiated disconnect (don't auto-reconnect if True)
         self.user_disconnected = False
 
@@ -854,9 +860,13 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                     self.logger.warning(f"We left/got kicked from {room}")
                     if room in self.joined_rooms:
                         self.joined_rooms.remove(room)
-                    # Clear our occupant-id for this room
+                    # Clear our occupant-id, affiliation, and role for this room
                     if room in self.own_occupant_ids:
                         del self.own_occupant_ids[room]
+                    if room in self.own_affiliations:
+                        del self.own_affiliations[room]
+                    if room in self.own_roles:
+                        del self.own_roles[room]
                     # Attempt rejoin after delay
                     asyncio.create_task(self._rejoin_room_delayed(room, 5))
                 else:
@@ -866,6 +876,15 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                     if occupant_id:  # Check after assignment (empty string is falsy)
                         self.own_occupant_ids[room] = occupant_id
                         self.logger.debug(f"Captured our occupant-id in {room}: {occupant_id}")
+
+                    # Capture our affiliation and role (XEP-0045)
+                    # Available in presence via slixmpp's XEP-0045 plugin
+                    xep_0045 = self.plugin['xep_0045']
+                    affiliation = xep_0045.get_jid_property(room, nick, 'affiliation') or 'none'
+                    role = xep_0045.get_jid_property(room, nick, 'role') or 'participant'
+                    self.own_affiliations[room] = affiliation
+                    self.own_roles[room] = role
+                    self.logger.debug(f"Captured our affiliation in {room}: {affiliation}, role: {role}")
 
                     if room not in self.joined_rooms:
                         self.joined_rooms.add(room)
