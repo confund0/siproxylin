@@ -19,11 +19,12 @@ import (
 )
 
 var (
-	port        = flag.Int("port", 50051, "gRPC server port")
-	logLevel    = flag.String("log-level", "INFO", "Log level (DEBUG, INFO, WARN, ERROR)")
-	logPath     = flag.String("log-path", "", "Log file path (default: ../app/logs/drunk-call-service.log)")
-	testDevices = flag.Bool("test-devices", false, "Test device enumeration and exit")
-	testVideo   = flag.Int("test-video", 0, "Test video streaming on specified TCP port (e.g., 5004)")
+	port         = flag.Int("port", 50051, "gRPC server port")
+	logLevel     = flag.String("log-level", "INFO", "Log level (DEBUG, INFO, WARN, ERROR)")
+	logPath      = flag.String("log-path", "", "Log file path (default: ../app/logs/drunk-call-service.log)")
+	testDevices  = flag.Bool("test-devices", false, "Test device enumeration and exit")
+	testVideo    = flag.Int("test-video", 0, "Test video streaming on specified UDP port (e.g., 5004)")
+	cameraDevice = flag.String("camera-device", "/dev/video0", "Camera device to use (default: /dev/video0, use 'test' for test pattern)")
 )
 
 func main() {
@@ -51,14 +52,20 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Test mode: video streaming over TCP
+	// Test mode: video streaming over UDP
 	if *testVideo > 0 {
 		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 		fmt.Printf("=== Video Test Mode ===\n")
-		fmt.Printf("Streaming test pattern on TCP port %d\n", *testVideo)
+
+		sourceDesc := *cameraDevice
+		if *cameraDevice == "test" || *cameraDevice == "" {
+			sourceDesc = "test pattern (SMPTE bars)"
+		}
+
+		fmt.Printf("Streaming from: %s\n", sourceDesc)
+		fmt.Printf("UDP port: %d\n", *testVideo)
 		fmt.Printf("\nConnect with:\n")
-		fmt.Printf("  VLC:         vlc tcp://localhost:%d\n", *testVideo)
-		fmt.Printf("  Test Player: python tests/test-video-player.py localhost %d\n", *testVideo)
+		fmt.Printf("  Test Player: python tests/test-video-player.py\n")
 		fmt.Printf("\nPress Ctrl+C to stop\n")
 		fmt.Printf("=======================\n\n")
 
@@ -69,8 +76,12 @@ func main() {
 		}
 
 		// Start video streaming
-		if err := session.addVideoTrackTCP(*testVideo); err != nil {
+		if err := session.addVideoTrackTCP(*testVideo, *cameraDevice); err != nil {
 			fmt.Printf("ERROR: Failed to start video streaming: %v\n", err)
+			fmt.Printf("\nTroubleshooting:\n")
+			fmt.Printf("  - Check if camera exists: ls -l %s\n", *cameraDevice)
+			fmt.Printf("  - Try test pattern: --camera-device=test\n")
+			fmt.Printf("  - Check GStreamer: gst-launch-1.0 v4l2src device=%s ! autovideosink\n", *cameraDevice)
 			os.Exit(1)
 		}
 

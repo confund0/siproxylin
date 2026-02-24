@@ -7,13 +7,14 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-// addVideoTrackTCP creates a video track and streams over TCP for testing
-// This is Phase 0.3 implementation - TCP streaming for isolated testing
+// addVideoTrackTCP creates a video track and streams over UDP for testing
+// This is Phase 1 implementation - Real camera streaming for isolated testing
 // Phase 2 will switch to WebRTC streaming
-func (s *Session) addVideoTrackTCP(port int) error {
-	s.logger.Info("Setting up test video pipeline (TCP mode)",
+func (s *Session) addVideoTrackTCP(port int, cameraDevice string) error {
+	s.logger.Info("Setting up camera video pipeline (UDP mode)",
 		"session_id", s.ID,
 		"port", port,
+		"camera_device", cameraDevice,
 	)
 
 	// Create VP8 video track (even though we're not using WebRTC yet)
@@ -34,19 +35,48 @@ func (s *Session) addVideoTrackTCP(port int) error {
 	// For now, we're not adding it to PC - just testing the pipeline
 	_ = track
 
-	// Build GStreamer pipeline for test pattern → VP8 → UDP (simpler than TCP)
-	// Phase 0: Test pattern only
-	// Phase 1: Replace videotestsrc with v4l2src
+	// Build GStreamer pipeline for camera → VP8 → UDP
+	// Phase 1: Real camera with v4l2src
 	// Note: Using UDP for easier RTP testing, will switch to WebRTC in Phase 2
-	pipelineStr := fmt.Sprintf(
-		"videotestsrc pattern=smpte is-live=true ! "+
-			"video/x-raw,width=640,height=480,framerate=15/1 ! "+
-			"videoconvert ! "+
-			"vp8enc deadline=1 target-bitrate=500000 ! "+
-			"rtpvp8pay ! "+
-			"udpsink host=127.0.0.1 port=%d sync=false",
-		port,
-	)
+	var videoSrc string
+	if cameraDevice == "" || cameraDevice == "test" {
+		// Fallback to test pattern if no camera or "test" specified
+		videoSrc = "videotestsrc pattern=smpte is-live=true"
+		s.logger.Info("Using test pattern (no camera device specified)", "session_id", s.ID)
+	} else {
+		// Use real camera via v4l2src
+		videoSrc = fmt.Sprintf("v4l2src device=%s", cameraDevice)
+		s.logger.Info("Using camera device", "session_id", s.ID, "device", cameraDevice)
+	}
+
+	// Build pipeline based on source type
+	var pipelineStr string
+	if cameraDevice == "" || cameraDevice == "test" {
+		// Test pattern: already outputs video/x-raw
+		pipelineStr = fmt.Sprintf(
+			"%s ! "+
+				"video/x-raw,width=640,height=480,framerate=15/1 ! "+
+				"videoconvert ! "+
+				"vp8enc deadline=1 target-bitrate=500000 ! "+
+				"rtpvp8pay ! "+
+				"udpsink host=127.0.0.1 port=%d sync=false",
+			videoSrc,
+			port,
+		)
+	} else {
+		// Real camera: let v4l2src negotiate format, just specify dimensions/framerate
+		// videoconvert will handle YUYV/MJPG/etc automatically
+		pipelineStr = fmt.Sprintf(
+			"%s ! "+
+				"video/x-raw,width=640,height=480,framerate=30/1 ! "+
+				"videoconvert ! "+
+				"vp8enc deadline=1 target-bitrate=500000 ! "+
+				"rtpvp8pay ! "+
+				"udpsink host=127.0.0.1 port=%d sync=false",
+			videoSrc,
+			port,
+		)
+	}
 
 	s.logger.Info("Creating video pipeline", "session_id", s.ID, "pipeline", pipelineStr)
 
@@ -63,19 +93,27 @@ func (s *Session) addVideoTrackTCP(port int) error {
 		return fmt.Errorf("failed to start video pipeline: %w", err)
 	}
 
+	sourceType := "camera"
+	sourceDetail := cameraDevice
+	if cameraDevice == "" || cameraDevice == "test" {
+		sourceType = "test pattern"
+		sourceDetail = "SMPTE bars"
+	}
+
 	s.logger.Info("Video pipeline started successfully",
 		"session_id", s.ID,
-		"pattern", "SMPTE test bars",
+		"source_type", sourceType,
+		"source", sourceDetail,
 		"resolution", "640x480",
 		"framerate", "15fps",
 		"codec", "VP8",
 		"bitrate", "500kbps",
-		"tcp_port", port,
+		"udp_port", port,
 	)
 
 	s.logger.Info("Test video stream ready - connect with:",
-		"vlc", fmt.Sprintf("vlc tcp://localhost:%d", port),
-		"test_player", fmt.Sprintf("python tests/test-video-player.py localhost %d", port),
+		"test_player", fmt.Sprintf("python tests/test-video-player.py"),
+		"note", fmt.Sprintf("Streaming on UDP port %d", port),
 	)
 
 	// TODO Phase 2: Store pipeline for cleanup
