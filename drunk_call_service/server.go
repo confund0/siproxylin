@@ -359,6 +359,18 @@ func (s *CallServer) ListAudioDevices(ctx context.Context, req *pb.Empty) (*pb.L
 	return &pb.ListAudioDevicesResponse{Devices: devices}, nil
 }
 
+// ListVideoDevices enumerates available video devices (gRPC handler)
+func (s *CallServer) ListVideoDevices(ctx context.Context, req *pb.Empty) (*pb.ListVideoDevicesResponse, error) {
+	devices, err := ListVideoDevices(s.logger)
+	if err != nil {
+		s.logger.Error("Failed to list video devices", "error", err)
+		return &pb.ListVideoDevicesResponse{Devices: []*pb.VideoDevice{}}, nil
+	}
+
+	s.logger.Info("Listed video devices", "count", len(devices))
+	return &pb.ListVideoDevicesResponse{Devices: devices}, nil
+}
+
 // SetMute sets the mute state for a session's microphone (gRPC handler)
 func (s *CallServer) SetMute(ctx context.Context, req *pb.SetMuteRequest) (*pb.Empty, error) {
 	sessionID := req.SessionId

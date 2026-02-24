@@ -101,3 +101,109 @@ func getPactlDevices(logger *slog.Logger, deviceType string) ([]pactlDevice, err
 	logger.Debug("Parsed pactl devices", "type", deviceType, "count", len(devices))
 	return devices, nil
 }
+
+// ListVideoDevices enumerates available video capture devices using v4l2-ctl
+func ListVideoDevices(logger *slog.Logger) ([]*pb.VideoDevice, error) {
+	logger.Info("ListVideoDevices called - starting camera enumeration via v4l2-ctl")
+
+	var videoDevices []*pb.VideoDevice
+
+	// Find all video devices in /dev
+	cmd := exec.Command("sh", "-c", "ls /dev/video* 2>/dev/null")
+	output, err := cmd.Output()
+	if err != nil {
+		// No video devices found - not an error, just empty list
+		logger.Info("No video devices found in /dev")
+		return videoDevices, nil
+	}
+
+	devicePaths := strings.Split(strings.TrimSpace(string(output)), "\n")
+	logger.Debug("Found video device paths", "count", len(devicePaths))
+
+	for _, devicePath := range devicePaths {
+		if devicePath == "" {
+			continue
+		}
+
+		// Get device info using v4l2-ctl
+		device, err := getV4L2DeviceInfo(logger, devicePath)
+		if err != nil {
+			logger.Warn("Failed to get device info", "device", devicePath, "error", err)
+			continue
+		}
+
+		// Only include actual capture devices (skip metadata/output devices)
+		if device != nil {
+			videoDevices = append(videoDevices, device)
+			logger.Debug("Found video capture device",
+				"path", device.DevicePath,
+				"name", device.Name,
+				"driver", device.Driver,
+			)
+		}
+	}
+
+	logger.Info("Video device enumeration complete", "total_devices", len(videoDevices))
+	return videoDevices, nil
+}
+
+// getV4L2DeviceInfo queries a single video device using v4l2-ctl
+func getV4L2DeviceInfo(logger *slog.Logger, devicePath string) (*pb.VideoDevice, error) {
+	// Run v4l2-ctl --device=<path> --info
+	cmd := exec.Command("v4l2-ctl", "--device="+devicePath, "--info")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to run v4l2-ctl: %w", err)
+	}
+
+	device := &pb.VideoDevice{
+		DevicePath: devicePath,
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	isCapture := false
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		if strings.HasPrefix(line, "Card type") {
+			// Example: "Card type      : Integrated Camera"
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				device.Name = strings.TrimSpace(parts[1])
+			}
+		} else if strings.HasPrefix(line, "Driver name") {
+			// Example: "Driver name    : uvcvideo"
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				device.Driver = strings.TrimSpace(parts[1])
+			}
+		} else if strings.HasPrefix(line, "Bus info") {
+			// Example: "Bus info       : usb-0000:00:14.0-5"
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				device.BusInfo = strings.TrimSpace(parts[1])
+			}
+		} else if strings.Contains(line, "Video Capture") {
+			// Device capabilities include Video Capture - it's a camera
+			isCapture = true
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("failed to parse v4l2-ctl output: %w", err)
+	}
+
+	// Only return devices that support Video Capture (skip metadata/output devices)
+	if !isCapture {
+		logger.Debug("Skipping non-capture device", "path", devicePath)
+		return nil, nil
+	}
+
+	// Use device path as fallback name if card type not found
+	if device.Name == "" {
+		device.Name = devicePath
+	}
+
+	return device, nil
+}

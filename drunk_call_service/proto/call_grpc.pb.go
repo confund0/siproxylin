@@ -30,6 +30,7 @@ const (
 	CallService_Shutdown_FullMethodName             = "/call.CallService/Shutdown"
 	CallService_GetStats_FullMethodName             = "/call.CallService/GetStats"
 	CallService_ListAudioDevices_FullMethodName     = "/call.CallService/ListAudioDevices"
+	CallService_ListVideoDevices_FullMethodName     = "/call.CallService/ListVideoDevices"
 	CallService_SetMute_FullMethodName              = "/call.CallService/SetMute"
 )
 
@@ -61,6 +62,8 @@ type CallServiceClient interface {
 	GetStats(ctx context.Context, in *GetStatsRequest, opts ...grpc.CallOption) (*GetStatsResponse, error)
 	// List available audio devices
 	ListAudioDevices(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListAudioDevicesResponse, error)
+	// List available video devices (cameras)
+	ListVideoDevices(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListVideoDevicesResponse, error)
 	// Set microphone mute state for a session
 	SetMute(ctx context.Context, in *SetMuteRequest, opts ...grpc.CallOption) (*Empty, error)
 }
@@ -192,6 +195,16 @@ func (c *callServiceClient) ListAudioDevices(ctx context.Context, in *Empty, opt
 	return out, nil
 }
 
+func (c *callServiceClient) ListVideoDevices(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*ListVideoDevicesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListVideoDevicesResponse)
+	err := c.cc.Invoke(ctx, CallService_ListVideoDevices_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *callServiceClient) SetMute(ctx context.Context, in *SetMuteRequest, opts ...grpc.CallOption) (*Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Empty)
@@ -230,6 +243,8 @@ type CallServiceServer interface {
 	GetStats(context.Context, *GetStatsRequest) (*GetStatsResponse, error)
 	// List available audio devices
 	ListAudioDevices(context.Context, *Empty) (*ListAudioDevicesResponse, error)
+	// List available video devices (cameras)
+	ListVideoDevices(context.Context, *Empty) (*ListVideoDevicesResponse, error)
 	// Set microphone mute state for a session
 	SetMute(context.Context, *SetMuteRequest) (*Empty, error)
 	mustEmbedUnimplementedCallServiceServer()
@@ -274,6 +289,9 @@ func (UnimplementedCallServiceServer) GetStats(context.Context, *GetStatsRequest
 }
 func (UnimplementedCallServiceServer) ListAudioDevices(context.Context, *Empty) (*ListAudioDevicesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListAudioDevices not implemented")
+}
+func (UnimplementedCallServiceServer) ListVideoDevices(context.Context, *Empty) (*ListVideoDevicesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListVideoDevices not implemented")
 }
 func (UnimplementedCallServiceServer) SetMute(context.Context, *SetMuteRequest) (*Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetMute not implemented")
@@ -490,6 +508,24 @@ func _CallService_ListAudioDevices_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CallService_ListVideoDevices_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CallServiceServer).ListVideoDevices(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CallService_ListVideoDevices_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CallServiceServer).ListVideoDevices(ctx, req.(*Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _CallService_SetMute_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SetMuteRequest)
 	if err := dec(in); err != nil {
@@ -554,6 +590,10 @@ var CallService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListAudioDevices",
 			Handler:    _CallService_ListAudioDevices_Handler,
+		},
+		{
+			MethodName: "ListVideoDevices",
+			Handler:    _CallService_ListVideoDevices_Handler,
 		},
 		{
 			MethodName: "SetMute",

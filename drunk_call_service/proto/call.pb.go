@@ -1280,6 +1280,118 @@ func (x *SetMuteRequest) GetMuted() bool {
 	return false
 }
 
+type VideoDevice struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DevicePath    string                 `protobuf:"bytes,1,opt,name=device_path,json=devicePath,proto3" json:"device_path,omitempty"` // Device path (e.g., "/dev/video0")
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`                               // Device name (e.g., "Integrated Camera")
+	Driver        string                 `protobuf:"bytes,3,opt,name=driver,proto3" json:"driver,omitempty"`                           // Driver name (e.g., "uvcvideo")
+	BusInfo       string                 `protobuf:"bytes,4,opt,name=bus_info,json=busInfo,proto3" json:"bus_info,omitempty"`          // Bus info (e.g., "usb-0000:00:14.0-5")
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VideoDevice) Reset() {
+	*x = VideoDevice{}
+	mi := &file_proto_call_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VideoDevice) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VideoDevice) ProtoMessage() {}
+
+func (x *VideoDevice) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_call_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VideoDevice.ProtoReflect.Descriptor instead.
+func (*VideoDevice) Descriptor() ([]byte, []int) {
+	return file_proto_call_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *VideoDevice) GetDevicePath() string {
+	if x != nil {
+		return x.DevicePath
+	}
+	return ""
+}
+
+func (x *VideoDevice) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *VideoDevice) GetDriver() string {
+	if x != nil {
+		return x.Driver
+	}
+	return ""
+}
+
+func (x *VideoDevice) GetBusInfo() string {
+	if x != nil {
+		return x.BusInfo
+	}
+	return ""
+}
+
+type ListVideoDevicesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Devices       []*VideoDevice         `protobuf:"bytes,1,rep,name=devices,proto3" json:"devices,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListVideoDevicesResponse) Reset() {
+	*x = ListVideoDevicesResponse{}
+	mi := &file_proto_call_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListVideoDevicesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListVideoDevicesResponse) ProtoMessage() {}
+
+func (x *ListVideoDevicesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_call_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListVideoDevicesResponse.ProtoReflect.Descriptor instead.
+func (*ListVideoDevicesResponse) Descriptor() ([]byte, []int) {
+	return file_proto_call_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *ListVideoDevicesResponse) GetDevices() []*VideoDevice {
+	if x != nil {
+		return x.Devices
+	}
+	return nil
+}
+
 var File_proto_call_proto protoreflect.FileDescriptor
 
 const file_proto_call_proto_rawDesc = "" +
@@ -1394,7 +1506,15 @@ const file_proto_call_proto_rawDesc = "" +
 	"\x0eSetMuteRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x14\n" +
-	"\x05muted\x18\x02 \x01(\bR\x05muted2\xc0\x05\n" +
+	"\x05muted\x18\x02 \x01(\bR\x05muted\"u\n" +
+	"\vVideoDevice\x12\x1f\n" +
+	"\vdevice_path\x18\x01 \x01(\tR\n" +
+	"devicePath\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n" +
+	"\x06driver\x18\x03 \x01(\tR\x06driver\x12\x19\n" +
+	"\bbus_info\x18\x04 \x01(\tR\abusInfo\"G\n" +
+	"\x18ListVideoDevicesResponse\x12+\n" +
+	"\adevices\x18\x01 \x03(\v2\x11.call.VideoDeviceR\adevices2\x81\x06\n" +
 	"\vCallService\x12H\n" +
 	"\rCreateSession\x12\x1a.call.CreateSessionRequest\x1a\x1b.call.CreateSessionResponse\x12:\n" +
 	"\vCreateOffer\x12\x18.call.CreateOfferRequest\x1a\x11.call.SDPResponse\x12<\n" +
@@ -1407,7 +1527,8 @@ const file_proto_call_proto_rawDesc = "" +
 	"\tHeartbeat\x12\v.call.Empty\x1a\v.call.Empty\x12$\n" +
 	"\bShutdown\x12\v.call.Empty\x1a\v.call.Empty\x129\n" +
 	"\bGetStats\x12\x15.call.GetStatsRequest\x1a\x16.call.GetStatsResponse\x12?\n" +
-	"\x10ListAudioDevices\x12\v.call.Empty\x1a\x1e.call.ListAudioDevicesResponse\x12,\n" +
+	"\x10ListAudioDevices\x12\v.call.Empty\x1a\x1e.call.ListAudioDevicesResponse\x12?\n" +
+	"\x10ListVideoDevices\x12\v.call.Empty\x1a\x1e.call.ListVideoDevicesResponse\x12,\n" +
 	"\aSetMute\x12\x14.call.SetMuteRequest\x1a\v.call.EmptyB2Z0github.com/yourusername/drunk-call-service/protob\x06proto3"
 
 var (
@@ -1423,7 +1544,7 @@ func file_proto_call_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_call_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_proto_call_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
+var file_proto_call_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_proto_call_proto_goTypes = []any{
 	(ConnectionStateEvent_State)(0),     // 0: call.ConnectionStateEvent.State
 	(*CreateSessionRequest)(nil),        // 1: call.CreateSessionRequest
@@ -1445,6 +1566,8 @@ var file_proto_call_proto_goTypes = []any{
 	(*AudioDevice)(nil),                 // 17: call.AudioDevice
 	(*ListAudioDevicesResponse)(nil),    // 18: call.ListAudioDevicesResponse
 	(*SetMuteRequest)(nil),              // 19: call.SetMuteRequest
+	(*VideoDevice)(nil),                 // 20: call.VideoDevice
+	(*ListVideoDevicesResponse)(nil),    // 21: call.ListVideoDevicesResponse
 }
 var file_proto_call_proto_depIdxs = []int32{
 	12, // 0: call.CallEvent.ice_candidate:type_name -> call.ICECandidateEvent
@@ -1452,35 +1575,38 @@ var file_proto_call_proto_depIdxs = []int32{
 	14, // 2: call.CallEvent.error:type_name -> call.ErrorEvent
 	0,  // 3: call.ConnectionStateEvent.state:type_name -> call.ConnectionStateEvent.State
 	17, // 4: call.ListAudioDevicesResponse.devices:type_name -> call.AudioDevice
-	1,  // 5: call.CallService.CreateSession:input_type -> call.CreateSessionRequest
-	3,  // 6: call.CallService.CreateOffer:input_type -> call.CreateOfferRequest
-	4,  // 7: call.CallService.CreateAnswer:input_type -> call.CreateAnswerRequest
-	6,  // 8: call.CallService.SetRemoteDescription:input_type -> call.SetRemoteDescriptionRequest
-	7,  // 9: call.CallService.AddICECandidate:input_type -> call.AddICECandidateRequest
-	8,  // 10: call.CallService.EndSession:input_type -> call.EndSessionRequest
-	9,  // 11: call.CallService.StreamEvents:input_type -> call.StreamEventsRequest
-	10, // 12: call.CallService.Heartbeat:input_type -> call.Empty
-	10, // 13: call.CallService.Shutdown:input_type -> call.Empty
-	15, // 14: call.CallService.GetStats:input_type -> call.GetStatsRequest
-	10, // 15: call.CallService.ListAudioDevices:input_type -> call.Empty
-	19, // 16: call.CallService.SetMute:input_type -> call.SetMuteRequest
-	2,  // 17: call.CallService.CreateSession:output_type -> call.CreateSessionResponse
-	5,  // 18: call.CallService.CreateOffer:output_type -> call.SDPResponse
-	5,  // 19: call.CallService.CreateAnswer:output_type -> call.SDPResponse
-	10, // 20: call.CallService.SetRemoteDescription:output_type -> call.Empty
-	10, // 21: call.CallService.AddICECandidate:output_type -> call.Empty
-	10, // 22: call.CallService.EndSession:output_type -> call.Empty
-	11, // 23: call.CallService.StreamEvents:output_type -> call.CallEvent
-	10, // 24: call.CallService.Heartbeat:output_type -> call.Empty
-	10, // 25: call.CallService.Shutdown:output_type -> call.Empty
-	16, // 26: call.CallService.GetStats:output_type -> call.GetStatsResponse
-	18, // 27: call.CallService.ListAudioDevices:output_type -> call.ListAudioDevicesResponse
-	10, // 28: call.CallService.SetMute:output_type -> call.Empty
-	17, // [17:29] is the sub-list for method output_type
-	5,  // [5:17] is the sub-list for method input_type
-	5,  // [5:5] is the sub-list for extension type_name
-	5,  // [5:5] is the sub-list for extension extendee
-	0,  // [0:5] is the sub-list for field type_name
+	20, // 5: call.ListVideoDevicesResponse.devices:type_name -> call.VideoDevice
+	1,  // 6: call.CallService.CreateSession:input_type -> call.CreateSessionRequest
+	3,  // 7: call.CallService.CreateOffer:input_type -> call.CreateOfferRequest
+	4,  // 8: call.CallService.CreateAnswer:input_type -> call.CreateAnswerRequest
+	6,  // 9: call.CallService.SetRemoteDescription:input_type -> call.SetRemoteDescriptionRequest
+	7,  // 10: call.CallService.AddICECandidate:input_type -> call.AddICECandidateRequest
+	8,  // 11: call.CallService.EndSession:input_type -> call.EndSessionRequest
+	9,  // 12: call.CallService.StreamEvents:input_type -> call.StreamEventsRequest
+	10, // 13: call.CallService.Heartbeat:input_type -> call.Empty
+	10, // 14: call.CallService.Shutdown:input_type -> call.Empty
+	15, // 15: call.CallService.GetStats:input_type -> call.GetStatsRequest
+	10, // 16: call.CallService.ListAudioDevices:input_type -> call.Empty
+	10, // 17: call.CallService.ListVideoDevices:input_type -> call.Empty
+	19, // 18: call.CallService.SetMute:input_type -> call.SetMuteRequest
+	2,  // 19: call.CallService.CreateSession:output_type -> call.CreateSessionResponse
+	5,  // 20: call.CallService.CreateOffer:output_type -> call.SDPResponse
+	5,  // 21: call.CallService.CreateAnswer:output_type -> call.SDPResponse
+	10, // 22: call.CallService.SetRemoteDescription:output_type -> call.Empty
+	10, // 23: call.CallService.AddICECandidate:output_type -> call.Empty
+	10, // 24: call.CallService.EndSession:output_type -> call.Empty
+	11, // 25: call.CallService.StreamEvents:output_type -> call.CallEvent
+	10, // 26: call.CallService.Heartbeat:output_type -> call.Empty
+	10, // 27: call.CallService.Shutdown:output_type -> call.Empty
+	16, // 28: call.CallService.GetStats:output_type -> call.GetStatsResponse
+	18, // 29: call.CallService.ListAudioDevices:output_type -> call.ListAudioDevicesResponse
+	21, // 30: call.CallService.ListVideoDevices:output_type -> call.ListVideoDevicesResponse
+	10, // 31: call.CallService.SetMute:output_type -> call.Empty
+	19, // [19:32] is the sub-list for method output_type
+	6,  // [6:19] is the sub-list for method input_type
+	6,  // [6:6] is the sub-list for extension type_name
+	6,  // [6:6] is the sub-list for extension extendee
+	0,  // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_proto_call_proto_init() }
@@ -1499,7 +1625,7 @@ func file_proto_call_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_call_proto_rawDesc), len(file_proto_call_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   19,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -633,6 +633,36 @@ class CallBridge:
             self.logger.error(f"Failed to list audio devices: {e}")
             return []
 
+    async def list_video_devices(self) -> list:
+        """
+        List available video capture devices (cameras).
+
+        Returns:
+            List of dicts with keys: device_path (/dev/videoX), name (friendly name), driver, bus_info
+        """
+        if not self._stub:
+            self.logger.error("gRPC stub not initialized")
+            return []
+
+        try:
+            request = call_pb2.Empty()
+            response = await self._stub.ListVideoDevices(request)
+
+            devices = []
+            for device in response.devices:
+                devices.append({
+                    'device_path': device.device_path,
+                    'name': device.name,
+                    'driver': device.driver,
+                    'bus_info': device.bus_info
+                })
+
+            self.logger.info(f"Listed {len(devices)} video devices")
+            return devices
+        except Exception as e:
+            self.logger.error(f"Failed to list video devices: {e}")
+            return []
+
     async def set_mute(self, session_id: str, muted: bool):
         """
         Set microphone mute state for a session.

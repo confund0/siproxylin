@@ -39,6 +39,9 @@ service CallService {
   // List available audio devices
   rpc ListAudioDevices(Empty) returns (ListAudioDevicesResponse);
 
+  // List available video devices (cameras)
+  rpc ListVideoDevices(Empty) returns (ListVideoDevicesResponse);
+
   // Set microphone mute state for a session
   rpc SetMute(SetMuteRequest) returns (Empty);
 }
@@ -183,4 +186,17 @@ message ListAudioDevicesResponse {
 message SetMuteRequest {
   string session_id = 1;
   bool muted = 2;  // true = mute microphone, false = unmute
+}
+
+// Video device enumeration messages
+
+message VideoDevice {
+  string device_path = 1;  // Device path (e.g., "/dev/video0")
+  string name = 2;         // Device name (e.g., "Integrated Camera")
+  string driver = 3;       // Driver name (e.g., "uvcvideo")
+  string bus_info = 4;     // Bus info (e.g., "usb-0000:00:14.0-5")
+}
+
+message ListVideoDevicesResponse {
+  repeated VideoDevice devices = 1;
 }
