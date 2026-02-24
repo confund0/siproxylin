@@ -23,6 +23,7 @@ var (
 	logLevel    = flag.String("log-level", "INFO", "Log level (DEBUG, INFO, WARN, ERROR)")
 	logPath     = flag.String("log-path", "", "Log file path (default: ../app/logs/drunk-call-service.log)")
 	testDevices = flag.Bool("test-devices", false, "Test device enumeration and exit")
+	testVideo   = flag.Int("test-video", 0, "Test video streaming on specified TCP port (e.g., 5004)")
 )
 
 func main() {
@@ -47,6 +48,38 @@ func main() {
 			fmt.Printf("   Class: %s\n", dev.DeviceClass)
 			fmt.Println()
 		}
+		os.Exit(0)
+	}
+
+	// Test mode: video streaming over TCP
+	if *testVideo > 0 {
+		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		fmt.Printf("=== Video Test Mode ===\n")
+		fmt.Printf("Streaming test pattern on TCP port %d\n", *testVideo)
+		fmt.Printf("\nConnect with:\n")
+		fmt.Printf("  VLC:         vlc tcp://localhost:%d\n", *testVideo)
+		fmt.Printf("  Test Player: python tests/test-video-player.py localhost %d\n", *testVideo)
+		fmt.Printf("\nPress Ctrl+C to stop\n")
+		fmt.Printf("=======================\n\n")
+
+		// Create dummy session for video testing
+		session := &Session{
+			ID:     "video-test",
+			logger: logger,
+		}
+
+		// Start video streaming
+		if err := session.addVideoTrackTCP(*testVideo); err != nil {
+			fmt.Printf("ERROR: Failed to start video streaming: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Wait for interrupt
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+		<-sigChan
+
+		fmt.Println("\nShutting down...")
 		os.Exit(0)
 	}
 
