@@ -205,15 +205,19 @@ class JingleAdapter:
         """Handle incoming call (session-initiate)."""
         peer_jid = str(iq['from'])
 
-        # Parse content elements to determine media types
+        # Parse content elements to determine media types and content names
         contents = jingle.findall('{urn:xmpp:jingle:1}content')
         media_types = []
+        content_names = []
 
         for content in contents:
             description = content.find('{urn:xmpp:jingle:apps:rtp:1}description')
             if description is not None:
                 media = description.get('media')  # 'audio' or 'video'
                 media_types.append(media)
+                # Store content name (this is the mid value from peer's SDP)
+                content_name = content.get('name', media)
+                content_names.append(content_name)
 
         # Convert Jingle XML to SDP offer
         try:
@@ -239,6 +243,7 @@ class JingleAdapter:
         self.sessions[sid] = {
             'peer_jid': peer_jid,
             'media': media_types,
+            'content_names': content_names,  # Store content names for transport-info mapping
             'state': 'incoming',
             'remote_ice_ufrag': remote_ufrag,
             'remote_ice_pwd': remote_pwd
@@ -734,19 +739,28 @@ class JingleAdapter:
         media = session['media']
         initiator = str(self.xmpp.boundjid)
 
-        # Extract and store ICE credentials from SDP (needed for transport-info)
+        # Extract and store ICE credentials and content names from SDP
         ice_ufrag = None
         ice_pwd = None
+        content_names = []
         for line in sdp.split('\r\n'):
             if line.startswith('a=ice-ufrag:'):
                 ice_ufrag = line.split(':', 1)[1]
             elif line.startswith('a=ice-pwd:'):
                 ice_pwd = line.split(':', 1)[1]
+            elif line.startswith('a=mid:'):
+                # Extract mid value (becomes content name in Jingle)
+                mid = line.split(':', 1)[1]
+                content_names.append(mid)
 
         if ice_ufrag and ice_pwd:
             session['ice_ufrag'] = ice_ufrag
             session['ice_pwd'] = ice_pwd
             self.logger.debug(f"Stored ICE credentials for {sid}: ufrag={ice_ufrag}")
+
+        if content_names:
+            session['content_names'] = content_names
+            self.logger.debug(f"Stored content names for {sid}: {content_names}")
 
         # Validate SDP before sending
         self._validate_sdp(sdp, 'offer', sid)
@@ -844,11 +858,9 @@ class JingleAdapter:
 
         # Candidates are already in the SDP (we wait for gathering to complete in Go)
         # _sdp_to_jingle() has already parsed and added them to the Jingle XML
-        # Clear pending queue to avoid duplicates (previously caused both components to have same ports)
-        if session_id in self.pending_ice_candidates:
-            pending_count = len(self.pending_ice_candidates[session_id])
-            del self.pending_ice_candidates[session_id]
-            self.logger.info(f"[HYBRID-ICE] Cleared {pending_count} pending candidates (already in SDP)")
+        # NOTE: We DON'T delete pending candidates here because new ones may arrive
+        # after CreateAnswer() but before send_answer() is called. We'll flush them
+        # after session-accept is sent (similar to outgoing calls).
 
         self.logger.info(f"Sending session-accept for {session_id}")
 
@@ -862,6 +874,15 @@ class JingleAdapter:
             await iq.send()
             session['state'] = 'active'
             self.logger.info(f"Sent session-accept for {session_id}")
+
+            # FLUSH pending ICE candidates that arrived after CreateAnswer() was called
+            # (e.g., TURN relay candidates that take longer to gather)
+            if session_id in self.pending_ice_candidates:
+                pending = self.pending_ice_candidates[session_id]
+                self.logger.info(f"Flushing {len(pending)} queued ICE candidates for {session_id} after session-accept")
+                for cand in pending:
+                    await self.send_ice_candidate(session_id, cand)
+                del self.pending_ice_candidates[session_id]
 
         except Exception as e:
             self.logger.error(f"Failed to send session-accept: {e}")
@@ -935,10 +956,21 @@ class JingleAdapter:
         # Add content with transport candidates
         content = ET.SubElement(jingle, '{urn:xmpp:jingle:1}content')
         content.set('creator', 'initiator')
-        # Use sdpMid directly as content name (e.g., '0')
-        # This MUST match the content name from session-initiate/session-accept
-        sdp_mid = candidate.get('sdpMid', '0')
-        content.set('name', sdp_mid)
+
+        # Map mlineIndex to Jingle content name
+        # Content names were extracted from Jingle XML or SDP and stored in session metadata
+        # This ensures transport-info uses the same content names as session-initiate/session-accept
+        sdp_mline_index = candidate.get('sdpMLineIndex', 0)
+        content_names = session.get('content_names', [])
+
+        if sdp_mline_index < len(content_names):
+            content_name = content_names[sdp_mline_index]
+        else:
+            # Fallback if content_names not available
+            content_name = candidate.get('sdpMid', 'audio')
+            self.logger.warn(f"No content_names for {session_id}, using fallback: {content_name}")
+
+        content.set('name', content_name)
 
         transport = ET.SubElement(content, '{urn:xmpp:jingle:transports:ice-udp:1}transport')
 

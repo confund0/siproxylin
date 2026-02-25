@@ -87,6 +87,11 @@ class CallServer final : public call::CallService::Service {
   std::unordered_map<std::string, std::shared_ptr<Session>> sessions_;
   mutable std::mutex sessions_mutex_;
 
+  // Pending remote ICE candidates (queued before session created)
+  // sessionID → vector of candidate strings
+  std::unordered_map<std::string, std::vector<std::string>> pending_remote_candidates_;
+  mutable std::mutex pending_candidates_mutex_;
+
   // Shutdown flag
   std::atomic<bool> shutdown_requested_{false};
 };

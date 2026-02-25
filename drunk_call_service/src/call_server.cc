@@ -164,6 +164,22 @@ grpc::Status CallServer::CreateAnswer(grpc::ServerContext* context,
                                           request->offer_has_bundle());
   response->set_sdp(sdp);
   LOG_DEBUG("CreateAnswer: Generated SDP ({} bytes)", sdp.size());
+
+  // Drain any queued remote ICE candidates (now that remote description is set)
+  // This fixes race condition where transport-info arrives before CreateSession completes
+  std::lock_guard<std::mutex> lock(pending_candidates_mutex_);
+  auto it = pending_remote_candidates_.find(request->session_id());
+  if (it != pending_remote_candidates_.end()) {
+    LOG_INFO("Draining {} queued remote ICE candidates for {} (after remote description set)",
+             it->second.size(), request->session_id());
+    for (const auto& candidate : it->second) {
+      if (!session->AddICECandidate(candidate, "", 0)) {
+        LOG_ERROR("Failed to add queued remote candidate for {}", request->session_id());
+      }
+    }
+    pending_remote_candidates_.erase(it);
+  }
+
   return grpc::Status::OK;
 }
 
@@ -184,6 +200,22 @@ grpc::Status CallServer::SetRemoteDescription(
   }
 
   LOG_DEBUG("SetRemoteDescription succeeded");
+
+  // Drain any queued remote ICE candidates (now that remote description is set)
+  // This handles outgoing call scenario where transport-info arrives before session-accept
+  std::lock_guard<std::mutex> lock(pending_candidates_mutex_);
+  auto it = pending_remote_candidates_.find(request->session_id());
+  if (it != pending_remote_candidates_.end()) {
+    LOG_INFO("Draining {} queued remote ICE candidates for {} (outgoing call)",
+             it->second.size(), request->session_id());
+    for (const auto& candidate : it->second) {
+      if (!session->AddICECandidate(candidate, "", 0)) {
+        LOG_ERROR("Failed to add queued remote candidate for {}", request->session_id());
+      }
+    }
+    pending_remote_candidates_.erase(it);
+  }
+
   return grpc::Status::OK;
 }
 
@@ -200,7 +232,12 @@ grpc::Status CallServer::AddICECandidate(
 
   auto session = GetSession(request->session_id());
   if (!session) {
-    return grpc::Status(grpc::StatusCode::NOT_FOUND, "Session not found");
+    // Queue candidate for when session is created (fixes race condition)
+    // Incoming calls: transport-info often arrives before CreateSession completes
+    LOG_INFO("Session {} not found, queueing remote ICE candidate", request->session_id());
+    std::lock_guard<std::mutex> lock(pending_candidates_mutex_);
+    pending_remote_candidates_[request->session_id()].push_back(request->candidate());
+    return grpc::Status::OK;
   }
 
   if (!session->AddICECandidate(request->candidate(), request->sdp_mid(),

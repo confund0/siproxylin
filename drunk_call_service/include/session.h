@@ -113,6 +113,10 @@ class Session {
   static void OnConnectionStateChange(GstElement* webrtcbin, GParamSpec* pspec, gpointer user_data);
   static void OnIceConnectionStateChange(GstElement* webrtcbin, GParamSpec* pspec, gpointer user_data);
   static void OnIceGatheringStateChange(GstElement* webrtcbin, GParamSpec* pspec, gpointer user_data);
+  static void OnNegotiationNeeded(GstElement* webrtcbin, gpointer user_data);
+
+  // Helper methods
+  bool AddTransceivers();  // Create transceivers and link pipeline to webrtcbin
 
   // Internal event queue
   void PushEvent(const Event& event);
@@ -128,6 +132,11 @@ class Session {
   std::queue<Event> event_queue_;
   std::mutex event_mutex_;
   std::condition_variable event_cv_;
+
+  // Negotiation signal synchronization
+  bool negotiation_needed_ = false;
+  std::mutex negotiation_mutex_;
+  std::condition_variable negotiation_cv_;
 };
 
 }  // namespace drunk_call

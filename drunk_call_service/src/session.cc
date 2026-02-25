@@ -3,6 +3,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cctype>
+#include <chrono>
 
 namespace drunk_call {
 
@@ -150,8 +151,10 @@ bool Session::Initialize() {
                    G_CALLBACK(OnIceConnectionStateChange), this);
   g_signal_connect(webrtcbin_, "notify::ice-gathering-state",
                    G_CALLBACK(OnIceGatheringStateChange), this);
+  g_signal_connect(webrtcbin_, "on-negotiation-needed",
+                   G_CALLBACK(OnNegotiationNeeded), this);
 
-  LOG_INFO("Connected webrtcbin signal handlers for ICE and state changes");
+  LOG_INFO("Connected webrtcbin signal handlers for ICE, state changes, and negotiation");
 
   // Add audio test source (sine wave for testing)
   GstElement* audiotestsrc = gst_element_factory_make("audiotestsrc", "audiosrc");
@@ -180,28 +183,9 @@ bool Session::Initialize() {
     return false;
   }
 
-  // Add audio transceiver explicitly (required for webrtcbin to include audio in offer)
-  GArray* transceivers = NULL;
-  g_signal_emit_by_name(webrtcbin_, "get-transceivers", &transceivers);
-  LOG_INFO("webrtcbin has {} transceivers before adding audio", transceivers ? transceivers->len : 0);
-  if (transceivers) g_array_unref(transceivers);
-
-  GstWebRTCRTPTransceiver* audio_transceiver = NULL;
-  g_signal_emit_by_name(webrtcbin_, "add-transceiver", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV,
-                        gst_caps_from_string("application/x-rtp,media=audio"), &audio_transceiver);
-
-  if (!audio_transceiver) {
-    LOG_ERROR("Failed to add audio transceiver");
-    gst_object_unref(pipeline_);
-    return false;
-  }
-
-  LOG_INFO("Added audio transceiver");
-  gst_object_unref(audio_transceiver);
-
-  // Request src pad from rtpopuspay and sink pad from webrtcbin
+  // Link audio pipeline to webrtcbin (webrtcbin will create transceivers automatically)
   GstPad* audio_src_pad = gst_element_get_static_pad(rtpopuspay, "src");
-  GstPad* audio_sink_pad = gst_element_request_pad_simple(webrtcbin_, "sink_0");
+  GstPad* audio_sink_pad = gst_element_request_pad_simple(webrtcbin_, "sink_%u");
 
   if (gst_pad_link(audio_src_pad, audio_sink_pad) != GST_PAD_LINK_OK) {
     LOG_ERROR("Failed to link audio to webrtcbin");
@@ -213,7 +197,7 @@ bool Session::Initialize() {
 
   gst_object_unref(audio_src_pad);
   gst_object_unref(audio_sink_pad);
-  LOG_INFO("Audio pipeline linked to webrtcbin sink_0");
+  LOG_INFO("Audio pipeline linked to webrtcbin (transceivers will be created automatically)");
 
   // Add video test source if camera is requested
   if (!config_.camera_device.empty()) {
@@ -228,43 +212,119 @@ bool Session::Initialize() {
       // Configure videotestsrc to produce a test pattern
       g_object_set(videotestsrc, "is-live", TRUE, "pattern", 0, NULL);  // pattern=0 is SMPTE color bars
 
-      // Add video transceiver explicitly
-      GstWebRTCRTPTransceiver* video_transceiver = NULL;
-      g_signal_emit_by_name(webrtcbin_, "add-transceiver", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV,
-                            gst_caps_from_string("application/x-rtp,media=video"), &video_transceiver);
+      // Add video elements to pipeline
+      gst_bin_add_many(GST_BIN(pipeline_), videotestsrc, videoconvert, vp8enc, rtpvp8pay, NULL);
 
-      if (!video_transceiver) {
-        LOG_WARN("Failed to add video transceiver, continuing without video");
+      // Link video pipeline: videotestsrc -> videoconvert -> vp8enc -> rtpvp8pay -> webrtcbin
+      if (!gst_element_link_many(videotestsrc, videoconvert, vp8enc, rtpvp8pay, NULL)) {
+        LOG_WARN("Failed to link video elements, continuing without video");
       } else {
-        LOG_INFO("Added video transceiver");
-        gst_object_unref(video_transceiver);
+        // Link video pipeline to webrtcbin
+        GstPad* video_src_pad = gst_element_get_static_pad(rtpvp8pay, "src");
+        GstPad* video_sink_pad = gst_element_request_pad_simple(webrtcbin_, "sink_%u");
 
-        // Add video elements to pipeline
-        gst_bin_add_many(GST_BIN(pipeline_), videotestsrc, videoconvert, vp8enc, rtpvp8pay, NULL);
-
-        // Link video pipeline: videotestsrc -> videoconvert -> vp8enc -> rtpvp8pay -> webrtcbin
-        if (!gst_element_link_many(videotestsrc, videoconvert, vp8enc, rtpvp8pay, NULL)) {
-          LOG_WARN("Failed to link video elements, continuing without video");
+        if (gst_pad_link(video_src_pad, video_sink_pad) != GST_PAD_LINK_OK) {
+          LOG_WARN("Failed to link video to webrtcbin, continuing without video");
         } else {
-          // Request src pad from rtpvp8pay and sink pad from webrtcbin (transceiver 1, so sink_1)
-          GstPad* video_src_pad = gst_element_get_static_pad(rtpvp8pay, "src");
-          GstPad* video_sink_pad = gst_element_request_pad_simple(webrtcbin_, "sink_1");
-
-          if (gst_pad_link(video_src_pad, video_sink_pad) != GST_PAD_LINK_OK) {
-            LOG_WARN("Failed to link video to webrtcbin, continuing without video");
-          } else {
-            LOG_INFO("Video pipeline linked to webrtcbin sink_1");
-          }
-
-          gst_object_unref(video_src_pad);
-          gst_object_unref(video_sink_pad);
+          LOG_INFO("Video pipeline linked to webrtcbin (transceivers will be created automatically)");
         }
+
+        gst_object_unref(video_src_pad);
+        gst_object_unref(video_sink_pad);
       }
     }
   }
 
   initialized_ = true;
   LOG_INFO("Session initialized: {}", config_.session_id);
+  return true;
+}
+
+bool Session::AddTransceivers() {
+  if (!initialized_) {
+    LOG_ERROR("Cannot add transceivers: session not initialized");
+    return false;
+  }
+
+  LOG_INFO("Adding transceivers to webrtcbin for session: {}", config_.session_id);
+
+  // Check how many transceivers exist before adding
+  GArray* transceivers = NULL;
+  g_signal_emit_by_name(webrtcbin_, "get-transceivers", &transceivers);
+  LOG_INFO("webrtcbin has {} transceivers before adding audio", transceivers ? transceivers->len : 0);
+  if (transceivers) g_array_unref(transceivers);
+
+  // Add audio transceiver explicitly (required for webrtcbin to include audio in offer)
+  GstWebRTCRTPTransceiver* audio_transceiver = NULL;
+  g_signal_emit_by_name(webrtcbin_, "add-transceiver", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV,
+                        gst_caps_from_string("application/x-rtp,media=audio"), &audio_transceiver);
+
+  if (!audio_transceiver) {
+    LOG_ERROR("Failed to add audio transceiver");
+    return false;
+  }
+
+  LOG_INFO("Added audio transceiver");
+  gst_object_unref(audio_transceiver);
+
+  // Link audio pipeline to webrtcbin
+  // Get the rtpopuspay element (already exists in pipeline)
+  GstElement* rtpopuspay = gst_bin_get_by_name(GST_BIN(pipeline_), "rtpopuspay");
+  if (!rtpopuspay) {
+    LOG_ERROR("Failed to find rtpopuspay element in pipeline");
+    return false;
+  }
+
+  GstPad* audio_src_pad = gst_element_get_static_pad(rtpopuspay, "src");
+  GstPad* audio_sink_pad = gst_element_request_pad_simple(webrtcbin_, "sink_0");
+
+  if (gst_pad_link(audio_src_pad, audio_sink_pad) != GST_PAD_LINK_OK) {
+    LOG_ERROR("Failed to link audio to webrtcbin");
+    gst_object_unref(audio_src_pad);
+    gst_object_unref(audio_sink_pad);
+    gst_object_unref(rtpopuspay);
+    return false;
+  }
+
+  gst_object_unref(audio_src_pad);
+  gst_object_unref(audio_sink_pad);
+  gst_object_unref(rtpopuspay);
+  LOG_INFO("Audio pipeline linked to webrtcbin sink_0");
+
+  // Add video transceiver if camera is requested
+  if (!config_.camera_device.empty()) {
+    GstWebRTCRTPTransceiver* video_transceiver = NULL;
+    g_signal_emit_by_name(webrtcbin_, "add-transceiver", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV,
+                          gst_caps_from_string("application/x-rtp,media=video"), &video_transceiver);
+
+    if (!video_transceiver) {
+      LOG_WARN("Failed to add video transceiver, continuing without video");
+    } else {
+      LOG_INFO("Added video transceiver");
+      gst_object_unref(video_transceiver);
+
+      // Link video pipeline to webrtcbin
+      GstElement* rtpvp8pay = gst_bin_get_by_name(GST_BIN(pipeline_), "rtpvp8pay");
+      if (rtpvp8pay) {
+        GstPad* video_src_pad = gst_element_get_static_pad(rtpvp8pay, "src");
+        GstPad* video_sink_pad = gst_element_request_pad_simple(webrtcbin_, "sink_1");
+
+        if (gst_pad_link(video_src_pad, video_sink_pad) != GST_PAD_LINK_OK) {
+          LOG_WARN("Failed to link video to webrtcbin, continuing without video");
+        } else {
+          LOG_INFO("Video pipeline linked to webrtcbin sink_1");
+        }
+
+        gst_object_unref(video_src_pad);
+        gst_object_unref(video_sink_pad);
+        gst_object_unref(rtpvp8pay);
+      } else {
+        LOG_WARN("Failed to find rtpvp8pay element in pipeline");
+      }
+    }
+  }
+
+  LOG_INFO("Transceivers added successfully");
   return true;
 }
 
@@ -310,6 +370,18 @@ std::string Session::CreateOffer() {
   }
 
   LOG_INFO("Pipeline is now in PLAYING state");
+
+  // Wait for on-negotiation-needed signal to fire (indicates webrtcbin is ready)
+  LOG_INFO("Waiting for on-negotiation-needed signal...");
+  {
+    std::unique_lock<std::mutex> lock(negotiation_mutex_);
+    auto timeout = std::chrono::seconds(5);
+    if (!negotiation_cv_.wait_for(lock, timeout, [this] { return negotiation_needed_; })) {
+      LOG_ERROR("Timeout waiting for on-negotiation-needed signal");
+      return "";
+    }
+  }
+  LOG_INFO("on-negotiation-needed signal received, proceeding with create-offer");
 
   // Create a promise for the offer
   GstPromise* promise = gst_promise_new();
@@ -401,10 +473,49 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
     return "";
   }
 
-  // Set remote description (offer) from parameter
-  // For incoming calls, Python calls CreateAnswer directly with the offer SDP
+  // Set pipeline to PLAYING state FIRST (webrtcbin needs to be PLAYING to accept remote description)
+  GstState current_state, pending_state;
+  gst_element_get_state(pipeline_, &current_state, &pending_state, 0);
+
+  if (current_state != GST_STATE_PLAYING) {
+    GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+      LOG_ERROR("Failed to set pipeline to PLAYING state");
+      return "";
+    }
+
+    // Wait for state change to complete
+    ret = gst_element_get_state(pipeline_, NULL, NULL, 5 * GST_SECOND);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+      LOG_ERROR("Pipeline failed to reach PLAYING state");
+      return "";
+    }
+
+    LOG_INFO("Pipeline is now in PLAYING state");
+  }
+
+  // For incoming calls: Explicitly add sendrecv transceiver BEFORE setting remote description
+  // This ensures webrtcbin knows we can both send and receive
+  // Without this, webrtcbin sees only our send pad and creates a recvonly transceiver
+  LOG_INFO("Adding sendrecv audio transceiver for incoming call");
+  GstWebRTCRTPTransceiver* audio_transceiver = NULL;
+  GstCaps* audio_caps = gst_caps_from_string("application/x-rtp,media=audio");
+  g_signal_emit_by_name(webrtcbin_, "add-transceiver",
+                        GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV,
+                        audio_caps, &audio_transceiver);
+  gst_caps_unref(audio_caps);
+
+  if (!audio_transceiver) {
+    LOG_ERROR("Failed to add sendrecv audio transceiver");
+    return "";
+  }
+
+  LOG_INFO("Added sendrecv audio transceiver");
+  gst_object_unref(audio_transceiver);
+
+  // NOW set remote description (offer) - pipeline must be PLAYING and transceiver added first!
   if (!remote_sdp.empty()) {
-    LOG_INFO("Setting remote offer before creating answer ({} bytes)", remote_sdp.size());
+    LOG_INFO("Setting remote offer after pipeline is PLAYING ({} bytes)", remote_sdp.size());
     LOG_DEBUG("Remote offer SDP:\n{}", remote_sdp);
 
     GstSDPMessage* remote_sdp_msg = NULL;
@@ -430,33 +541,12 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
     }
     gst_promise_unref(remote_promise);
     gst_webrtc_session_description_free(offer);
-    LOG_INFO("Remote offer set successfully");
+    LOG_INFO("Remote offer set successfully (after pipeline was PLAYING)");
   }
 
   // The offer_has_bundle parameter is informational (we already set bundle-policy at init)
 
-  // Set pipeline to PLAYING state if not already
-  GstState current_state, pending_state;
-  gst_element_get_state(pipeline_, &current_state, &pending_state, 0);
-
-  if (current_state != GST_STATE_PLAYING) {
-    GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
-    if (ret == GST_STATE_CHANGE_FAILURE) {
-      LOG_ERROR("Failed to set pipeline to PLAYING state");
-      return "";
-    }
-
-    // Wait for state change to complete
-    ret = gst_element_get_state(pipeline_, NULL, NULL, 5 * GST_SECOND);
-    if (ret == GST_STATE_CHANGE_FAILURE) {
-      LOG_ERROR("Pipeline failed to reach PLAYING state");
-      return "";
-    }
-
-    LOG_INFO("Pipeline is now in PLAYING state");
-  }
-
-  // Create a promise for the answer
+  // Create a promise for the answer (pipeline is already PLAYING and remote description is set)
   GstPromise* promise = gst_promise_new();
 
   // Emit create-answer signal on webrtcbin
@@ -718,14 +808,15 @@ void Session::OnIceCandidate(GstElement* webrtcbin, guint mline_index,
   event.sdp_mline_index = mline_index;
   event.data = candidate;
 
-  // Extract mid from candidate if present (format: "candidate:... a=mid:...")
-  // For now, we'll derive mid from mline_index (audio0, video1, etc.)
+  // Use GStreamer's mid naming pattern (matches what appears in SDP)
+  // This MUST match what Python's Jingle adapter uses for content names
+  // GStreamer generates: a=mid:audio0 for first audio, a=mid:video1 for first video
   if (mline_index == 0) {
     event.sdp_mid = "audio0";
   } else if (mline_index == 1) {
     event.sdp_mid = "video1";
   } else {
-    event.sdp_mid = "media" + std::to_string(mline_index);
+    event.sdp_mid = "audio" + std::to_string(mline_index);
   }
 
   session->PushEvent(event);
@@ -834,6 +925,19 @@ void Session::OnIceGatheringStateChange(GstElement* webrtcbin, GParamSpec* pspec
   event.type = Event::ICE_GATHERING_STATE_CHANGE;
   event.data = state_str;
   session->PushEvent(event);
+}
+
+void Session::OnNegotiationNeeded(GstElement* webrtcbin, gpointer user_data) {
+  Session* session = static_cast<Session*>(user_data);
+
+  LOG_INFO("on-negotiation-needed signal fired for session: {}", session->config_.session_id);
+
+  // Signal that negotiation is needed
+  {
+    std::lock_guard<std::mutex> lock(session->negotiation_mutex_);
+    session->negotiation_needed_ = true;
+  }
+  session->negotiation_cv_.notify_one();
 }
 
 }  // namespace drunk_call
