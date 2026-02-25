@@ -185,6 +185,12 @@ class MainWindow(QMainWindow):
         self.contact_list.account_details_requested.connect(self._on_edit_account)  # Reuse existing method
         self.contact_list.add_contact_requested.connect(self._on_add_contact_for_account)
         self.contact_list.join_room_requested.connect(self._on_join_room_for_account)
+
+        # Service Discovery (Admin Tools)
+        self.contact_list.disco_contact_requested.connect(self._on_disco_contact)
+        self.contact_list.disco_muc_requested.connect(self._on_disco_muc)
+        self.contact_list.disco_account_requested.connect(self._on_disco_account)
+
         # Set minimum width to prevent collapsing (150px minimum)
         self.contact_list.setMinimumWidth(150)
 
@@ -1115,6 +1121,282 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Failed to disconnect account {account_id}: {e}")
             QMessageBox.critical(self, "Error", f"Failed to disconnect:\n{e}")
+
+    def _on_disco_contact(self, account_id: int, jid: str):
+        """Handle Service Discovery for a contact."""
+        logger.debug(f"Disco requested for contact {jid} on account {account_id}")
+        asyncio.create_task(self._disco_contact_async(account_id, jid))
+
+    def _on_disco_muc(self, account_id: int, room_jid: str):
+        """Handle Service Discovery for a MUC room."""
+        logger.debug(f"Disco requested for MUC {room_jid} on account {account_id}")
+        asyncio.create_task(self._disco_muc_async(account_id, room_jid))
+
+    def _on_disco_account(self, account_id: int):
+        """Handle Service Discovery for account's server."""
+        logger.debug(f"Server Disco requested for account {account_id}")
+        asyncio.create_task(self._disco_account_async(account_id))
+
+    async def _disco_contact_async(self, account_id: int, jid: str):
+        """Async handler for contact disco query."""
+        from .dialogs.disco_info_dialog import DiscoInfoDialog
+
+        account = self.account_manager.get_account(account_id)
+        if not account or not account.client:
+            QMessageBox.warning(self, "Error", "Account not available or not connected")
+            return
+
+        if not account.is_connected():
+            QMessageBox.warning(self, "Error", f"Account must be connected to query disco info")
+            return
+
+        try:
+            # Query disco info via XEP-0030
+            info = await account.client['xep_0030'].get_info(jid=jid)
+
+            # Get raw XML before parsing
+            raw_xml = self._get_pretty_xml(info)
+
+            # Parse disco response
+            disco_data = self._parse_disco_info(info)
+
+            # Create and show dialog (non-blocking with .show())
+            dialog = DiscoInfoDialog(parent=self, jid=jid, disco_data=disco_data, raw_xml=raw_xml)
+            dialog.show()
+
+        except Exception as e:
+            logger.error(f"Failed to get disco info for {jid}: {e}")
+            QMessageBox.critical(self, "Disco Error", f"Failed to query {jid}:\n{str(e)}")
+
+    async def _disco_muc_async(self, account_id: int, room_jid: str):
+        """Async handler for MUC disco query."""
+        from .dialogs.disco_info_dialog import DiscoInfoDialog
+
+        account = self.account_manager.get_account(account_id)
+        if not account or not account.client:
+            QMessageBox.warning(self, "Error", "Account not available or not connected")
+            return
+
+        if not account.is_connected():
+            QMessageBox.warning(self, "Error", f"Account must be connected to query disco info")
+            return
+
+        try:
+            # Query disco info via XEP-0030
+            info = await account.client['xep_0030'].get_info(jid=room_jid)
+
+            # Get raw XML before parsing
+            raw_xml = self._get_pretty_xml(info)
+
+            # Parse disco response
+            disco_data = self._parse_disco_info(info)
+
+            # Create and show dialog (non-blocking with .show())
+            dialog = DiscoInfoDialog(parent=self, jid=room_jid, disco_data=disco_data, raw_xml=raw_xml)
+            dialog.show()
+
+        except Exception as e:
+            logger.error(f"Failed to get disco info for {room_jid}: {e}")
+            QMessageBox.critical(self, "Disco Error", f"Failed to query {room_jid}:\n{str(e)}")
+
+    async def _disco_account_async(self, account_id: int):
+        """Async handler for server disco query."""
+        from .dialogs.disco_info_dialog import DiscoInfoDialog
+
+        account = self.account_manager.get_account(account_id)
+        if not account or not account.client:
+            QMessageBox.warning(self, "Error", "Account not available")
+            return
+
+        if not account.is_connected():
+            QMessageBox.warning(self, "Error", f"Account must be connected to query disco info")
+            return
+
+        try:
+            # Get server domain from account JID
+            server_domain = account.client.boundjid.domain
+
+            # Query disco info via XEP-0030
+            info = await account.client['xep_0030'].get_info(jid=server_domain)
+
+            # Get raw XML before parsing
+            raw_xml = self._get_pretty_xml(info)
+
+            # Parse disco response
+            disco_data = self._parse_disco_info(info)
+
+            # Create and show dialog (non-blocking with .show())
+            dialog = DiscoInfoDialog(parent=self, jid=server_domain, disco_data=disco_data, raw_xml=raw_xml)
+            dialog.show()
+
+        except Exception as e:
+            logger.error(f"Failed to get server disco info: {e}")
+            QMessageBox.critical(self, "Disco Error", f"Failed to query server:\n{str(e)}")
+
+    def _parse_disco_info(self, info):
+        """
+        Parse disco#info stanza into a clean dictionary.
+
+        Args:
+            info: The disco#info response from slixmpp
+
+        Returns:
+            Dictionary with identities, features, and extended info
+        """
+        result = {}
+
+        # Extract identities
+        identities = []
+        disco_info = info.get('disco_info', info)
+        if disco_info and 'identities' in disco_info:
+            for identity in disco_info['identities']:
+                identities.append({
+                    'category': identity[0],
+                    'type': identity[1],
+                    'name': identity[2] if len(identity) > 2 else ''
+                })
+        if identities:
+            result['identities'] = identities
+
+        # Extract features
+        features = []
+        if disco_info and 'features' in disco_info:
+            features = sorted(list(disco_info['features']))
+        if features:
+            result['features'] = features
+
+        # Extended info (XEP-0128 data forms)
+        if disco_info and 'form' in disco_info:
+            form = disco_info['form']
+            extended = self._parse_data_form(form)
+            if extended:
+                result['extended_info'] = extended
+
+        return result
+
+    def _parse_data_form(self, form):
+        """
+        Parse XEP-0004 data form into a clean dictionary.
+
+        Args:
+            form: The data form stanza
+
+        Returns:
+            Dictionary with form fields
+        """
+        try:
+            fields = {}
+
+            # Try to access form fields via slixmpp's form plugin
+            if hasattr(form, 'get_values'):
+                # Use slixmpp's form API
+                form_values = form.get_values()
+                for field_var, value in form_values.items():
+                    # Handle multi-value fields
+                    if isinstance(value, list):
+                        if len(value) == 1:
+                            fields[field_var] = value[0]
+                        else:
+                            fields[field_var] = value
+                    else:
+                        fields[field_var] = value
+            elif hasattr(form, 'fields'):
+                # Access fields directly
+                for field_var, field in form.fields.items():
+                    value = field.get('value', field.get('values', ''))
+                    # Handle multi-value fields
+                    if isinstance(value, list):
+                        if len(value) == 1:
+                            fields[field_var] = value[0]
+                        else:
+                            fields[field_var] = value
+                    else:
+                        fields[field_var] = value
+            else:
+                # Fallback: parse XML manually
+                return self._parse_data_form_xml(form)
+
+            return fields if fields else None
+
+        except Exception as e:
+            logger.warning(f"Failed to parse data form: {e}")
+            # Last resort: pretty-print the XML
+            return self._parse_data_form_xml(form)
+
+    def _parse_data_form_xml(self, form):
+        """
+        Parse data form XML as fallback.
+
+        Args:
+            form: The data form stanza
+
+        Returns:
+            Dictionary or pretty-printed XML string
+        """
+        try:
+            # Try to pretty-print XML
+            import xml.etree.ElementTree as ET
+            from xml.dom import minidom
+
+            # Convert to string and parse
+            xml_str = str(form)
+
+            # Parse and pretty-print
+            dom = minidom.parseString(xml_str)
+            pretty_xml = dom.toprettyxml(indent="  ")
+
+            # Remove empty lines and XML declaration
+            lines = [line for line in pretty_xml.split('\n') if line.strip()]
+            if lines and lines[0].startswith('<?xml'):
+                lines = lines[1:]
+
+            return '\n'.join(lines)
+
+        except Exception as e:
+            logger.warning(f"Failed to pretty-print form XML: {e}")
+            return str(form)
+
+    def _get_pretty_xml(self, stanza):
+        """
+        Get pretty-printed XML from a stanza.
+
+        Args:
+            stanza: The XMPP stanza (slixmpp element)
+
+        Returns:
+            Pretty-printed XML string
+        """
+        try:
+            from xml.dom import minidom
+
+            # Get the raw XML string from slixmpp stanza
+            # Method 1: Try using slixmpp's __str__ method which should have the full XML
+            xml_str = str(stanza)
+
+            # Parse and pretty-print using minidom
+            dom = minidom.parseString(xml_str)
+            pretty_xml = dom.toprettyxml(indent="  ")
+
+            # Remove empty lines and XML declaration
+            lines = [line for line in pretty_xml.split('\n') if line.strip()]
+            if lines and lines[0].startswith('<?xml'):
+                lines = lines[1:]
+
+            return '\n'.join(lines)
+
+        except Exception as e:
+            logger.warning(f"Failed to pretty-print stanza XML: {e}")
+            # Fallback: try alternative method
+            try:
+                import xml.etree.ElementTree as ET
+                # Indent the XML tree
+                ET.indent(stanza, space="  ")
+                xml_str = ET.tostring(stanza, encoding='unicode')
+                return xml_str
+            except Exception as e2:
+                logger.warning(f"Fallback pretty-print also failed: {e2}")
+                # Last resort: return raw string
+                return str(stanza)
 
     def _on_add_contact_for_account(self, account_id: int):
         """Handle Add Contact for specific account from context menu."""

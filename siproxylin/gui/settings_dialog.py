@@ -69,6 +69,11 @@ class SettingsDialog(QDialog):
         self._setup_notifications_tab()
         self.tabs.addTab(self.notifications_tab, "Notifications")
 
+        # Advanced tab
+        self.advanced_tab = QWidget()
+        self._setup_advanced_tab()
+        self.tabs.addTab(self.advanced_tab, "Advanced")
+
         # Dialog buttons
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel
@@ -243,6 +248,28 @@ class SettingsDialog(QDialog):
 
         logger.debug("Notifications tab setup complete")
 
+    def _setup_advanced_tab(self):
+        """Setup the Advanced tab with admin tools."""
+        layout = QFormLayout(self.advanced_tab)
+
+        # Admin Tools section
+        admin_tools_label = QLabel("Administrator Tools")
+        admin_tools_label.setStyleSheet("font-weight: bold; font-size: 11pt;")
+        layout.addRow(admin_tools_label)
+
+        # Admin Tools checkbox
+        self.admin_tools_checkbox = QCheckBox("Enable Admin Tools")
+        self.admin_tools_checkbox.setChecked(False)
+        layout.addRow("", self.admin_tools_checkbox)
+
+        # Info label
+        info_label = QLabel('When enabled, adds "Disco (Service Discovery)" to context menus for debugging XMPP server/client capabilities.')
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: gray; font-size: 10pt;")
+        layout.addRow("", info_label)
+
+        logger.debug("Advanced tab setup complete")
+
     def _on_echo_cancel_toggled(self, checked):
         """Enable/disable echo suppression level combo based on checkbox."""
         self.echo_level_combo.setEnabled(checked)
@@ -402,6 +429,12 @@ class SettingsDialog(QDialog):
             notification_show_body.lower() in ('true', '1', 'yes')
         )
 
+        # Load advanced settings from database
+        admin_tools_enabled = self.db.get_setting('admin_tools_enabled', default='false')
+        self.admin_tools_checkbox.setChecked(
+            admin_tools_enabled.lower() in ('true', '1', 'yes')
+        )
+
     def _on_save(self):
         """Save settings and close dialog."""
         # Get selected devices
@@ -437,5 +470,9 @@ class SettingsDialog(QDialog):
                            'true' if self.notification_show_sender_checkbox.isChecked() else 'false')
         self.db.set_setting('notification_show_body',
                            'true' if self.notification_show_body_checkbox.isChecked() else 'false')
+
+        # Save advanced settings to database
+        self.db.set_setting('admin_tools_enabled',
+                           'true' if self.admin_tools_checkbox.isChecked() else 'false')
 
         self.accept()

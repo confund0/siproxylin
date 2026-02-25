@@ -21,6 +21,9 @@ pyenchant>=3.2.0
 # Proxy support (optional feature - HTTP CONNECT and SOCKS5)
 python-socks[asyncio]>=2.4.0
 
+# YAML for pretty-print DiscoInfo
+PyYAML>=6.0.3
+
 # Audio/Video Calls - Go Service + gRPC
 grpcio>=1.68.0
 grpcio-tools>=1.68.0  # For protobuf code generation

@@ -1391,140 +1391,147 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         Extracts metadata from the stanza and passes it to the callback.
         The client (GUI/test tool) interprets the metadata and decides what to do.
         """
-        # Ignore if this is a groupchat message (handled separately)
-        if msg['type'] == 'groupchat':
-            return
-
-        from_jid = msg['from'].bare
-
-        # Ignore messages from ourselves (not carbons - those come via carbon handlers)
-        if from_jid == self.boundjid.bare:
-            return
-
-        # Build metadata object
-        metadata = MessageMetadata(
-            message_type='chat',
-            from_jid=str(msg['from']),
-            to_jid=str(msg['to']),
-            has_body=bool(msg['body'])
-        )
-
-        # Extract message IDs (basic ID + XEP-0359 stable IDs)
-        metadata.message_id = msg.get('id')  # Basic message ID attribute
         try:
-            metadata.origin_id = msg['origin_id']['id'] if msg['origin_id']['id'] else None
-        except (KeyError, TypeError):
-            pass
-        try:
-            metadata.stanza_id = msg['stanza_id']['id'] if msg['stanza_id']['id'] else None
-        except (KeyError, TypeError):
-            pass
-
-        # Check for history (XEP-0203: Delayed Delivery)
-        if msg['delay']['stamp']:
-            metadata.is_history = True
-            metadata.delay_timestamp = msg['delay']['stamp']
-
-        # Check for message correction (XEP-0308)
-        try:
-            if msg['replace']['id']:
-                metadata.is_correction = True
-                metadata.replaces_id = msg['replace']['id']
-                # Don't process corrections here - handled by _on_message_correction
-                self.logger.debug(f"Private message is a correction, will be handled by correction handler")
+            # Ignore if this is a groupchat message (handled separately)
+            if msg['type'] == 'groupchat':
+                self.logger.debug(f"Ignoring groupchat message from {msg['from'].bare}")
                 return
-        except (KeyError, TypeError):
-            pass
 
-        # Check for reactions (XEP-0444) - skip if this is a reaction message
-        try:
-            if msg['reactions']['id']:
-                # This is a reaction message, handled by _on_reactions
-                self.logger.debug(f"Private message is a reaction, will be handled by reaction handler")
+            from_jid = msg['from'].bare
+
+            # Ignore messages from ourselves (not carbons - those come via carbon handlers)
+            if from_jid == self.boundjid.bare:
+                self.logger.debug(f"Ignoring message from ourselves ({from_jid})")
                 return
-        except (KeyError, TypeError):
-            pass
 
-        # Check for MUC invite (XEP-0045) - skip if this is an invite message
-        # Invites are handled by _on_groupchat_invite, not as regular messages
-        try:
-            if msg['muc']['invite']:
-                self.logger.debug(f"Private message is a MUC invite, will be handled by invite handler")
-                return
-        except (KeyError, TypeError):
-            pass
+            # Build metadata object
+            metadata = MessageMetadata(
+                message_type='chat',
+                from_jid=str(msg['from']),
+                to_jid=str(msg['to']),
+                has_body=bool(msg['body'])
+            )
 
-        # Check for reply (XEP-0461)
-        try:
-            if msg['reply']['id']:
-                metadata.is_reply = True
-                metadata.reply_to_id = msg['reply']['id']
-                metadata.reply_to_jid = msg['reply']['to']
-        except (KeyError, TypeError):
-            pass
-
-        # Check for file attachment (XEP-0066)
-        try:
-            file_url = msg['oob']['url']
-            if file_url:
-                metadata.has_attachment = True
-                metadata.attachment_url = file_url
-                if file_url.startswith('aesgcm://'):
-                    metadata.attachment_encrypted = True
-        except (KeyError, TypeError):
-            pass
-
-        # Check for OMEMO encryption (XEP-0384)
-        body = msg['body']
-        if self.omemo_enabled:
-            xep_0384 = self.plugin['xep_0384']
-            if xep_0384.is_encrypted(msg):
-                metadata.is_encrypted = True
-                metadata.encryption_type = 'omemo'
-
-                try:
-                    # Attempt decryption
-                    decrypted_msg, device_info = await xep_0384.decrypt_message(msg)
-                    body = decrypted_msg['body']
-                    metadata.decrypt_success = True
-                    metadata.sender_device_id = device_info.device_id
-                    self.logger.debug(f"Decrypted private message from {from_jid} (device {device_info.device_id})")
-                except Exception as e:
-                    # Decryption failed
-                    metadata.decrypt_failed = True
-                    body = "[Failed to decrypt OMEMO message]"
-                    self.logger.error(f"Failed to decrypt OMEMO message from {from_jid}: {e}")
-
-        # Update has_body after potential decryption
-        metadata.has_body = bool(body)
-
-        # Check for aesgcm:// URL in body (XEP-0454: OMEMO Media Sharing)
-        # This handles encrypted files sent without OOB extension
-        if not metadata.has_attachment and metadata.has_body and body:
-            # Check if body contains aesgcm:// URL (could have caption on separate line)
-            for line in body.split('\n'):
-                line = line.strip()
-                if line.startswith('aesgcm://'):
-                    metadata.has_attachment = True
-                    metadata.attachment_url = line
-                    metadata.attachment_encrypted = True
-                    self.logger.debug(f"Detected aesgcm:// URL in private message body: {line[:60]}...")
-                    break
-
-        # Skip empty messages (no body and no attachment)
-        if not metadata.has_body and not metadata.has_attachment:
-            return
-
-        # Log message
-        enc_str = f"encrypted ({metadata.encryption_type})" if metadata.is_encrypted else "plaintext"
-        self.logger.debug(f"Private message from {from_jid}: {body[:50] if body else '(attachment)'}... [{enc_str}]")
-
-        # Pass to callback - client decides what to do with the metadata
-        if self.on_private_message_callback:
+            # Extract message IDs (basic ID + XEP-0359 stable IDs)
+            metadata.message_id = msg.get('id')  # Basic message ID attribute
             try:
-                await self.on_private_message_callback(from_jid, body, metadata, msg)
-            except Exception as e:
-                self.logger.exception(f"Error in private message callback: {e}")
+                metadata.origin_id = msg['origin_id']['id'] if msg['origin_id']['id'] else None
+            except (KeyError, TypeError):
+                pass
+            try:
+                metadata.stanza_id = msg['stanza_id']['id'] if msg['stanza_id']['id'] else None
+            except (KeyError, TypeError):
+                pass
+
+            # Check for history (XEP-0203: Delayed Delivery)
+            if msg['delay']['stamp']:
+                metadata.is_history = True
+                metadata.delay_timestamp = msg['delay']['stamp']
+
+            # Check for message correction (XEP-0308)
+            try:
+                if msg['replace']['id']:
+                    metadata.is_correction = True
+                    metadata.replaces_id = msg['replace']['id']
+                    # Don't process corrections here - handled by _on_message_correction
+                    self.logger.debug(f"Private message is a correction, will be handled by correction handler")
+                    return
+            except (KeyError, TypeError):
+                pass
+
+            # Check for reactions (XEP-0444) - skip if this is a reaction message
+            try:
+                if msg['reactions']['id']:
+                    # This is a reaction message, handled by _on_reactions
+                    self.logger.debug(f"Private message is a reaction, will be handled by reaction handler")
+                    return
+            except (KeyError, TypeError):
+                pass
+
+            # Check for MUC invite (XEP-0045) - skip if this is an invite message
+            # Invites are handled by _on_groupchat_invite, not as regular messages
+            # Use get_plugin with check=True to avoid creating the element
+            muc = msg.get_plugin('muc', check=True)
+            if muc is not None:
+                invite = muc.get_plugin('invite', check=True)
+                if invite is not None:
+                    self.logger.debug(f"Private message is a MUC invite, will be handled by invite handler")
+                    return
+
+            # Check for reply (XEP-0461)
+            try:
+                if msg['reply']['id']:
+                    metadata.is_reply = True
+                    metadata.reply_to_id = msg['reply']['id']
+                    metadata.reply_to_jid = msg['reply']['to']
+            except (KeyError, TypeError):
+                pass
+
+            # Check for file attachment (XEP-0066)
+            try:
+                file_url = msg['oob']['url']
+                if file_url:
+                    metadata.has_attachment = True
+                    metadata.attachment_url = file_url
+                    if file_url.startswith('aesgcm://'):
+                        metadata.attachment_encrypted = True
+            except (KeyError, TypeError):
+                pass
+
+            # Check for OMEMO encryption (XEP-0384)
+            body = msg['body']
+            if self.omemo_enabled:
+                xep_0384 = self.plugin['xep_0384']
+                if xep_0384.is_encrypted(msg):
+                    metadata.is_encrypted = True
+                    metadata.encryption_type = 'omemo'
+
+                    try:
+                        # Attempt decryption
+                        decrypted_msg, device_info = await xep_0384.decrypt_message(msg)
+                        body = decrypted_msg['body']
+                        metadata.decrypt_success = True
+                        metadata.sender_device_id = device_info.device_id
+                        self.logger.debug(f"Decrypted private message from {from_jid} (device {device_info.device_id})")
+                    except Exception as e:
+                        # Decryption failed
+                        metadata.decrypt_failed = True
+                        body = "[Failed to decrypt OMEMO message]"
+                        self.logger.error(f"Failed to decrypt OMEMO message from {from_jid}: {e}")
+
+            # Update has_body after potential decryption
+            metadata.has_body = bool(body)
+
+            # Check for aesgcm:// URL in body (XEP-0454: OMEMO Media Sharing)
+            # This handles encrypted files sent without OOB extension
+            if not metadata.has_attachment and metadata.has_body and body:
+                # Check if body contains aesgcm:// URL (could have caption on separate line)
+                for line in body.split('\n'):
+                    line = line.strip()
+                    if line.startswith('aesgcm://'):
+                        metadata.has_attachment = True
+                        metadata.attachment_url = line
+                        metadata.attachment_encrypted = True
+                        self.logger.debug(f"Detected aesgcm:// URL in private message body: {line[:60]}...")
+                        break
+
+            # Skip empty messages (no body and no attachment)
+            if not metadata.has_body and not metadata.has_attachment:
+                self.logger.debug(f"Skipping empty message from {from_jid} (has_body={metadata.has_body}, has_attachment={metadata.has_attachment}, is_encrypted={metadata.is_encrypted}, decrypt_failed={metadata.decrypt_failed})")
+                return
+
+            # Log message
+            enc_str = f"encrypted ({metadata.encryption_type})" if metadata.is_encrypted else "plaintext"
+            self.logger.debug(f"Private message from {from_jid}: {body[:50] if body else '(attachment)'}... [{enc_str}]")
+
+            # Pass to callback - client decides what to do with the metadata
+            if self.on_private_message_callback:
+                try:
+                    await self.on_private_message_callback(from_jid, body, metadata, msg)
+                except Exception as e:
+                    self.logger.exception(f"Error in private message callback: {e}")
+        except Exception as e:
+            self.logger.exception(f"Unexpected error in _on_private_message handler from {msg['from'].bare}: {e}")
 
     def _on_reactions(self, msg):
         """
@@ -2068,20 +2075,25 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         from_jid = msg['from'].bare
 
         # Check for different marker types using slixmpp stanza interfaces
-        # Each marker type (Received, Displayed, Acknowledged) has 'id' in interfaces
+        # Use get_plugin with check=True to avoid creating elements that don't exist
         marker_type = None
         message_id = None
 
-        # Try each marker type - slixmpp returns empty string if not present
-        if msg['received']['id']:
+        # Try each marker type
+        received = msg.get_plugin('received', check=True)
+        if received is not None and received['id']:
             marker_type = 'received'
-            message_id = msg['received']['id']
-        elif msg['displayed']['id']:
-            marker_type = 'displayed'
-            message_id = msg['displayed']['id']
-        elif msg['acknowledged']['id']:
-            marker_type = 'acknowledged'
-            message_id = msg['acknowledged']['id']
+            message_id = received['id']
+        else:
+            displayed = msg.get_plugin('displayed', check=True)
+            if displayed is not None and displayed['id']:
+                marker_type = 'displayed'
+                message_id = displayed['id']
+            else:
+                acknowledged = msg.get_plugin('acknowledged', check=True)
+                if acknowledged is not None and acknowledged['id']:
+                    marker_type = 'acknowledged'
+                    message_id = acknowledged['id']
 
         if not message_id or not marker_type:
             self.logger.debug(f"Received incomplete chat marker from {from_jid}")

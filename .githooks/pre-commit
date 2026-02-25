@@ -36,4 +36,21 @@ if [ "$SIPROXYLIN_CODENAME" = "$PREV_CODE" ]; then
 fi
 
 echo "✓ Version bump: $PREV → $CURR ($SIPROXYLIN_CODENAME)"
+
+# Auto-generate CHANGELOG.md
+echo "Generating CHANGELOG.md..."
+HOOK_DIR=$(dirname "$(readlink -f "$0")")
+if [ -x "$HOOK_DIR/generate-changelog.sh" ]; then
+    if "$HOOK_DIR/generate-changelog.sh"; then
+        # Stage the updated CHANGELOG.md
+        git add CHANGELOG.md 2>/dev/null || true
+        echo "✓ CHANGELOG.md updated and staged"
+    else
+        echo "ERROR: Failed to generate CHANGELOG.md" >&2
+        exit 1
+    fi
+else
+    echo "WARN: generate-changelog.sh not found or not executable" >&2
+fi
+
 exit 0

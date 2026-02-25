@@ -63,6 +63,11 @@ class ContactListWidget(QWidget):
     add_contact_requested = Signal(int)  # (account_id)
     join_room_requested = Signal(int)  # (account_id)
 
+    # Service Discovery signals (Admin Tools)
+    disco_contact_requested = Signal(int, str)  # (account_id, jid)
+    disco_muc_requested = Signal(int, str)  # (account_id, room_jid)
+    disco_account_requested = Signal(int)  # (account_id) - queries server domain
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -836,6 +841,13 @@ class ContactListWidget(QWidget):
         copy_jid_action.triggered.connect(lambda: self._copy_to_clipboard(jid))
         menu.addAction(copy_jid_action)
 
+        # Service Discovery (Admin Tools only)
+        admin_tools_enabled = self.db.get_setting('admin_tools_enabled', default='false')
+        if admin_tools_enabled.lower() in ('true', '1', 'yes'):
+            disco_action = QAction("Disco (Service Discovery)...", self)
+            disco_action.triggered.connect(lambda: self.disco_contact_requested.emit(account_id, jid))
+            menu.addAction(disco_action)
+
         menu.addSeparator()
 
         # Delete & Block (nuclear option - only show when not already blocked)
@@ -945,6 +957,13 @@ class ContactListWidget(QWidget):
         copy_jid_action.triggered.connect(lambda: self._copy_to_clipboard(room_jid))
         menu.addAction(copy_jid_action)
 
+        # Service Discovery (Admin Tools only)
+        admin_tools_enabled = self.db.get_setting('admin_tools_enabled', default='false')
+        if admin_tools_enabled.lower() in ('true', '1', 'yes'):
+            disco_action = QAction("Disco (Service Discovery)...", self)
+            disco_action.triggered.connect(lambda: self.disco_muc_requested.emit(account_id, room_jid))
+            menu.addAction(disco_action)
+
         menu.addSeparator()
 
         # Leave Room
@@ -990,6 +1009,13 @@ class ContactListWidget(QWidget):
         copy_jid_action = QAction("Copy Account JID", self)
         copy_jid_action.triggered.connect(lambda: self._copy_to_clipboard(data.bare_jid))
         menu.addAction(copy_jid_action)
+
+        # Service Discovery (Admin Tools only)
+        admin_tools_enabled = self.db.get_setting('admin_tools_enabled', default='false')
+        if admin_tools_enabled.lower() in ('true', '1', 'yes'):
+            disco_action = QAction("Server Disco (Service Discovery)...", self)
+            disco_action.triggered.connect(lambda: self.disco_account_requested.emit(account_id))
+            menu.addAction(disco_action)
 
         menu.addSeparator()
 
