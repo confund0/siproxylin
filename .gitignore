@@ -19,3 +19,4 @@ test-drunk-xmpp-logs
 *.db
 *.zsync
 old_docs
+drunk_call_service_go

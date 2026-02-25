@@ -1146,7 +1146,8 @@ class JingleAdapter:
             'rtcp_fb': {},               # {pt_id: [type values]}
             'has_ssrc': False,           # Whether offer includes SSRC
             'ssrc_params': [],           # List of SSRC parameter names in offer (e.g., ['cname', 'msid'])
-            'extmap_allow_mixed': False  # Whether offer has extmap-allow-mixed
+            'extmap_allow_mixed': False, # Whether offer has extmap-allow-mixed
+            'encryption': {}             # {media: {crypto-suite, key-params, tag}} - SDES encryption per media
         }
 
         # Extract BUNDLE group (RFC 9143)
@@ -1158,11 +1159,25 @@ class JingleAdapter:
             details['bundle_group'] = content_names
             self.logger.debug(f"Extracted BUNDLE group: {content_names}")
 
-        # Extract RTP extensions, codec params, RTCP-FB from each content
+        # Extract RTP extensions, codec params, RTCP-FB, encryption from each content
         for content in jingle.findall('{urn:xmpp:jingle:1}content'):
             description = content.find('{urn:xmpp:jingle:apps:rtp:1}description')
             if description is None:
                 continue
+
+            media = description.get('media')
+
+            # SDES encryption (legacy, but Dino includes it)
+            encryption_el = description.find('{urn:xmpp:jingle:apps:rtp:1}encryption')
+            if encryption_el is not None:
+                crypto_el = encryption_el.find('{urn:xmpp:jingle:apps:rtp:1}crypto')
+                if crypto_el is not None:
+                    details['encryption'][media] = {
+                        'crypto-suite': crypto_el.get('crypto-suite'),
+                        'key-params': crypto_el.get('key-params'),
+                        'tag': crypto_el.get('tag')
+                    }
+                    self.logger.debug(f"Extracted SDES encryption for {media}")
 
             # RTP header extensions (RFC 8285)
             for ext in description.findall('{urn:xmpp:jingle:apps:rtp:rtp-hdrext:0}rtp-hdrext'):
@@ -1315,26 +1330,26 @@ class JingleAdapter:
         # Parse SDP into lines
         sdp_lines = sdp.strip().split('\r\n')
 
-        # Global session attributes
-        ice_ufrag = None
-        ice_pwd = None
-        dtls_fingerprint = None
-        dtls_hash = None
-        dtls_setup = None
+        # Session-level attributes (used as fallback for media-specific)
+        global_ice_ufrag = None
+        global_ice_pwd = None
+        global_dtls_fingerprint = None
+        global_dtls_hash = None
+        global_dtls_setup = None
 
-        # Parse global attributes
+        # Parse session-level attributes (fallback values)
         for line in sdp_lines:
             if line.startswith('a=ice-ufrag:'):
-                ice_ufrag = line.split(':', 1)[1]
+                global_ice_ufrag = line.split(':', 1)[1]
             elif line.startswith('a=ice-pwd:'):
-                ice_pwd = line.split(':', 1)[1]
+                global_ice_pwd = line.split(':', 1)[1]
             elif line.startswith('a=fingerprint:'):
                 # Format: "a=fingerprint:sha-256 AB:CD:EF:..."
                 parts = line.split(':', 1)[1].split(' ', 1)
-                dtls_hash = parts[0]
-                dtls_fingerprint = parts[1]
+                global_dtls_hash = parts[0]
+                global_dtls_fingerprint = parts[1]
             elif line.startswith('a=setup:'):
-                dtls_setup = line.split(':', 1)[1]
+                global_dtls_setup = line.split(':', 1)[1]
 
         # Parse media sections
         current_media = None
@@ -1370,6 +1385,33 @@ class JingleAdapter:
                 if line.startswith('a=mid:'):
                     content_name = line.split(':', 1)[1]
                     break
+
+            # Parse media-specific attributes (take precedence over session-level)
+            media_ice_ufrag = None
+            media_ice_pwd = None
+            media_dtls_fingerprint = None
+            media_dtls_hash = None
+            media_dtls_setup = None
+
+            for line in media_lines:
+                if line.startswith('a=ice-ufrag:'):
+                    media_ice_ufrag = line.split(':', 1)[1]
+                elif line.startswith('a=ice-pwd:'):
+                    media_ice_pwd = line.split(':', 1)[1]
+                elif line.startswith('a=fingerprint:'):
+                    # Format: "a=fingerprint:sha-256 AB:CD:EF:..."
+                    parts = line.split(':', 1)[1].split(' ', 1)
+                    media_dtls_hash = parts[0]
+                    media_dtls_fingerprint = parts[1]
+                elif line.startswith('a=setup:'):
+                    media_dtls_setup = line.split(':', 1)[1]
+
+            # Use media-level if present, fallback to session-level
+            ice_ufrag = media_ice_ufrag if media_ice_ufrag else global_ice_ufrag
+            ice_pwd = media_ice_pwd if media_ice_pwd else global_ice_pwd
+            dtls_fingerprint = media_dtls_fingerprint if media_dtls_fingerprint else global_dtls_fingerprint
+            dtls_hash = media_dtls_hash if media_dtls_hash else global_dtls_hash
+            dtls_setup = media_dtls_setup if media_dtls_setup else global_dtls_setup
 
             content = ET.SubElement(jingle, '{urn:xmpp:jingle:1}content')
             content.set('creator', 'initiator')
@@ -1494,7 +1536,20 @@ class JingleAdapter:
                         skipped = [name for name in attrs.keys() if name not in allowed_ssrc_params]
                         self.logger.debug(f"Skipped SSRC params not in offer: {skipped}")
 
-            # Add rtcp-mux AFTER source (matches Conversations' element ordering)
+            # Add SDES encryption BEFORE rtcp-mux (echo from offer if present)
+            if session_id and session_id in self.sessions:
+                offer_details = self.sessions[session_id].get('offer_details', {})
+                encryption_data = offer_details.get('encryption', {})
+                if media_type in encryption_data:
+                    enc = encryption_data[media_type]
+                    encryption_el = ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:1}encryption')
+                    crypto_el = ET.SubElement(encryption_el, '{urn:xmpp:jingle:apps:rtp:1}crypto')
+                    crypto_el.set('crypto-suite', enc['crypto-suite'])
+                    crypto_el.set('key-params', enc['key-params'])
+                    crypto_el.set('tag', enc['tag'])
+                    self.logger.debug(f"Echoed SDES encryption for {media_type}")
+
+            # Add rtcp-mux AFTER encryption (matches Dino's element ordering)
             # Only if Pion negotiated it in the SDP answer (RTCPMuxPolicyNegotiate)
             if has_rtcp_mux:
                 ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:1}rtcp-mux')

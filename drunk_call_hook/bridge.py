@@ -390,6 +390,7 @@ class CallBridge:
 
     async def create_session(self, peer_jid: str, session_id: str,
                              microphone_device: str = "", speakers_device: str = "",
+                             camera_device: str = "",
                              proxy_host: str = "", proxy_port: int = 0,
                              proxy_username: str = "", proxy_password: str = "",
                              proxy_type: str = "",
@@ -397,7 +398,8 @@ class CallBridge:
                              turn_password: str = "",
                              echo_cancel: bool = True, echo_suppression_level: int = 1,
                              noise_suppression: bool = True, noise_suppression_level: int = 1,
-                             gain_control: bool = True) -> bool:
+                             gain_control: bool = True,
+                             offer_has_bundle: bool = True) -> bool:
         """
         Create new call session.
 
@@ -406,6 +408,7 @@ class CallBridge:
             session_id: Jingle session ID
             microphone_device: Microphone device name (empty = default)
             speakers_device: Speakers device name (empty = default)
+            camera_device: Camera device path (e.g., "/dev/video0"), empty = no video
             proxy_host: Proxy hostname/IP (empty = no proxy)
             proxy_port: Proxy port (e.g., 9050 for Tor, 3128 for HTTP)
             proxy_username: Proxy authentication username (optional)
@@ -419,6 +422,7 @@ class CallBridge:
             noise_suppression: Enable noise suppression (default: True)
             noise_suppression_level: Noise suppression level 0-3 (low/moderate/high/very-high, default: 1)
             gain_control: Enable automatic gain control (default: True)
+            offer_has_bundle: Whether the offer includes BUNDLE group (for incoming calls, default: True)
 
         Returns:
             True if session created
@@ -441,13 +445,21 @@ class CallBridge:
             if turn_username:
                 turn_info += f" (user: {turn_username})"
 
-        self.logger.info(f"Creating session {session_id} with {peer_jid}, mic={microphone_device or 'default'}, speakers={speakers_device or 'default'}, {proxy_info}, TURN={turn_info}")
+        # Build device info for logging
+        devices_info = f"mic={microphone_device or 'default'}, speakers={speakers_device or 'default'}"
+        if camera_device:
+            devices_info += f", camera={camera_device}"
+        else:
+            devices_info += ", camera=none (audio-only)"
+
+        self.logger.info(f"Creating session {session_id} with {peer_jid}, {devices_info}, {proxy_info}, TURN={turn_info}")
 
         request = call_pb2.CreateSessionRequest(
             session_id=session_id,
             peer_jid=peer_jid,
             microphone_device=microphone_device,
             speakers_device=speakers_device,
+            camera_device=camera_device,
             proxy_host=proxy_host,
             proxy_port=proxy_port,
             proxy_username=proxy_username,
@@ -461,7 +473,8 @@ class CallBridge:
             echo_suppression_level=echo_suppression_level,
             noise_suppression=noise_suppression,
             noise_suppression_level=noise_suppression_level,
-            gain_control=gain_control
+            gain_control=gain_control,
+            offer_has_bundle=offer_has_bundle
         )
 
         response = await self._stub.CreateSession(request)
@@ -501,13 +514,14 @@ class CallBridge:
         self.logger.debug(f"Offer created for session {session_id}")
         return response.sdp
 
-    async def create_answer(self, session_id: str, remote_sdp: str) -> str:
+    async def create_answer(self, session_id: str, remote_sdp: str, offer_has_bundle: bool = True) -> str:
         """
         Create SDP answer for incoming session.
 
         Args:
             session_id: Session ID
             remote_sdp: Remote SDP offer
+            offer_has_bundle: Whether the offer includes BUNDLE group (default: True for compatibility)
 
         Returns:
             SDP answer string
@@ -515,11 +529,12 @@ class CallBridge:
         if not self._stub:
             raise RuntimeError("gRPC stub not initialized")
 
-        self.logger.debug(f"Creating answer for session {session_id}")
+        self.logger.debug(f"Creating answer for session {session_id} (offer_has_bundle={offer_has_bundle})")
 
         request = call_pb2.CreateAnswerRequest(
             session_id=session_id,
-            remote_sdp=remote_sdp
+            remote_sdp=remote_sdp,
+            offer_has_bundle=offer_has_bundle
         )
         response = await self._stub.CreateAnswer(request)
 

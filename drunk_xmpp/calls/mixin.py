@@ -73,9 +73,11 @@ class CallsMixin:
             self.logger.debug(f"Receipt requested for {msg['id']} but skipped (sent from event handler)")
 
         # Extract media types from description elements
+        # get_descriptions() returns list of tuples: [(namespace, media), ...]
+        # Example: [('urn:xmpp:jingle:apps:rtp:1', 'audio'), ('urn:xmpp:jingle:apps:rtp:1', 'video')]
         propose = msg['jingle_propose']
         descriptions = propose.get_descriptions()
-        media_types = [desc['media'] for desc in descriptions if 'media' in desc]
+        media_types = [media for namespace, media in descriptions]
 
         if not media_types:
             media_types = ['audio']  # Default to audio if no description

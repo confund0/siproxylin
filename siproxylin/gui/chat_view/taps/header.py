@@ -524,9 +524,9 @@ class ChatHeaderWidget(QFrame):
         self.video_call_button = QToolButton()
         self.video_call_button.setObjectName("videoCallButton")
         self.video_call_button.setText("🎥")
-        self.video_call_button.setToolTip("Video call (coming in ROADMAP C)")
+        self.video_call_button.setToolTip("Video call")
         self.video_call_button.setFixedSize(32, 32)
-        self.video_call_button.setEnabled(False)  # Disabled placeholder
+        self.video_call_button.clicked.connect(self._on_video_call_clicked)
         right_layout.addWidget(self.video_call_button)
 
         # Vertical separator after call buttons
@@ -1470,6 +1470,49 @@ class ChatHeaderWidget(QFrame):
         # Emit signal to parent
         logger.info(f"Emitting call_requested signal for {self.current_jid}")
         self.call_requested.emit("audio")
+
+    def _on_video_call_clicked(self):
+        """Handle video call button click - emit signal for parent to handle."""
+        if not self.current_jid or not self.current_account_id:
+            logger.warning("Cannot start video call: no conversation selected")
+            return
+
+        # Check if this is a MUC (group calls not supported yet)
+        if self.current_is_muc:
+            QMessageBox.warning(
+                self,
+                "Group Calls Not Supported",
+                "Video calls are currently only supported for 1-on-1 conversations.\n"
+                "Group calls will be available in a future update."
+            )
+            logger.info(f"Blocked video call attempt to MUC room: {self.current_jid}")
+            return
+
+        # Get account
+        account = self.account_manager.get_account(self.current_account_id)
+        if not account:
+            logger.error(f"Cannot start video call: account {self.current_account_id} not found")
+            QMessageBox.critical(
+                self,
+                "Call Failed",
+                "Could not start video call: account not available."
+            )
+            return
+
+        # Check if call functionality is available
+        if not account.call_bridge or not account.jingle_adapter:
+            logger.warning(f"Call functionality not available for account {self.current_account_id}")
+            QMessageBox.warning(
+                self,
+                "Calling Not Available",
+                "Video calling is not available for this account.\n"
+                "This may be due to missing dependencies or initialization errors."
+            )
+            return
+
+        # Emit signal to parent
+        logger.info(f"Emitting call_requested signal for video call to {self.current_jid}")
+        self.call_requested.emit("video")
 
     def _on_header_encryption_clicked(self):
         """Handle header encryption button click - emit signal and update DB."""

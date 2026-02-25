@@ -121,6 +121,7 @@ class CallBarrel:
         self.pending_call_offers: Dict[str, str] = {}  # session_id → sdp_offer (temp storage)
         self.accepted_calls: set = set()  # Track calls user accepted (sent proceed, waiting for session-initiate)
         self.incoming_call_timers: Dict[str, Any] = {}  # session_id → QTimer (60s timeout for unanswered calls)
+        self.incoming_call_media: Dict[str, list] = {}  # session_id → media types (['audio'] or ['audio', 'video'])
         self.outgoing_call_timers: Dict[str, Any] = {}  # session_id → QTimer (60s timeout for unanswered calls)
 
         # Call logging (Phase 4)
@@ -276,6 +277,53 @@ class CallBarrel:
 
         return '', '', audio_processing  # Default to system defaults
 
+    def _load_video_settings(self, session_id: str = None) -> str:
+        """
+        Load video device (camera) settings from calls.json.
+
+        For incoming calls: If remote offers video, enable our camera.
+
+        Args:
+            session_id: Optional session ID (for incoming calls)
+
+        Returns:
+            Camera device path (e.g., "/dev/video0") or empty string for audio-only.
+        """
+        try:
+            settings_path = get_paths().config_dir / 'calls.json'
+            if settings_path.exists():
+                with open(settings_path, 'r') as f:
+                    settings = json.load(f)
+                    camera = settings.get('camera_device', '')
+
+                    # For incoming calls: enable camera if remote offers video
+                    if session_id and session_id in self.incoming_call_media:
+                        remote_media = self.incoming_call_media[session_id]
+                        if 'video' in remote_media and not camera:
+                            # Remote offers video but we have no camera configured
+                            # Try to use first available camera
+                            if self.logger:
+                                self.logger.info(f"Incoming video call - trying to find available camera")
+                            # Try default camera device
+                            import os
+                            if os.path.exists('/dev/video0'):
+                                camera = '/dev/video0'
+                                if self.logger:
+                                    self.logger.info(f"Enabled camera for incoming video call: {camera}")
+
+                    if self.logger:
+                        if camera:
+                            self.logger.debug(f"Loaded video settings: camera={camera}")
+                        else:
+                            self.logger.debug("Video disabled (no camera device configured)")
+
+                    return camera
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to load video settings: {e}")
+
+        return ''  # Default to no video (audio-only)
+
     async def _setup_call_functionality(self):
         """
         Get singleton CallBridge (Go service) for audio/video calls.
@@ -420,6 +468,9 @@ class CallBarrel:
         # Log incoming call to database (Phase 4)
         self._log_call_to_db(session_id, peer_jid, CallDirection.INCOMING.value, CallState.RINGING.value)
 
+        # Store media types for this incoming call
+        self.incoming_call_media[session_id] = media
+
         # Start 60-second timeout timer for unanswered calls
         timeout_timer = QTimer()
         timeout_timer.setSingleShot(True)
@@ -481,9 +532,30 @@ class CallBarrel:
             # Load audio device and processing settings
             mic_device, speakers_device, audio_proc = self._load_audio_settings()
 
+            # Retrieve the media types for this outgoing call (stored in start_call)
+            media = getattr(self, 'outgoing_call_media', {}).get(session_id, ['audio'])
+            if self.logger:
+                self.logger.debug(f"Outgoing call media for {session_id}: {media}")
+
+            # Load video device settings - enable camera if we're initiating video call
+            if 'video' in media:
+                camera_device = self._load_video_settings()
+                if not camera_device:
+                    # We want video but have no camera configured - try default
+                    import os
+                    if os.path.exists('/dev/video0'):
+                        camera_device = '/dev/video0'
+                        if self.logger:
+                            self.logger.info(f"Using default camera for outgoing video call: {camera_device}")
+                    else:
+                        if self.logger:
+                            self.logger.warning("Outgoing video call requested but no camera available - will be audio-only")
+            else:
+                camera_device = ''
+
             # Create CallBridge session (WebRTC peer connection)
             await self.call_bridge.create_session(
-                peer_jid, session_id, mic_device, speakers_device,
+                peer_jid, session_id, mic_device, speakers_device, camera_device,
                 proxy_host=self.proxy_host or "",
                 proxy_port=self.proxy_port or 0,
                 proxy_username=self.proxy_username or "",
@@ -503,7 +575,11 @@ class CallBarrel:
             sdp_offer = await self.call_bridge.create_offer(session_id)
 
             # Create outgoing session in JingleAdapter (encapsulated API)
-            self.jingle_adapter.create_outgoing_session(session_id, peer_jid, sdp_offer, ['audio'])
+            self.jingle_adapter.create_outgoing_session(session_id, peer_jid, sdp_offer, media)
+
+            # Clean up stored media (no longer needed)
+            if hasattr(self, 'outgoing_call_media') and session_id in self.outgoing_call_media:
+                del self.outgoing_call_media[session_id]
 
             # Send ONLY session-initiate (skip propose - already sent by mixin)
             await self.jingle_adapter._send_session_initiate(session_id)
@@ -596,9 +672,18 @@ class CallBarrel:
                     # Load audio device and processing settings
                     mic_device, speakers_device, audio_proc = self._load_audio_settings()
 
+                    # Load video device settings (pass session_id to check incoming call media)
+                    camera_device = self._load_video_settings(session_id)
+
+                    # Check if offer has BUNDLE for compatibility (Dino doesn't use BUNDLE)
+                    # This must be checked BEFORE creating the session
+                    session_info = self.jingle_adapter.get_session_info(session_id)
+                    offer_details = session_info.get('offer_details', {}) if session_info else {}
+                    offer_has_bundle = offer_details.get('bundle_group') is not None
+
                     # Create CallBridge session (incoming call)
                     success = await self.call_bridge.create_session(
-                        peer_jid, session_id, mic_device, speakers_device,
+                        peer_jid, session_id, mic_device, speakers_device, camera_device,
                         proxy_host=self.proxy_host or "",
                         proxy_port=self.proxy_port or 0,
                         proxy_username=self.proxy_username or "",
@@ -611,13 +696,14 @@ class CallBarrel:
                         echo_suppression_level=audio_proc['echo_suppression_level'],
                         noise_suppression=audio_proc['noise_suppression'],
                         noise_suppression_level=audio_proc['noise_suppression_level'],
-                        gain_control=audio_proc['gain_control']
+                        gain_control=audio_proc['gain_control'],
+                        offer_has_bundle=offer_has_bundle
                     )
                     if not success:
                         raise RuntimeError("Failed to create CallBridge session")
 
                     # Create SDP answer via CallBridge (also sets remote SDP)
-                    sdp_answer = await self.call_bridge.create_answer(session_id, sdp_offer)
+                    sdp_answer = await self.call_bridge.create_answer(session_id, sdp_offer, offer_has_bundle)
 
                     # Send Jingle session-accept via JingleAdapter
                     await self.jingle_adapter.send_answer(session_id, sdp_answer)
@@ -728,6 +814,9 @@ class CallBarrel:
             # Load audio device and processing settings
             mic_device, speakers_device, audio_proc = self._load_audio_settings()
 
+            # Load video device settings (pass session_id to check incoming call media)
+            camera_device = self._load_video_settings(session_id)
+
             # Create CallBridge session (incoming call)
             # Candidates were already added to Pion before this callback
             success = await self.call_bridge.create_session(
@@ -735,6 +824,7 @@ class CallBarrel:
                 session_id,
                 mic_device,
                 speakers_device,
+                camera_device,
                 proxy_host=self.proxy_host or "",
                 proxy_port=self.proxy_port or 0,
                 proxy_username=self.proxy_username or "",
@@ -826,9 +916,12 @@ class CallBarrel:
         # Load audio device and processing settings
         mic_device, speakers_device, audio_proc = self._load_audio_settings()
 
+        # Load video device settings (pass session_id to check incoming call media)
+        camera_device = self._load_video_settings(session_id)
+
         # Create WebRTC session
         await self.call_bridge.create_session(
-            peer_jid, session_id, mic_device, speakers_device,
+            peer_jid, session_id, mic_device, speakers_device, camera_device,
             proxy_host=self.proxy_host or "",
             proxy_port=self.proxy_port or 0,
             proxy_username=self.proxy_username or "",
@@ -1025,6 +1118,11 @@ class CallBarrel:
         # The mixin generates its own session_id for the XEP-0353 flow
         try:
             actual_sid = self.client.send_call_propose(peer_jid, media)
+
+            # Store media types for this session so _on_xmpp_call_accepted can access them
+            if not hasattr(self, 'outgoing_call_media'):
+                self.outgoing_call_media = {}
+            self.outgoing_call_media[actual_sid] = media
 
             if self.logger:
                 self.logger.debug(f"Call propose sent (session {actual_sid})")
