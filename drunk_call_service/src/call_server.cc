@@ -222,8 +222,79 @@ grpc::Status CallServer::StreamEvents(
     return grpc::Status(grpc::StatusCode::NOT_FOUND, "Session not found");
   }
 
-  // TODO: Implement event streaming (ICE candidates, connection state changes)
-  // For now, just keep the stream open and return when session ends
+  // Stream events until client disconnects or session ends
+  while (!context->IsCancelled()) {
+    Session::Event event;
+
+    // Poll for events with 1 second timeout
+    if (!session->PopEvent(event, 1000)) {
+      // Timeout - check if session still exists
+      if (!GetSession(request->session_id())) {
+        LOG_INFO("Session {} ended, closing stream", request->session_id());
+        break;
+      }
+      continue;  // No event, keep waiting
+    }
+
+    // Convert Session::Event to proto CallEvent
+    call::CallEvent proto_event;
+    proto_event.set_session_id(request->session_id());
+
+    switch (event.type) {
+      case Session::Event::ICE_CANDIDATE: {
+        auto* ice_event = proto_event.mutable_ice_candidate();
+        ice_event->set_candidate(event.data);
+        ice_event->set_sdp_mid(event.sdp_mid);
+        ice_event->set_sdp_mline_index(event.sdp_mline_index);
+        LOG_DEBUG("Streaming ICE candidate: mid={}, mline={}", event.sdp_mid, event.sdp_mline_index);
+        break;
+      }
+
+      case Session::Event::CONNECTION_STATE_CHANGE:
+      case Session::Event::ICE_CONNECTION_STATE_CHANGE: {
+        // Map string state to proto enum
+        auto* state_event = proto_event.mutable_connection_state();
+
+        if (event.data == "new") {
+          state_event->set_state(call::ConnectionStateEvent_State_NEW);
+        } else if (event.data == "checking") {
+          state_event->set_state(call::ConnectionStateEvent_State_CHECKING);
+        } else if (event.data == "connected") {
+          state_event->set_state(call::ConnectionStateEvent_State_CONNECTED);
+        } else if (event.data == "completed") {
+          state_event->set_state(call::ConnectionStateEvent_State_COMPLETED);
+        } else if (event.data == "failed") {
+          state_event->set_state(call::ConnectionStateEvent_State_FAILED);
+        } else if (event.data == "disconnected") {
+          state_event->set_state(call::ConnectionStateEvent_State_DISCONNECTED);
+        } else if (event.data == "closed") {
+          state_event->set_state(call::ConnectionStateEvent_State_CLOSED);
+        } else {
+          LOG_WARN("Unknown connection state: {}", event.data);
+          state_event->set_state(call::ConnectionStateEvent_State_NEW);
+        }
+
+        LOG_INFO("Streaming connection state change: {}", event.data);
+        break;
+      }
+
+      case Session::Event::ICE_GATHERING_STATE_CHANGE: {
+        // ICE gathering state doesn't have a separate proto event, log and skip
+        LOG_DEBUG("ICE gathering state: {} (not streamed to Python)", event.data);
+        continue;
+      }
+
+      default:
+        LOG_WARN("Unknown event type: {}", static_cast<int>(event.type));
+        continue;
+    }
+
+    // Write event to stream
+    if (!writer->Write(proto_event)) {
+      LOG_WARN("Failed to write event to stream, client may have disconnected");
+      break;
+    }
+  }
 
   LOG_INFO("StreamEvents stream closed for session {}", request->session_id());
   return grpc::Status::OK;

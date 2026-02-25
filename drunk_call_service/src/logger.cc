@@ -32,6 +32,7 @@ void Logger::Initialize(const std::string& log_path, Level level) {
   logger_->flush_on(spdlog::level::trace);
 
   logger_->info("Logger initialized (path: {})", log_path);
+  logger_->debug("DEBUG LEVEL IS ACTIVE - IF YOU SEE THIS, DEBUG WORKS!");
 }
 
 std::shared_ptr<spdlog::logger> Logger::Get() {

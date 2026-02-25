@@ -1,7 +1,32 @@
 #include "session.h"
 #include "logger.h"
+#include <sstream>
+#include <iomanip>
+#include <cctype>
 
 namespace drunk_call {
+
+// URL encode a string according to RFC 3986
+// Encodes all characters except: A-Z a-z 0-9 - _ . ~
+static std::string url_encode(const std::string& value) {
+  std::ostringstream escaped;
+  escaped.fill('0');
+  escaped << std::hex;
+
+  for (unsigned char c : value) {
+    // Keep alphanumeric and safe characters intact
+    if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+      escaped << c;
+    } else {
+      // Encode special characters as %XX
+      escaped << std::uppercase;
+      escaped << '%' << std::setw(2) << static_cast<int>(c);
+      escaped << std::nouppercase;
+    }
+  }
+
+  return escaped.str();
+}
 
 Session::Session(const Config& config)
     : config_(config), pipeline_(nullptr), webrtcbin_(nullptr) {
@@ -47,6 +72,28 @@ bool Session::Initialize() {
   LOG_INFO("Set bundle-policy=NONE - will generate non-BUNDLE offers with separate ICE per media");
 
   // Configure STUN/TURN servers
+  // IMPORTANT: With relay-only mode, we still need STUN to discover the relay candidates
+  if (!config_.turn_server.empty()) {
+    // Extract host from TURN server for STUN
+    std::string stun_host = config_.turn_server;
+    if (stun_host.find("turn:") == 0) {
+      stun_host = stun_host.substr(5);
+    }
+    size_t query_pos = stun_host.find('?');
+    if (query_pos != std::string::npos) {
+      stun_host = stun_host.substr(0, query_pos);
+    }
+    // Remove port if present and extract just hostname
+    size_t colon_pos = stun_host.find(':');
+    if (colon_pos != std::string::npos) {
+      std::string port_str = stun_host.substr(colon_pos + 1);
+      stun_host = stun_host.substr(0, colon_pos);
+      // Set STUN server (required even for relay-only to discover relay address)
+      g_object_set(webrtcbin_, "stun-server", ("stun://" + stun_host + ":" + port_str).c_str(), NULL);
+      LOG_INFO("Set STUN server: stun://{}:{}", stun_host, port_str);
+    }
+  }
+
   if (!config_.turn_server.empty()) {
     GstElement* ice_transport = NULL;
     g_object_get(webrtcbin_, "ice-transport-policy", &ice_transport, NULL);
@@ -61,19 +108,50 @@ bool Session::Initialize() {
     }
 
     // Add TURN server using signal
-    std::string turn_uri = "turn://" + config_.turn_username + ":" +
-                          config_.turn_password + "@" + config_.turn_server;
+    // Python passes "turn:host:port?transport=udp", extract host:port
+    std::string host_port = config_.turn_server;
+
+    // Remove "turn:" prefix if present
+    if (host_port.find("turn:") == 0) {
+      host_port = host_port.substr(5);
+    }
+
+    // Remove query parameters (?transport=udp)
+    size_t query_pos = host_port.find('?');
+    if (query_pos != std::string::npos) {
+      host_port = host_port.substr(0, query_pos);
+    }
+
+    // Construct proper TURN URI with URL-encoded credentials: turn://username:password@host:port
+    // RFC 3986 requires special characters in credentials to be percent-encoded
+    std::string encoded_username = url_encode(config_.turn_username);
+    std::string encoded_password = url_encode(config_.turn_password);
+    std::string turn_uri = "turn://" + encoded_username + ":" +
+                          encoded_password + "@" + host_port;
+
     gboolean ret;
     g_signal_emit_by_name(webrtcbin_, "add-turn-server", turn_uri.c_str(), &ret);
     if (ret) {
-      LOG_INFO("Added TURN server: turn://{}:***@{}", config_.turn_username, config_.turn_server);
+      LOG_INFO("Added TURN server: turn://{}:***@{}", config_.turn_username, host_port);
     } else {
-      LOG_WARN("Failed to add TURN server");
+      LOG_WARN("Failed to add TURN server to webrtcbin (check credentials encoding)");
     }
   }
 
   // Add webrtcbin to pipeline
   gst_bin_add(GST_BIN(pipeline_), webrtcbin_);
+
+  // Connect signal handlers for ICE and connection state
+  g_signal_connect(webrtcbin_, "on-ice-candidate",
+                   G_CALLBACK(OnIceCandidate), this);
+  g_signal_connect(webrtcbin_, "notify::connection-state",
+                   G_CALLBACK(OnConnectionStateChange), this);
+  g_signal_connect(webrtcbin_, "notify::ice-connection-state",
+                   G_CALLBACK(OnIceConnectionStateChange), this);
+  g_signal_connect(webrtcbin_, "notify::ice-gathering-state",
+                   G_CALLBACK(OnIceGatheringStateChange), this);
+
+  LOG_INFO("Connected webrtcbin signal handlers for ICE and state changes");
 
   // Add audio test source (sine wave for testing)
   GstElement* audiotestsrc = gst_element_factory_make("audiotestsrc", "audiosrc");
@@ -315,54 +393,235 @@ std::string Session::CreateOffer() {
 
 std::string Session::CreateAnswer(const std::string& remote_sdp,
                                   bool offer_has_bundle) {
-  LOG_DEBUG("Creating answer for session: {} (offer_has_bundle={})",
+  LOG_INFO("Creating answer for session: {} (offer_has_bundle={})",
             config_.session_id, offer_has_bundle);
 
-  // TODO: Call PeerConnection::CreateAnswer()
-  // - Parse remote_sdp
-  // - If !offer_has_bundle, don't use BUNDLE in answer (MaxCompat mode)
-  // - Return real SDP
+  if (!initialized_) {
+    LOG_ERROR("Cannot create answer: session not initialized");
+    return "";
+  }
 
-  // Stub: Return minimal SDP
-  return "v=0\r\n"
-         "o=- 0 0 IN IP4 0.0.0.0\r\n"
-         "s=-\r\n"
-         "t=0 0\r\n"
-         "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
-         "c=IN IP4 0.0.0.0\r\n"
-         "a=rtcp:9 IN IP4 0.0.0.0\r\n"
-         "a=ice-ufrag:stub\r\n"
-         "a=ice-pwd:stubpassword\r\n"
-         "a=fingerprint:sha-256 00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00\r\n"
-         "a=setup:active\r\n"
-         "a=mid:audio\r\n"
-         "a=sendrecv\r\n"
-         "a=rtpmap:111 opus/48000/2\r\n";
+  // Set remote description (offer) from parameter
+  // For incoming calls, Python calls CreateAnswer directly with the offer SDP
+  if (!remote_sdp.empty()) {
+    LOG_INFO("Setting remote offer before creating answer ({} bytes)", remote_sdp.size());
+    LOG_DEBUG("Remote offer SDP:\n{}", remote_sdp);
+
+    GstSDPMessage* remote_sdp_msg = NULL;
+    GstSDPResult sdp_result = gst_sdp_message_new_from_text(remote_sdp.c_str(), &remote_sdp_msg);
+    if (sdp_result != GST_SDP_OK) {
+      LOG_ERROR("Failed to parse remote SDP offer: error code {}", sdp_result);
+      return "";
+    }
+
+    GstWebRTCSessionDescription* offer = gst_webrtc_session_description_new(
+        GST_WEBRTC_SDP_TYPE_OFFER, remote_sdp_msg);
+
+    // Use a promise to check if set-remote-description succeeds
+    GstPromise* remote_promise = gst_promise_new();
+    g_signal_emit_by_name(webrtcbin_, "set-remote-description", offer, remote_promise);
+
+    GstPromiseResult remote_result = gst_promise_wait(remote_promise);
+    if (remote_result != GST_PROMISE_RESULT_REPLIED) {
+      LOG_ERROR("set-remote-description failed with result: {}", remote_result);
+      gst_promise_unref(remote_promise);
+      gst_webrtc_session_description_free(offer);
+      return "";
+    }
+    gst_promise_unref(remote_promise);
+    gst_webrtc_session_description_free(offer);
+    LOG_INFO("Remote offer set successfully");
+  }
+
+  // The offer_has_bundle parameter is informational (we already set bundle-policy at init)
+
+  // Set pipeline to PLAYING state if not already
+  GstState current_state, pending_state;
+  gst_element_get_state(pipeline_, &current_state, &pending_state, 0);
+
+  if (current_state != GST_STATE_PLAYING) {
+    GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+      LOG_ERROR("Failed to set pipeline to PLAYING state");
+      return "";
+    }
+
+    // Wait for state change to complete
+    ret = gst_element_get_state(pipeline_, NULL, NULL, 5 * GST_SECOND);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+      LOG_ERROR("Pipeline failed to reach PLAYING state");
+      return "";
+    }
+
+    LOG_INFO("Pipeline is now in PLAYING state");
+  }
+
+  // Create a promise for the answer
+  GstPromise* promise = gst_promise_new();
+
+  // Emit create-answer signal on webrtcbin
+  LOG_INFO("Calling webrtcbin create-answer signal...");
+  g_signal_emit_by_name(webrtcbin_, "create-answer", NULL, promise);
+
+  // Wait for promise to complete
+  GstPromiseResult promise_result = gst_promise_wait(promise);
+  if (promise_result != GST_PROMISE_RESULT_REPLIED) {
+    LOG_ERROR("create-answer promise failed with result: {}", promise_result);
+    gst_promise_unref(promise);
+    return "";
+  }
+
+  LOG_INFO("create-answer promise completed successfully");
+
+  // Get the reply structure
+  const GstStructure* reply = gst_promise_get_reply(promise);
+  if (!reply) {
+    LOG_ERROR("create-answer promise has no reply");
+    gst_promise_unref(promise);
+    return "";
+  }
+
+  // Debug: log the reply structure
+  gchar* reply_str = gst_structure_to_string(reply);
+  LOG_DEBUG("create-answer reply structure: {}", reply_str ? reply_str : "NULL");
+  g_free(reply_str);
+
+  // Extract the session description
+  GstWebRTCSessionDescription* answer = NULL;
+  gst_structure_get(reply, "answer", GST_TYPE_WEBRTC_SESSION_DESCRIPTION, &answer, NULL);
+
+  if (!answer) {
+    LOG_ERROR("No answer in create-answer reply (check if remote offer was set correctly)");
+    gst_promise_unref(promise);
+    return "";
+  }
+
+  // Convert SDP to string
+  gchar* sdp_text = gst_sdp_message_as_text(answer->sdp);
+  std::string sdp_string(sdp_text);
+  g_free(sdp_text);
+
+  LOG_INFO("Generated SDP answer ({} bytes)", sdp_string.size());
+  LOG_DEBUG("SDP Answer:\n{}", sdp_string);
+
+  // Set local description on webrtcbin
+  LOG_INFO("Setting local description...");
+  GstPromise* local_desc_promise = gst_promise_new();
+  g_signal_emit_by_name(webrtcbin_, "set-local-description", answer, local_desc_promise);
+
+  // Wait for set-local-description to complete
+  promise_result = gst_promise_wait(local_desc_promise);
+  if (promise_result != GST_PROMISE_RESULT_REPLIED) {
+    LOG_WARN("set-local-description promise failed with result: {}", promise_result);
+  } else {
+    LOG_INFO("Local description set successfully");
+  }
+
+  gst_promise_unref(local_desc_promise);
+  gst_webrtc_session_description_free(answer);
+  gst_promise_unref(promise);
+
+  // Analyze the SDP
+  LOG_INFO("Analyzing SDP answer for BUNDLE behavior...");
+  if (sdp_string.find("a=group:BUNDLE") != std::string::npos) {
+    LOG_WARN("SDP answer contains BUNDLE group");
+  } else {
+    LOG_INFO("SDP answer has NO BUNDLE group");
+  }
+
+  return sdp_string;
 }
 
 bool Session::SetRemoteDescription(const std::string& remote_sdp,
                                    const std::string& sdp_type) {
-  LOG_DEBUG("Setting remote description for session: {} (type: {})",
+  LOG_INFO("Setting remote description for session: {} (type: {})",
             config_.session_id, sdp_type);
 
-  // TODO: Call PeerConnection::SetRemoteDescription()
-  // - Parse remote_sdp
-  // - Apply to peer connection
+  if (!initialized_) {
+    LOG_ERROR("Cannot set remote description: session not initialized");
+    return false;
+  }
 
-  LOG_DEBUG("Remote description set successfully");
+  // Parse SDP string into GstSDPMessage
+  GstSDPMessage* sdp_msg = NULL;
+  GstSDPResult result = gst_sdp_message_new(&sdp_msg);
+  if (result != GST_SDP_OK) {
+    LOG_ERROR("Failed to create GstSDPMessage");
+    return false;
+  }
+
+  result = gst_sdp_message_parse_buffer((const guint8*)remote_sdp.c_str(),
+                                        remote_sdp.size(), sdp_msg);
+  if (result != GST_SDP_OK) {
+    LOG_ERROR("Failed to parse SDP: {}", remote_sdp);
+    gst_sdp_message_free(sdp_msg);
+    return false;
+  }
+
+  LOG_DEBUG("Parsed remote SDP successfully ({} bytes)", remote_sdp.size());
+
+  // Determine SDP type
+  GstWebRTCSDPType type;
+  if (sdp_type == "offer") {
+    type = GST_WEBRTC_SDP_TYPE_OFFER;
+  } else if (sdp_type == "answer") {
+    type = GST_WEBRTC_SDP_TYPE_ANSWER;
+  } else if (sdp_type == "pranswer") {
+    type = GST_WEBRTC_SDP_TYPE_PRANSWER;
+  } else if (sdp_type == "rollback") {
+    type = GST_WEBRTC_SDP_TYPE_ROLLBACK;
+  } else {
+    LOG_ERROR("Unknown SDP type: {}", sdp_type);
+    gst_sdp_message_free(sdp_msg);
+    return false;
+  }
+
+  // Create WebRTC session description
+  GstWebRTCSessionDescription* remote_desc =
+    gst_webrtc_session_description_new(type, sdp_msg);
+
+  if (!remote_desc) {
+    LOG_ERROR("Failed to create GstWebRTCSessionDescription");
+    gst_sdp_message_free(sdp_msg);
+    return false;
+  }
+
+  // Set remote description on webrtcbin
+  GstPromise* promise = gst_promise_new();
+  g_signal_emit_by_name(webrtcbin_, "set-remote-description", remote_desc, promise);
+
+  // Wait for promise to complete
+  GstPromiseResult promise_result = gst_promise_wait(promise);
+
+  if (promise_result != GST_PROMISE_RESULT_REPLIED) {
+    LOG_ERROR("set-remote-description promise failed with result: {}", promise_result);
+    gst_promise_unref(promise);
+    gst_webrtc_session_description_free(remote_desc);
+    return false;
+  }
+
+  LOG_INFO("Remote description set successfully");
+  gst_promise_unref(promise);
+  gst_webrtc_session_description_free(remote_desc);
   return true;
 }
 
 bool Session::AddICECandidate(const std::string& candidate,
                               const std::string& sdp_mid,
                               int32_t sdp_mline_index) {
-  LOG_DEBUG("Adding ICE candidate for session: {} (mid: {}, mline: {})",
-            config_.session_id, sdp_mid, sdp_mline_index);
+  LOG_DEBUG("Adding ICE candidate for session: {} (mid: {}, mline: {}, candidate: {})",
+            config_.session_id, sdp_mid, sdp_mline_index, candidate);
 
-  // TODO: Call PeerConnection::AddIceCandidate()
-  // - Parse candidate string
-  // - Add to peer connection
+  if (!initialized_) {
+    LOG_ERROR("Cannot add ICE candidate: session not initialized");
+    return false;
+  }
 
+  // Add ICE candidate to webrtcbin
+  // Note: sdp_mline_index and sdp_mid are both provided, webrtcbin can use either
+  g_signal_emit_by_name(webrtcbin_, "add-ice-candidate", sdp_mline_index, candidate.c_str());
+
+  LOG_DEBUG("ICE candidate added successfully");
   return true;
 }
 
@@ -389,6 +648,192 @@ Session::Stats Session::GetStats() {
   stats.connection_type = "unknown";
 
   return stats;
+}
+
+// ============================================================================
+// Event Queue Management
+// ============================================================================
+
+void Session::PushEvent(const Event& event) {
+  std::lock_guard<std::mutex> lock(event_mutex_);
+  event_queue_.push(event);
+  event_cv_.notify_one();
+
+  const char* event_type = "";
+  switch (event.type) {
+    case Event::ICE_CANDIDATE:
+      event_type = "ICE_CANDIDATE";
+      break;
+    case Event::CONNECTION_STATE_CHANGE:
+      event_type = "CONNECTION_STATE_CHANGE";
+      break;
+    case Event::ICE_CONNECTION_STATE_CHANGE:
+      event_type = "ICE_CONNECTION_STATE_CHANGE";
+      break;
+    case Event::ICE_GATHERING_STATE_CHANGE:
+      event_type = "ICE_GATHERING_STATE_CHANGE";
+      break;
+  }
+
+  LOG_DEBUG("Event queued: {} (queue size: {})", event_type, event_queue_.size());
+}
+
+bool Session::PopEvent(Event& event, int timeout_ms) {
+  std::unique_lock<std::mutex> lock(event_mutex_);
+
+  if (event_queue_.empty()) {
+    // Wait for event with timeout
+    auto timeout = std::chrono::milliseconds(timeout_ms);
+    if (!event_cv_.wait_for(lock, timeout, [this] { return !event_queue_.empty(); })) {
+      return false;  // Timeout
+    }
+  }
+
+  if (!event_queue_.empty()) {
+    event = event_queue_.front();
+    event_queue_.pop();
+    return true;
+  }
+
+  return false;
+}
+
+bool Session::HasPendingEvents() {
+  std::lock_guard<std::mutex> lock(event_mutex_);
+  return !event_queue_.empty();
+}
+
+// ============================================================================
+// GStreamer Signal Callbacks
+// ============================================================================
+
+void Session::OnIceCandidate(GstElement* webrtcbin, guint mline_index,
+                             gchar* candidate, gpointer user_data) {
+  Session* session = static_cast<Session*>(user_data);
+
+  LOG_DEBUG("ICE candidate generated: mline={}, candidate={}", mline_index, candidate);
+
+  Event event;
+  event.type = Event::ICE_CANDIDATE;
+  event.sdp_mline_index = mline_index;
+  event.data = candidate;
+
+  // Extract mid from candidate if present (format: "candidate:... a=mid:...")
+  // For now, we'll derive mid from mline_index (audio0, video1, etc.)
+  if (mline_index == 0) {
+    event.sdp_mid = "audio0";
+  } else if (mline_index == 1) {
+    event.sdp_mid = "video1";
+  } else {
+    event.sdp_mid = "media" + std::to_string(mline_index);
+  }
+
+  session->PushEvent(event);
+}
+
+void Session::OnConnectionStateChange(GstElement* webrtcbin, GParamSpec* pspec,
+                                      gpointer user_data) {
+  Session* session = static_cast<Session*>(user_data);
+
+  GstWebRTCPeerConnectionState state;
+  g_object_get(webrtcbin, "connection-state", &state, NULL);
+
+  const char* state_str = "";
+  switch (state) {
+    case GST_WEBRTC_PEER_CONNECTION_STATE_NEW:
+      state_str = "new";
+      break;
+    case GST_WEBRTC_PEER_CONNECTION_STATE_CONNECTING:
+      state_str = "connecting";
+      break;
+    case GST_WEBRTC_PEER_CONNECTION_STATE_CONNECTED:
+      state_str = "connected";
+      break;
+    case GST_WEBRTC_PEER_CONNECTION_STATE_DISCONNECTED:
+      state_str = "disconnected";
+      break;
+    case GST_WEBRTC_PEER_CONNECTION_STATE_FAILED:
+      state_str = "failed";
+      break;
+    case GST_WEBRTC_PEER_CONNECTION_STATE_CLOSED:
+      state_str = "closed";
+      break;
+  }
+
+  LOG_INFO("Connection state changed: {}", state_str);
+
+  Event event;
+  event.type = Event::CONNECTION_STATE_CHANGE;
+  event.data = state_str;
+  session->PushEvent(event);
+}
+
+void Session::OnIceConnectionStateChange(GstElement* webrtcbin, GParamSpec* pspec,
+                                        gpointer user_data) {
+  Session* session = static_cast<Session*>(user_data);
+
+  GstWebRTCICEConnectionState state;
+  g_object_get(webrtcbin, "ice-connection-state", &state, NULL);
+
+  const char* state_str = "";
+  switch (state) {
+    case GST_WEBRTC_ICE_CONNECTION_STATE_NEW:
+      state_str = "new";
+      break;
+    case GST_WEBRTC_ICE_CONNECTION_STATE_CHECKING:
+      state_str = "checking";
+      break;
+    case GST_WEBRTC_ICE_CONNECTION_STATE_CONNECTED:
+      state_str = "connected";
+      break;
+    case GST_WEBRTC_ICE_CONNECTION_STATE_COMPLETED:
+      state_str = "completed";
+      break;
+    case GST_WEBRTC_ICE_CONNECTION_STATE_FAILED:
+      state_str = "failed";
+      break;
+    case GST_WEBRTC_ICE_CONNECTION_STATE_DISCONNECTED:
+      state_str = "disconnected";
+      break;
+    case GST_WEBRTC_ICE_CONNECTION_STATE_CLOSED:
+      state_str = "closed";
+      break;
+  }
+
+  LOG_INFO("ICE connection state changed: {}", state_str);
+
+  Event event;
+  event.type = Event::ICE_CONNECTION_STATE_CHANGE;
+  event.data = state_str;
+  session->PushEvent(event);
+}
+
+void Session::OnIceGatheringStateChange(GstElement* webrtcbin, GParamSpec* pspec,
+                                       gpointer user_data) {
+  Session* session = static_cast<Session*>(user_data);
+
+  GstWebRTCICEGatheringState state;
+  g_object_get(webrtcbin, "ice-gathering-state", &state, NULL);
+
+  const char* state_str = "";
+  switch (state) {
+    case GST_WEBRTC_ICE_GATHERING_STATE_NEW:
+      state_str = "new";
+      break;
+    case GST_WEBRTC_ICE_GATHERING_STATE_GATHERING:
+      state_str = "gathering";
+      break;
+    case GST_WEBRTC_ICE_GATHERING_STATE_COMPLETE:
+      state_str = "complete";
+      break;
+  }
+
+  LOG_INFO("ICE gathering state changed: {}", state_str);
+
+  Event event;
+  event.type = Event::ICE_GATHERING_STATE_CHANGE;
+  event.data = state_str;
+  session->PushEvent(event);
 }
 
 }  // namespace drunk_call

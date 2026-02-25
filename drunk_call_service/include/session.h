@@ -3,6 +3,9 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
 
 // GStreamer headers
 #include <gst/gst.h>
@@ -82,7 +85,37 @@ class Session {
   };
   Stats GetStats();
 
+  // Event streaming
+  struct Event {
+    enum Type {
+      ICE_CANDIDATE,
+      CONNECTION_STATE_CHANGE,
+      ICE_CONNECTION_STATE_CHANGE,
+      ICE_GATHERING_STATE_CHANGE
+    };
+
+    Type type;
+    std::string data;  // For ICE_CANDIDATE: the candidate string
+    int32_t sdp_mline_index = 0;
+    std::string sdp_mid;
+  };
+
+  // Pop next event (blocking with timeout)
+  // Returns true if event was retrieved, false on timeout
+  bool PopEvent(Event& event, int timeout_ms = 1000);
+
+  // Check if there are pending events
+  bool HasPendingEvents();
+
  private:
+  // GStreamer signal callbacks (must be static)
+  static void OnIceCandidate(GstElement* webrtcbin, guint mline_index, gchar* candidate, gpointer user_data);
+  static void OnConnectionStateChange(GstElement* webrtcbin, GParamSpec* pspec, gpointer user_data);
+  static void OnIceConnectionStateChange(GstElement* webrtcbin, GParamSpec* pspec, gpointer user_data);
+  static void OnIceGatheringStateChange(GstElement* webrtcbin, GParamSpec* pspec, gpointer user_data);
+
+  // Internal event queue
+  void PushEvent(const Event& event);
   Config config_;
   bool initialized_ = false;
   bool muted_ = false;
@@ -90,6 +123,11 @@ class Session {
   // GStreamer components
   GstElement* pipeline_;
   GstElement* webrtcbin_;
+
+  // Event queue for streaming
+  std::queue<Event> event_queue_;
+  std::mutex event_mutex_;
+  std::condition_variable event_cv_;
 };
 
 }  // namespace drunk_call

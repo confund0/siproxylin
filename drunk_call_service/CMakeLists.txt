@@ -16,6 +16,10 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -fsanitize=address -fsanitize=undefined")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
+# Enable spdlog DEBUG macros even in Release builds
+# SPDLOG_ACTIVE_LEVEL: 0=TRACE, 1=DEBUG, 2=INFO (default is INFO in Release)
+add_compile_definitions(SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG)
+
 # Find dependencies
 find_package(Protobuf REQUIRED)
 find_package(gRPC REQUIRED)
