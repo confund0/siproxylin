@@ -1,0 +1,146 @@
+cmake_minimum_required(VERSION 3.20)
+project(drunk_call_service VERSION 0.1.0 LANGUAGES CXX)
+
+# C++17 required
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Build type
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# Compiler flags
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
+set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -fsanitize=address -fsanitize=undefined")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+
+# Find dependencies
+find_package(Protobuf REQUIRED)
+find_package(gRPC REQUIRED)
+find_package(Threads REQUIRED)
+
+# Find gRPC C++ plugin (sometimes CMake doesn't set this correctly)
+find_program(GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin)
+if(NOT GRPC_CPP_PLUGIN_EXECUTABLE)
+    message(FATAL_ERROR "grpc_cpp_plugin not found")
+endif()
+message(STATUS "Using gRPC C++ plugin: ${GRPC_CPP_PLUGIN_EXECUTABLE}")
+
+# spdlog for logging with rotation
+find_package(spdlog REQUIRED)
+message(STATUS "Using spdlog for logging")
+
+# LibWebRTC (prebuilt binaries)
+set(LIBWEBRTC_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/third_party/libwebrtc/include")
+set(LIBWEBRTC_LIBRARY_DIR "${CMAKE_SOURCE_DIR}/third_party/libwebrtc/lib")
+
+# Platform-specific settings
+if(UNIX AND NOT APPLE)
+    set(PLATFORM_NAME "linux")
+    find_package(ALSA QUIET)
+    if(ALSA_FOUND)
+        set(PLATFORM_LIBS ${ALSA_LIBRARIES} pthread dl)
+    else()
+        message(WARNING "ALSA not found - audio device enumeration will be limited")
+        set(PLATFORM_LIBS pthread dl)
+    endif()
+elseif(WIN32)
+    set(PLATFORM_NAME "windows")
+    set(PLATFORM_LIBS winmm dmoguids wmcodecdspuuid msdmo strmiids)
+elseif(APPLE)
+    set(PLATFORM_NAME "darwin")
+    find_library(COREAUDIO_LIBRARY CoreAudio)
+    find_library(AUDIOUNIT_LIBRARY AudioUnit)
+    find_library(AVFOUNDATION_LIBRARY AVFoundation)
+    set(PLATFORM_LIBS ${COREAUDIO_LIBRARY} ${AUDIOUNIT_LIBRARY} ${AVFOUNDATION_LIBRARY})
+endif()
+
+# Generate gRPC/Protobuf sources
+set(PROTO_PATH "${CMAKE_SOURCE_DIR}/proto")
+set(GENERATED_PROTOBUF_PATH "${CMAKE_BINARY_DIR}/generated")
+file(MAKE_DIRECTORY ${GENERATED_PROTOBUF_PATH})
+
+set(CALL_PROTO "${PROTO_PATH}/call.proto")
+set(CALL_PB_CPP "${GENERATED_PROTOBUF_PATH}/call.pb.cc")
+set(CALL_PB_H "${GENERATED_PROTOBUF_PATH}/call.pb.h")
+set(CALL_GRPC_PB_CPP "${GENERATED_PROTOBUF_PATH}/call.grpc.pb.cc")
+set(CALL_GRPC_PB_H "${GENERATED_PROTOBUF_PATH}/call.grpc.pb.h")
+
+add_custom_command(
+    OUTPUT "${CALL_PB_CPP}" "${CALL_PB_H}" "${CALL_GRPC_PB_CPP}" "${CALL_GRPC_PB_H}"
+    COMMAND ${PROTOBUF_PROTOC_EXECUTABLE}
+    ARGS --grpc_out "${GENERATED_PROTOBUF_PATH}"
+         --cpp_out "${GENERATED_PROTOBUF_PATH}"
+         -I "${PROTO_PATH}"
+         --plugin=protoc-gen-grpc="${GRPC_CPP_PLUGIN_EXECUTABLE}"
+         "${CALL_PROTO}"
+    DEPENDS "${CALL_PROTO}"
+    COMMENT "Generating gRPC/Protobuf C++ sources"
+)
+
+# Include directories
+include_directories(
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${GENERATED_PROTOBUF_PATH}
+    ${PROTOBUF_INCLUDE_DIRS}
+    ${GRPC_INCLUDE_DIRS}
+    ${LIBWEBRTC_INCLUDE_DIR}
+)
+
+# Source files
+set(SOURCES
+    src/main.cc
+    src/logger.cc
+    src/call_server.cc
+    src/session.cc
+    src/audio_track.cc
+    src/video_track.cc
+    src/device_manager.cc
+    src/stats_collector.cc
+    ${CALL_PB_CPP}
+    ${CALL_GRPC_PB_CPP}
+)
+
+# Platform-specific sources
+if(UNIX AND NOT APPLE)
+    list(APPEND SOURCES src/platform/devices_linux.cc)
+elseif(WIN32)
+    list(APPEND SOURCES src/platform/devices_windows.cc)
+elseif(APPLE)
+    list(APPEND SOURCES src/platform/devices_darwin.cc)
+endif()
+
+# Executable
+add_executable(drunk-call-service-${PLATFORM_NAME} ${SOURCES})
+
+# Link libraries
+target_link_libraries(drunk-call-service-${PLATFORM_NAME}
+    gRPC::grpc++
+    ${PROTOBUF_LIBRARIES}
+    ${CMAKE_THREAD_LIBS_INIT}
+    ${PLATFORM_LIBS}
+    # LibWebRTC will be added when available
+    # ${LIBWEBRTC_LIBRARY_DIR}/libwebrtc.a
+)
+
+target_link_libraries(drunk-call-service-${PLATFORM_NAME} spdlog::spdlog)
+
+# Install
+install(TARGETS drunk-call-service-${PLATFORM_NAME}
+    RUNTIME DESTINATION ${CMAKE_SOURCE_DIR}/bin
+)
+
+# Unit tests (optional, if gtest available)
+option(BUILD_TESTS "Build unit tests" ON)
+if(BUILD_TESTS)
+    find_package(GTest QUIET)
+    if(GTest_FOUND)
+        enable_testing()
+        add_subdirectory(tests)
+    else()
+        message(STATUS "GTest not found, skipping tests")
+    endif()
+endif()

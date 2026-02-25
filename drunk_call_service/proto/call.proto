@@ -1,0 +1,209 @@
+syntax = "proto3";
+
+package call;
+
+option go_package = "github.com/yourusername/drunk-call-service/proto";
+
+// CallService handles WebRTC call sessions
+service CallService {
+  // Create a new call session
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+
+  // Create SDP offer for outgoing call
+  rpc CreateOffer(CreateOfferRequest) returns (SDPResponse);
+
+  // Create SDP answer for incoming call
+  rpc CreateAnswer(CreateAnswerRequest) returns (SDPResponse);
+
+  // Set remote SDP description (for outgoing calls after receiving session-accept)
+  rpc SetRemoteDescription(SetRemoteDescriptionRequest) returns (Empty);
+
+  // Add ICE candidate to session
+  rpc AddICECandidate(AddICECandidateRequest) returns (Empty);
+
+  // End call session
+  rpc EndSession(EndSessionRequest) returns (Empty);
+
+  // Stream events from Go to Python (ICE candidates, state changes, etc.)
+  rpc StreamEvents(StreamEventsRequest) returns (stream CallEvent);
+
+  // Heartbeat to keep Go service alive (Python calls every 5s)
+  rpc Heartbeat(Empty) returns (Empty);
+
+  // Graceful shutdown - Python tells Go to exit immediately
+  rpc Shutdown(Empty) returns (Empty);
+
+  // Get call statistics for a session
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+
+  // List available audio devices
+  rpc ListAudioDevices(Empty) returns (ListAudioDevicesResponse);
+
+  // List available video devices (cameras)
+  rpc ListVideoDevices(Empty) returns (ListVideoDevicesResponse);
+
+  // Set microphone mute state for a session
+  rpc SetMute(SetMuteRequest) returns (Empty);
+}
+
+// Request/Response messages
+
+message CreateSessionRequest {
+  string session_id = 1;
+  string peer_jid = 2;
+  string microphone_device = 3;  // Device name (e.g., "alsa_input.pci-0000_05_00.6.analog-stereo"), empty = default
+  string speakers_device = 4;    // Device name (e.g., "alsa_output.pci-0000_05_00.6.analog-stereo"), empty = default
+
+  // Proxy configuration (for routing TURN connections through SOCKS5/HTTP proxy)
+  string proxy_host = 5;         // Proxy hostname/IP, empty = no proxy
+  int32 proxy_port = 6;          // Proxy port (e.g., 9050 for Tor, 3128 for HTTP proxy)
+  string proxy_username = 7;     // Proxy authentication username (optional)
+  string proxy_password = 8;     // Proxy authentication password (optional)
+  string proxy_type = 9;         // "SOCKS5" or "HTTP", empty = no proxy
+
+  // TURN server configuration (for relay mode)
+  string turn_server = 10;       // TURN server URL (e.g., "turn:turn.example.com:3478"), empty = use default
+  string turn_username = 11;     // TURN authentication username (optional)
+  string turn_password = 12;     // TURN authentication password (optional)
+
+  // ICE transport policy
+  bool relay_only = 13;          // If true, force relay-only mode (no P2P, privacy-first), default: true
+
+  // Audio processing (WebRTC DSP)
+  bool echo_cancel = 14;         // Enable echo cancellation, default: true
+  int32 echo_suppression_level = 15;  // 0=low, 1=moderate, 2=high, default: 1
+  bool noise_suppression = 16;   // Enable noise suppression, default: true
+  int32 noise_suppression_level = 17; // 0=low, 1=moderate, 2=high, 3=very-high, default: 1
+  bool gain_control = 18;        // Enable automatic gain control, default: true
+
+  // Video device selection
+  string camera_device = 19;     // Camera device path (e.g., "/dev/video0"), empty = no video
+
+  // BUNDLE policy for compatibility (Dino doesn't use BUNDLE)
+  bool offer_has_bundle = 20;    // Whether the offer includes BUNDLE group (for incoming calls), default: true
+}
+
+message CreateSessionResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message CreateOfferRequest {
+  string session_id = 1;
+}
+
+message CreateAnswerRequest {
+  string session_id = 1;
+  string remote_sdp = 2;
+  bool offer_has_bundle = 3;  // Whether the offer includes a BUNDLE group (for compatibility)
+}
+
+message SDPResponse {
+  string sdp = 1;
+  string error = 2;
+}
+
+message SetRemoteDescriptionRequest {
+  string session_id = 1;
+  string remote_sdp = 2;
+  string sdp_type = 3;  // "offer" or "answer"
+}
+
+message AddICECandidateRequest {
+  string session_id = 1;
+  string candidate = 2;
+  string sdp_mid = 3;
+  int32 sdp_mline_index = 4;
+}
+
+message EndSessionRequest {
+  string session_id = 1;
+}
+
+message StreamEventsRequest {
+  string session_id = 1;
+}
+
+message Empty {}
+
+// Event messages (Go → Python streaming)
+
+message CallEvent {
+  string session_id = 1;
+  oneof event {
+    ICECandidateEvent ice_candidate = 2;
+    ConnectionStateEvent connection_state = 3;
+    ErrorEvent error = 4;
+  }
+}
+
+message ICECandidateEvent {
+  string candidate = 1;
+  string sdp_mid = 2;
+  int32 sdp_mline_index = 3;
+}
+
+message ConnectionStateEvent {
+  enum State {
+    NEW = 0;
+    CHECKING = 1;
+    CONNECTED = 2;
+    COMPLETED = 3;
+    FAILED = 4;
+    DISCONNECTED = 5;
+    CLOSED = 6;
+  }
+  State state = 1;
+}
+
+message ErrorEvent {
+  string message = 1;
+}
+
+// GetStats messages
+
+message GetStatsRequest {
+  string session_id = 1;
+}
+
+message GetStatsResponse {
+  string connection_state = 1;
+  string ice_connection_state = 2;
+  string ice_gathering_state = 3;
+  int64 bytes_sent = 4;
+  int64 bytes_received = 5;
+  int64 bandwidth_kbps = 6;               // Current bandwidth in Kbps (updated every 2s)
+  repeated string local_candidates = 7;   // List of local IPs (host, srflx, relay)
+  repeated string remote_candidates = 8;  // List of remote IPs
+  string connection_type = 9;             // "P2P (direct)", "P2P (srflx)", "TURN relay", etc.
+}
+
+// Audio device enumeration messages
+
+message AudioDevice {
+  string name = 1;         // Internal device ID (e.g., "alsa_output.pci-0000_05_00.6.analog-stereo")
+  string description = 2;  // User-friendly name (e.g., "Family 17h/19h/1ah HD Audio Controller Analog Stereo")
+  string device_class = 3; // "Audio/Source" (microphone) or "Audio/Sink" (speakers)
+}
+
+message ListAudioDevicesResponse {
+  repeated AudioDevice devices = 1;
+}
+
+message SetMuteRequest {
+  string session_id = 1;
+  bool muted = 2;  // true = mute microphone, false = unmute
+}
+
+// Video device enumeration messages
+
+message VideoDevice {
+  string device_path = 1;  // Device path (e.g., "/dev/video0")
+  string name = 2;         // Device name (e.g., "Integrated Camera")
+  string driver = 3;       // Driver name (e.g., "uvcvideo")
+  string bus_info = 4;     // Bus info (e.g., "usb-0000:00:14.0-5")
+}
+
+message ListVideoDevicesResponse {
+  repeated VideoDevice devices = 1;
+}
