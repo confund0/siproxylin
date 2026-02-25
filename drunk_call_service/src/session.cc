@@ -3,8 +3,12 @@
 
 namespace drunk_call {
 
-Session::Session(const Config& config) : config_(config) {
+Session::Session(const Config& config)
+    : config_(config), pipeline_(nullptr), webrtcbin_(nullptr) {
   LOG_DEBUG("Session created: {}", config_.session_id);
+
+  // Initialize GStreamer (idempotent, safe to call multiple times)
+  gst_init(nullptr, nullptr);
 }
 
 Session::~Session() {
@@ -17,12 +21,55 @@ Session::~Session() {
 bool Session::Initialize() {
   LOG_INFO("Initializing session: {}", config_.session_id);
 
-  // TODO: Create LibWebRTC PeerConnection with config
-  // - Set BundlePolicyMaxCompat
-  // - Configure TURN servers and proxy
-  // - Set relay-only ICE transport policy if needed
-  // - Add audio track (if microphone device set)
-  // - Add video track (if camera device set)
+  // Create pipeline
+  pipeline_ = gst_pipeline_new(("pipeline-" + config_.session_id).c_str());
+  if (!pipeline_) {
+    LOG_ERROR("Failed to create GStreamer pipeline");
+    return false;
+  }
+
+  // Create webrtcbin element
+  webrtcbin_ = gst_element_factory_make("webrtcbin", ("webrtc-" + config_.session_id).c_str());
+  if (!webrtcbin_) {
+    LOG_ERROR("Failed to create webrtcbin element");
+    gst_object_unref(pipeline_);
+    return false;
+  }
+
+  // CRITICAL: Set bundle-policy to max-compat for separate ICE per media
+  g_object_set(webrtcbin_, "bundle-policy", GST_WEBRTC_BUNDLE_POLICY_MAX_COMPAT, NULL);
+  LOG_INFO("Set bundle-policy=max-compat - will generate non-BUNDLE offers");
+
+  // Configure STUN/TURN servers
+  if (!config_.turn_server.empty()) {
+    GstElement* ice_transport = NULL;
+    g_object_get(webrtcbin_, "ice-transport-policy", &ice_transport, NULL);
+
+    // Set ICE transport policy (relay-only if requested)
+    if (config_.relay_only) {
+      g_object_set(webrtcbin_, "ice-transport-policy", GST_WEBRTC_ICE_TRANSPORT_POLICY_RELAY, NULL);
+      LOG_INFO("ICE transport policy: RELAY only");
+    } else {
+      g_object_set(webrtcbin_, "ice-transport-policy", GST_WEBRTC_ICE_TRANSPORT_POLICY_ALL, NULL);
+      LOG_INFO("ICE transport policy: ALL (P2P + relay)");
+    }
+
+    // Add TURN server using signal
+    std::string turn_uri = "turn://" + config_.turn_username + ":" +
+                          config_.turn_password + "@" + config_.turn_server;
+    gboolean ret;
+    g_signal_emit_by_name(webrtcbin_, "add-turn-server", turn_uri.c_str(), &ret);
+    if (ret) {
+      LOG_INFO("Added TURN server: turn://{}:***@{}", config_.turn_username, config_.turn_server);
+    } else {
+      LOG_WARN("Failed to add TURN server");
+    }
+  }
+
+  // Add webrtcbin to pipeline
+  gst_bin_add(GST_BIN(pipeline_), webrtcbin_);
+
+  // TODO: Add audio/video sources
 
   initialized_ = true;
   LOG_INFO("Session initialized: {}", config_.session_id);
@@ -36,10 +83,13 @@ void Session::Close() {
 
   LOG_INFO("Closing session: {}", config_.session_id);
 
-  // TODO: Close PeerConnection
-  // - Stop tracks
-  // - Close peer connection
-  // - Cleanup resources
+  // Stop pipeline
+  if (pipeline_) {
+    gst_element_set_state(pipeline_, GST_STATE_NULL);
+    gst_object_unref(pipeline_);
+    pipeline_ = nullptr;
+    webrtcbin_ = nullptr;  // webrtcbin is owned by pipeline
+  }
 
   initialized_ = false;
   LOG_INFO("Session closed: {}", config_.session_id);

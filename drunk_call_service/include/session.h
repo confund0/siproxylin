@@ -4,6 +4,10 @@
 #include <string>
 #include <vector>
 
+// GStreamer headers
+#include <gst/gst.h>
+#include <gst/webrtc/webrtc.h>
+
 namespace drunk_call {
 
 // WebRTC session wrapper (placeholder - will integrate LibWebRTC)
@@ -83,8 +87,9 @@ class Session {
   bool initialized_ = false;
   bool muted_ = false;
 
-  // TODO: Add LibWebRTC PeerConnection member
-  // std::unique_ptr<webrtc::PeerConnectionInterface> peer_connection_;
+  // GStreamer components
+  GstElement* pipeline_;
+  GstElement* webrtcbin_;
 };
 
 }  // namespace drunk_call

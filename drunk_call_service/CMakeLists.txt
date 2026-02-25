@@ -20,6 +20,10 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 find_package(Protobuf REQUIRED)
 find_package(gRPC REQUIRED)
 find_package(Threads REQUIRED)
+find_package(PkgConfig REQUIRED)
+
+# GStreamer dependencies
+pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0)
 
 # Find gRPC C++ plugin (sometimes CMake doesn't set this correctly)
 find_program(GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin)
@@ -32,13 +36,16 @@ message(STATUS "Using gRPC C++ plugin: ${GRPC_CPP_PLUGIN_EXECUTABLE}")
 find_package(spdlog REQUIRED)
 message(STATUS "Using spdlog for logging")
 
-# LibWebRTC (prebuilt binaries)
-set(LIBWEBRTC_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/third_party/libwebrtc/include")
-set(LIBWEBRTC_LIBRARY_DIR "${CMAKE_SOURCE_DIR}/third_party/libwebrtc/lib")
+# GStreamer
+message(STATUS "Using GStreamer: ${GSTREAMER_VERSION}")
+message(STATUS "GStreamer include dirs: ${GSTREAMER_INCLUDE_DIRS}")
+message(STATUS "GStreamer libraries: ${GSTREAMER_LIBRARIES}")
 
 # Platform-specific settings
 if(UNIX AND NOT APPLE)
     set(PLATFORM_NAME "linux")
+    # GStreamer unstable API
+    add_definitions(-DGST_USE_UNSTABLE_API)
     find_package(ALSA QUIET)
     if(ALSA_FOUND)
         set(PLATFORM_LIBS ${ALSA_LIBRARIES} pthread dl)
@@ -48,9 +55,11 @@ if(UNIX AND NOT APPLE)
     endif()
 elseif(WIN32)
     set(PLATFORM_NAME "windows")
+    add_definitions(-DGST_USE_UNSTABLE_API)
     set(PLATFORM_LIBS winmm dmoguids wmcodecdspuuid msdmo strmiids)
 elseif(APPLE)
     set(PLATFORM_NAME "darwin")
+    add_definitions(-DGST_USE_UNSTABLE_API)
     find_library(COREAUDIO_LIBRARY CoreAudio)
     find_library(AUDIOUNIT_LIBRARY AudioUnit)
     find_library(AVFOUNDATION_LIBRARY AVFoundation)
@@ -87,7 +96,7 @@ include_directories(
     ${GENERATED_PROTOBUF_PATH}
     ${PROTOBUF_INCLUDE_DIRS}
     ${GRPC_INCLUDE_DIRS}
-    ${LIBWEBRTC_INCLUDE_DIR}
+    ${GSTREAMER_INCLUDE_DIRS}
 )
 
 # Source files
@@ -120,13 +129,11 @@ add_executable(drunk-call-service-${PLATFORM_NAME} ${SOURCES})
 target_link_libraries(drunk-call-service-${PLATFORM_NAME}
     gRPC::grpc++
     ${PROTOBUF_LIBRARIES}
+    spdlog::spdlog
+    ${GSTREAMER_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT}
     ${PLATFORM_LIBS}
-    # LibWebRTC will be added when available
-    # ${LIBWEBRTC_LIBRARY_DIR}/libwebrtc.a
 )
-
-target_link_libraries(drunk-call-service-${PLATFORM_NAME} spdlog::spdlog)
 
 # Install
 install(TARGETS drunk-call-service-${PLATFORM_NAME}

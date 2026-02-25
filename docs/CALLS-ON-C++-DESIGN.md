@@ -1,14 +1,17 @@
 # Call Service C++ Architecture Design
 
-**Status:** Planning (Not Implemented)
+**Status:** Phase 2 - GStreamer Integration (Building Successfully)
 **Created:** 2026-02-25
-**Target:** Replace Pion-based Go service with LibWebRTC-based C++ service
+**Last Updated:** 2026-02-25
+**Target:** Replace Pion-based Go service with GStreamer webrtcbin C++ service
 
 ---
 
 ## Overview
 
-Rewrite `drunk_call_service` in C++ using LibWebRTC to achieve proper Jingle compatibility with traditional XMPP clients (Dino, Conversations.im). The Go/Pion implementation cannot generate non-BUNDLE offers, breaking interoperability.
+Rewrite `drunk_call_service` in C++ using **GStreamer webrtcbin** to achieve proper Jingle compatibility with traditional XMPP clients (Dino, Conversations.im). The Go/Pion implementation cannot generate non-BUNDLE offers, breaking interoperability.
+
+**Architecture Change (2026-02-25):** Initial plan used LibWebRTC, but prebuilt binaries were compiled with Clang/libc++, incompatible with system libraries (gRPC, spdlog) built with GCC/libstdc++. Switched to GStreamer webrtcbin from Debian packages to avoid ABI issues.
 
 **Key Requirement:** 100% gRPC interface compatibility - Python GUI remains unchanged.
 
@@ -32,31 +35,27 @@ Rewrite `drunk_call_service` in C++ using LibWebRTC to achieve proper Jingle com
 ## Code Hierarchy
 
 ```
-drunk_call_service_cpp/
-├── proto/                      # gRPC interface (copied from Go version)
+drunk_call_service/
+├── proto/                      # gRPC interface (unchanged)
 │   └── call.proto
 ├── include/                    # Public headers
 │   ├── call_server.h          # gRPC service interface
-│   ├── session.h              # WebRTC session wrapper
+│   ├── session.h              # GStreamer webrtcbin wrapper
 │   ├── device_manager.h       # Audio/video device enumeration
 │   └── stats_collector.h      # Statistics gathering
 ├── src/                        # Implementation
 │   ├── main.cc                # Entry point, gRPC server setup
 │   ├── call_server.cc         # RPC method implementations
-│   ├── session.cc             # PeerConnection lifecycle
-│   ├── audio_track.cc         # Audio capture/playback
-│   ├── video_track.cc         # Camera capture, VP8 encoding
+│   ├── session.cc             # GStreamer pipeline lifecycle
+│   ├── audio_track.cc         # Audio capture/playback (GStreamer)
+│   ├── video_track.cc         # Camera capture (GStreamer)
 │   ├── device_manager.cc      # Device APIs (cross-platform)
-│   ├── stats_collector.cc     # LibWebRTC stats → proto mapping
+│   ├── stats_collector.cc     # GStreamer stats → proto mapping
 │   └── platform/              # Platform-specific code
 │       ├── devices_linux.cc
 │       ├── devices_windows.cc
 │       └── devices_darwin.cc
 ├── cmake/                      # Build configuration
-│   ├── FindLibWebRTC.cmake
-│   └── toolchains/            # Cross-compilation support
-├── third_party/                # External dependencies
-│   └── libwebrtc/             # Prebuilt binaries (not source)
 └── Makefile                    # Build wrapper
 ```
 
@@ -66,21 +65,22 @@ drunk_call_service_cpp/
 
 ### Core Libraries
 
-**LibWebRTC** (prebuilt binaries)
-- Purpose: WebRTC stack (ICE, DTLS, SRTP, codecs)
-- Source: https://github.com/webrtc-sdk/libwebrtc/releases
-- Platforms: Linux x64, Windows x64, macOS arm64/x64
-- Version: M104+ (stable branch)
+**GStreamer** (Debian packages) ✅ **IMPLEMENTED**
+- Purpose: WebRTC stack via webrtcbin element
+- Install: `gstreamer1.0-plugins-bad libgstreamer-plugins-bad1.0-dev gstreamer1.0-nice`
+- Version: 1.22.0 (Debian 12)
+- Bundle Policy: `GST_WEBRTC_BUNDLE_POLICY_MAX_COMPAT` for Dino compatibility
 
-**gRPC + Protobuf**
+**gRPC + Protobuf** ✅ **IMPLEMENTED**
 - Purpose: Service interface
 - Install: System packages (libgrpc++-dev, protobuf-compiler-grpc)
 
-**spdlog** (structured logging with rotation)
+**spdlog** (structured logging with rotation) ✅ **IMPLEMENTED**
 - Purpose: Logging with automatic file rotation (replaces Go's lumberjack)
-- Install: System packages (libspdlog-dev) or header-only
-- Features: rotating_file_sink (10MB, 5 backups, 30 days)
-- Format: Text format matching Go's slog output
+- Install: System packages (libspdlog-dev)
+- Features: rotating_file_sink (10MB, 5 backups)
+- Format: `time="2026-02-25 14:09:02.597" level=info msg="..."`
+- Implementation: `src/logger.cc`, flush on trace level for debugging
 
 **Platform Audio/Video APIs**
 - Linux: ALSA (libasound2-dev), V4L2 (linux-headers)
@@ -333,6 +333,29 @@ LibWebRTC requires single-threaded access to PeerConnection. Use dedicated signa
 **Phase 4:** Remove Go service code
 
 **Rollback Plan:** Keep Go binary as fallback during transition.
+
+---
+
+## Implementation Status (2026-02-25)
+
+**Phase 0-1: Skeleton** ✅ **COMPLETE**
+- ✅ Full project structure (include/, src/, proto/, tests/)
+- ✅ CMake build system + Makefile wrapper
+- ✅ All 13 gRPC RPCs stubbed and tested
+- ✅ spdlog logging with rotation (matches Go format)
+- ✅ Signal handling (thread-based, no deadlocks)
+- ✅ CLI argument parsing (--log-path, --log-level, --port, etc.)
+- ✅ Platform-specific device manager (Linux implemented)
+
+**Next Phase: LibWebRTC Integration**
+- Download prebuilt binaries
+- Implement PeerConnection with BundlePolicyMaxCompat
+- Real audio/video track creation
+- Test non-BUNDLE SDP generation
+
+**Binary Location:** `drunk_call_service/bin/drunk-call-service-linux`
+**Build:** `make` in drunk_call_service/ directory
+**Test:** Service responds to gRPC, clean shutdown via SIGTERM
 
 ---
 

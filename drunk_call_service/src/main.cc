@@ -70,22 +70,23 @@ int main(int argc, char** argv) {
 
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
-    if (arg == "--log-path" && i + 1 < argc) {
+    // Accept both -flag and --flag formats (Go uses single dash, GNU uses double)
+    if ((arg == "--log-path" || arg == "-log-path") && i + 1 < argc) {
       log_path = argv[++i];
-    } else if (arg == "--log-level" && i + 1 < argc) {
+    } else if ((arg == "--log-level" || arg == "-log-level") && i + 1 < argc) {
       log_level_str = argv[++i];
-    } else if (arg == "--port" && i + 1 < argc) {
+    } else if ((arg == "--port" || arg == "-port") && i + 1 < argc) {
       port = std::stoi(argv[++i]);
-    } else if (arg == "--version") {
+    } else if (arg == "--version" || arg == "-version") {
       show_version = true;
-    } else if (arg == "--help") {
+    } else if (arg == "--help" || arg == "-help" || arg == "-h") {
       show_help = true;
-    } else if (arg == "--test-devices") {
+    } else if (arg == "--test-devices" || arg == "-test-devices") {
       test_devices = true;
-    } else if (arg == "--test-video" && i + 1 < argc) {
+    } else if ((arg == "--test-video" || arg == "-test-video") && i + 1 < argc) {
       test_video = true;
       test_video_port = std::stoi(argv[++i]);
-    } else if (arg == "--camera-device" && i + 1 < argc) {
+    } else if ((arg == "--camera-device" || arg == "-camera-device") && i + 1 < argc) {
       camera_device = argv[++i];
     } else {
       std::cerr << "Unknown argument: " << arg << "\n";
