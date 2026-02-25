@@ -172,11 +172,19 @@ func (s *CallServer) CreateSession(ctx context.Context, req *pb.CreateSessionReq
 		GainControl:           req.GainControl,
 	}
 
+	// TESTING: Force BundlePolicyMaxCompat for ALL sessions to test Dino compatibility
+	// MaxCompat should generate separate ICE transports per media (no BUNDLE)
+	// This is required for traditional Jingle clients like Dino that don't support BUNDLE
+	bundlePolicy := webrtc.BundlePolicyMaxCompat // Force separate transports
+	s.logger.Info("Using BundlePolicyMaxCompat for maximum Jingle compatibility",
+		"session_id", sessionID,
+		"incoming_offer_has_bundle", req.OfferHasBundle)
+
 	// Create new session with device parameters and proxy/TURN config
 	session, err := NewSession(sessionID, peerJID,
-		req.MicrophoneDevice, req.SpeakersDevice,
+		req.MicrophoneDevice, req.SpeakersDevice, req.CameraDevice,
 		proxyConfig, turnConfig, relayOnly, audioConfig,
-		s.api, s.logger)
+		bundlePolicy, s.api, s.logger)
 	if err != nil {
 		s.logger.Error("Failed to create session", "session_id", sessionID, "error", err)
 		return &pb.CreateSessionResponse{
@@ -189,6 +197,7 @@ func (s *CallServer) CreateSession(ctx context.Context, req *pb.CreateSessionReq
 		"session_id", sessionID,
 		"microphone", req.MicrophoneDevice,
 		"speakers", req.SpeakersDevice,
+		"camera", req.CameraDevice,
 	)
 
 	s.sessions[sessionID] = session

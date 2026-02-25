@@ -106,8 +106,12 @@ type CreateSessionRequest struct {
 	NoiseSuppression      bool  `protobuf:"varint,16,opt,name=noise_suppression,json=noiseSuppression,proto3" json:"noise_suppression,omitempty"`                  // Enable noise suppression, default: true
 	NoiseSuppressionLevel int32 `protobuf:"varint,17,opt,name=noise_suppression_level,json=noiseSuppressionLevel,proto3" json:"noise_suppression_level,omitempty"` // 0=low, 1=moderate, 2=high, 3=very-high, default: 1
 	GainControl           bool  `protobuf:"varint,18,opt,name=gain_control,json=gainControl,proto3" json:"gain_control,omitempty"`                                 // Enable automatic gain control, default: true
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// Video device selection
+	CameraDevice string `protobuf:"bytes,19,opt,name=camera_device,json=cameraDevice,proto3" json:"camera_device,omitempty"` // Camera device path (e.g., "/dev/video0"), empty = no video
+	// BUNDLE policy for compatibility (Dino doesn't use BUNDLE)
+	OfferHasBundle bool `protobuf:"varint,20,opt,name=offer_has_bundle,json=offerHasBundle,proto3" json:"offer_has_bundle,omitempty"` // Whether the offer includes BUNDLE group (for incoming calls), default: true
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CreateSessionRequest) Reset() {
@@ -266,6 +270,20 @@ func (x *CreateSessionRequest) GetGainControl() bool {
 	return false
 }
 
+func (x *CreateSessionRequest) GetCameraDevice() string {
+	if x != nil {
+		return x.CameraDevice
+	}
+	return ""
+}
+
+func (x *CreateSessionRequest) GetOfferHasBundle() bool {
+	if x != nil {
+		return x.OfferHasBundle
+	}
+	return false
+}
+
 type CreateSessionResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
@@ -363,11 +381,12 @@ func (x *CreateOfferRequest) GetSessionId() string {
 }
 
 type CreateAnswerRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	RemoteSdp     string                 `protobuf:"bytes,2,opt,name=remote_sdp,json=remoteSdp,proto3" json:"remote_sdp,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	SessionId      string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	RemoteSdp      string                 `protobuf:"bytes,2,opt,name=remote_sdp,json=remoteSdp,proto3" json:"remote_sdp,omitempty"`
+	OfferHasBundle bool                   `protobuf:"varint,3,opt,name=offer_has_bundle,json=offerHasBundle,proto3" json:"offer_has_bundle,omitempty"` // Whether the offer includes a BUNDLE group (for compatibility)
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CreateAnswerRequest) Reset() {
@@ -412,6 +431,13 @@ func (x *CreateAnswerRequest) GetRemoteSdp() string {
 		return x.RemoteSdp
 	}
 	return ""
+}
+
+func (x *CreateAnswerRequest) GetOfferHasBundle() bool {
+	if x != nil {
+		return x.OfferHasBundle
+	}
+	return false
 }
 
 type SDPResponse struct {
@@ -1396,7 +1422,7 @@ var File_proto_call_proto protoreflect.FileDescriptor
 
 const file_proto_call_proto_rawDesc = "" +
 	"\n" +
-	"\x10proto/call.proto\x12\x04call\"\xba\x05\n" +
+	"\x10proto/call.proto\x12\x04call\"\x89\x06\n" +
 	"\x14CreateSessionRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x19\n" +
@@ -1423,18 +1449,21 @@ const file_proto_call_proto_rawDesc = "" +
 	"\x16echo_suppression_level\x18\x0f \x01(\x05R\x14echoSuppressionLevel\x12+\n" +
 	"\x11noise_suppression\x18\x10 \x01(\bR\x10noiseSuppression\x126\n" +
 	"\x17noise_suppression_level\x18\x11 \x01(\x05R\x15noiseSuppressionLevel\x12!\n" +
-	"\fgain_control\x18\x12 \x01(\bR\vgainControl\"G\n" +
+	"\fgain_control\x18\x12 \x01(\bR\vgainControl\x12#\n" +
+	"\rcamera_device\x18\x13 \x01(\tR\fcameraDevice\x12(\n" +
+	"\x10offer_has_bundle\x18\x14 \x01(\bR\x0eofferHasBundle\"G\n" +
 	"\x15CreateSessionResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\"3\n" +
 	"\x12CreateOfferRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"S\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"}\n" +
 	"\x13CreateAnswerRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x1d\n" +
 	"\n" +
-	"remote_sdp\x18\x02 \x01(\tR\tremoteSdp\"5\n" +
+	"remote_sdp\x18\x02 \x01(\tR\tremoteSdp\x12(\n" +
+	"\x10offer_has_bundle\x18\x03 \x01(\bR\x0eofferHasBundle\"5\n" +
 	"\vSDPResponse\x12\x10\n" +
 	"\x03sdp\x18\x01 \x01(\tR\x03sdp\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\"v\n" +

@@ -75,6 +75,12 @@ message CreateSessionRequest {
   bool noise_suppression = 16;   // Enable noise suppression, default: true
   int32 noise_suppression_level = 17; // 0=low, 1=moderate, 2=high, 3=very-high, default: 1
   bool gain_control = 18;        // Enable automatic gain control, default: true
+
+  // Video device selection
+  string camera_device = 19;     // Camera device path (e.g., "/dev/video0"), empty = no video
+
+  // BUNDLE policy for compatibility (Dino doesn't use BUNDLE)
+  bool offer_has_bundle = 20;    // Whether the offer includes BUNDLE group (for incoming calls), default: true
 }
 
 message CreateSessionResponse {
@@ -89,6 +95,7 @@ message CreateOfferRequest {
 message CreateAnswerRequest {
   string session_id = 1;
   string remote_sdp = 2;
+  bool offer_has_bundle = 3;  // Whether the offer includes a BUNDLE group (for compatibility)
 }
 
 message SDPResponse {

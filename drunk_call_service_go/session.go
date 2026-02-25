@@ -44,6 +44,13 @@ type Session struct {
 	microphoneDevice string // Device name for pulsesrc (empty = default)
 	speakersDevice   string // Device name for pulsesink (empty = default)
 
+	// Video track and GStreamer pipeline
+	videoTrack    *webrtc.TrackLocalStaticSample
+	videoPipeline *gst.Pipeline
+
+	// Video device selection
+	cameraDevice string // Camera device path (e.g., "/dev/video0"), empty = no video
+
 	// Privacy settings
 	relayOnly bool // If true, only TURN relay candidates are sent (prevents IP leaks)
 
@@ -91,9 +98,9 @@ type AudioProcessingConfig struct {
 }
 
 // NewSession creates a new WebRTC session
-func NewSession(id string, peerJID string, micDevice string, speakersDevice string,
+func NewSession(id string, peerJID string, micDevice string, speakersDevice string, cameraDevice string,
 	proxyConfig *ProxyConfig, turnConfig *TURNConfig, relayOnly bool, audioConfig *AudioProcessingConfig,
-	api *webrtc.API, logger *slog.Logger) (*Session, error) {
+	bundlePolicy webrtc.BundlePolicy, api *webrtc.API, logger *slog.Logger) (*Session, error) {
 
 	// Determine ICE transport policy
 	var iceTransportPolicy webrtc.ICETransportPolicy
@@ -156,10 +163,12 @@ func NewSession(id string, peerJID string, micDevice string, speakersDevice stri
 		},
 		ICETransportPolicy: iceTransportPolicy,
 		RTCPMuxPolicy:      webrtc.RTCPMuxPolicyRequire,
+		BundlePolicy:       bundlePolicy,
 	}
 
 	logger.Info("Creating PeerConnection with config",
 		"ice_transport_policy", config.ICETransportPolicy.String(),
+		"bundle_policy", config.BundlePolicy.String(),
 		"ice_servers_count", len(config.ICEServers),
 		"proxy_enabled", proxyConfig != nil && proxyConfig.Host != "",
 	)
@@ -260,6 +269,7 @@ func NewSession(id string, peerJID string, micDevice string, speakersDevice stri
 		pc:               pc,
 		microphoneDevice: micDevice,
 		speakersDevice:   speakersDevice,
+		cameraDevice:     cameraDevice,
 		relayOnly:        relayOnly,
 		audioConfig:      audioConfig,
 		eventChan:        make(chan *pb.CallEvent, 100), // Buffered channel for events
@@ -399,7 +409,7 @@ func (s *Session) setupHandlers() {
 		})
 	})
 
-	// Track handling (remote audio)
+	// Track handling (remote audio and video)
 	s.pc.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 		s.logger.Info("Got remote track",
 			"session_id", s.ID,
@@ -408,20 +418,29 @@ func (s *Session) setupHandlers() {
 			"ssrc", track.SSRC(),
 		)
 
-		// Only handle audio tracks
-		if track.Kind() != webrtc.RTPCodecTypeAudio {
-			s.logger.Warn("Received non-audio track, ignoring",
+		// Handle video tracks
+		if track.Kind() == webrtc.RTPCodecTypeVideo {
+			s.logger.Info("Starting video playback for remote track",
 				"session_id", s.ID,
-				"kind", track.Kind(),
 			)
+			go s.playVideoTrack(track)
 			return
 		}
 
-		// Route audio to speaker
-		s.logger.Info("Starting audio playback for remote track",
+		// Handle audio tracks
+		if track.Kind() == webrtc.RTPCodecTypeAudio {
+			s.logger.Info("Starting audio playback for remote track",
+				"session_id", s.ID,
+			)
+			go s.playAudioTrack(track)
+			return
+		}
+
+		// Unknown track type
+		s.logger.Warn("Received unknown track type, ignoring",
 			"session_id", s.ID,
+			"kind", track.Kind(),
 		)
-		go s.playAudioTrack(track)
 	})
 
 	// OnNegotiationNeeded - fires when we need to renegotiate
@@ -437,6 +456,17 @@ func (s *Session) CreateOffer() (string, error) {
 	// Add local audio track before creating offer
 	if err := s.addAudioTrack(); err != nil {
 		return "", fmt.Errorf("failed to add audio track: %w", err)
+	}
+
+	// Add video track if camera configured (graceful degradation)
+	if s.cameraDevice != "" {
+		if err := s.addVideoTrack(); err != nil {
+			// Log warning but don't fail - continue with audio-only call
+			s.logger.Warn("Failed to add video track, continuing audio-only",
+				"session_id", s.ID,
+				"error", err,
+			)
+		}
 	}
 
 	offer, err := s.pc.CreateOffer(nil)
@@ -457,6 +487,9 @@ func (s *Session) CreateOffer() (string, error) {
 	// Log local SDP offer validation
 	s.logger.Info("Created SDP offer", "session_id", s.ID)
 	s.validateSDP(filteredSDP, "local_offer")
+
+	// TESTING: Log BUNDLE and ICE credentials to verify MaxCompat behavior
+	s.analyzeBundleAndICE(filteredSDP, "OFFER")
 
 	return filteredSDP, nil
 }
@@ -482,6 +515,17 @@ func (s *Session) CreateAnswer(remoteSDP string) (string, error) {
 	// Add local audio track before creating answer
 	if err := s.addAudioTrack(); err != nil {
 		return "", fmt.Errorf("failed to add audio track: %w", err)
+	}
+
+	// Add video track if camera configured (graceful degradation)
+	if s.cameraDevice != "" {
+		if err := s.addVideoTrack(); err != nil {
+			// Log warning but don't fail - continue with audio-only call
+			s.logger.Warn("Failed to add video track, continuing audio-only",
+				"session_id", s.ID,
+				"error", err,
+			)
+		}
 	}
 
 	answer, err := s.pc.CreateAnswer(nil)
@@ -1049,6 +1093,97 @@ func (s *Session) validateSDP(sdp string, sdpType string) {
 			"type", sdpType,
 			"ufrag_present", iceUfrag != "",
 			"pwd_present", icePwd != "",
+		)
+	}
+}
+
+// analyzeBundleAndICE logs BUNDLE group and ICE credentials per media section
+// This helps verify if BundlePolicyMaxCompat is working (should have different ufrag per m-line)
+func (s *Session) analyzeBundleAndICE(sdp string, sdpType string) {
+	lines := strings.Split(sdp, "\n")
+
+	var bundleGroup string
+	var currentMedia string
+	mediaIceInfo := make(map[string]map[string]string) // media -> {ufrag, pwd}
+	mediaIndex := 0
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+
+		// Capture BUNDLE group line
+		if strings.HasPrefix(line, "a=group:BUNDLE") {
+			bundleGroup = strings.TrimPrefix(line, "a=group:BUNDLE ")
+		}
+
+		// Track which media section we're in
+		if strings.HasPrefix(line, "m=") {
+			parts := strings.Fields(line)
+			if len(parts) >= 1 {
+				currentMedia = fmt.Sprintf("%s[%d]", strings.TrimPrefix(parts[0], "m="), mediaIndex)
+				mediaIndex++
+				mediaIceInfo[currentMedia] = make(map[string]string)
+			}
+		}
+
+		// Capture ICE credentials per media section
+		if currentMedia != "" {
+			if strings.HasPrefix(line, "a=ice-ufrag:") {
+				mediaIceInfo[currentMedia]["ufrag"] = strings.TrimPrefix(line, "a=ice-ufrag:")
+			} else if strings.HasPrefix(line, "a=ice-pwd:") {
+				mediaIceInfo[currentMedia]["pwd"] = strings.TrimPrefix(line, "a=ice-pwd:")
+			}
+		}
+	}
+
+	// Log BUNDLE status
+	if bundleGroup != "" {
+		s.logger.Warn("⚠️  SDP contains BUNDLE group - Dino will REJECT this!",
+			"session_id", s.ID,
+			"type", sdpType,
+			"bundle_group", bundleGroup,
+		)
+	} else {
+		s.logger.Info("✅ No BUNDLE group found - compatible with Dino",
+			"session_id", s.ID,
+			"type", sdpType,
+		)
+	}
+
+	// Log ICE credentials per media
+	s.logger.Info("ICE credentials per media section",
+		"session_id", s.ID,
+		"type", sdpType,
+		"media_count", len(mediaIceInfo),
+	)
+
+	// Check if all ufrag values are unique (required for non-BUNDLE)
+	ufrags := make(map[string]int)
+	for media, ice := range mediaIceInfo {
+		ufrag := ice["ufrag"]
+		pwd := ice["pwd"]
+		ufrags[ufrag]++
+
+		s.logger.Info("Media ICE info",
+			"session_id", s.ID,
+			"media", media,
+			"ice_ufrag", ufrag,
+			"ice_pwd_len", len(pwd),
+		)
+	}
+
+	// Verify uniqueness
+	uniqueUfrags := len(ufrags) == len(mediaIceInfo)
+	if uniqueUfrags && len(mediaIceInfo) > 1 {
+		s.logger.Info("✅ All media sections have UNIQUE ICE credentials - MaxCompat working!",
+			"session_id", s.ID,
+			"type", sdpType,
+		)
+	} else if len(mediaIceInfo) > 1 {
+		s.logger.Warn("⚠️  Media sections share SAME ICE credentials - MaxCompat NOT working!",
+			"session_id", s.ID,
+			"type", sdpType,
+			"unique_ufrags", len(ufrags),
+			"total_media", len(mediaIceInfo),
 		)
 	}
 }
