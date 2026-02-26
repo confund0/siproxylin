@@ -1,5 +1,6 @@
 #include "ice_agent.h"
 #include "logger.h"
+#include <nice/debug.h>
 #include <cstring>
 #include <sstream>
 
@@ -29,6 +30,10 @@ bool IceAgent::Initialize() {
   }
 
   LOG_INFO("Initializing IceAgent with {} components", n_components_);
+
+  // Enable libnice debug output (requires NICE_DEBUG and G_MESSAGES_DEBUG env vars)
+  nice_debug_enable(TRUE);  // TRUE = include STUN debug messages too
+  LOG_INFO("libnice debug enabled (check stderr for libnice output)");
 
   // Create dedicated GMainContext for ICE thread (like Dino)
   thread_context_ = g_main_context_new();
@@ -122,7 +127,7 @@ bool IceAgent::AddStream() {
     return false;
   }
 
-  LOG_INFO("ICE stream created: stream_id={}", stream_id_);
+  LOG_INFO("ICE stream created: stream_id={}, n_components={}", stream_id_, n_components_);
 
   // Attach receive callbacks for ALL components
   for (int i = 1; i <= n_components_; i++) {
@@ -132,7 +137,7 @@ bool IceAgent::AddStream() {
       LOG_ERROR("Failed to attach recv callback for component {}", i);
       return false;
     }
-    LOG_DEBUG("Attached recv callback for component {}", i);
+    LOG_INFO("✓ Component {} initialized: recv callback attached", i);
 
     // Initialize component state
     {
@@ -141,6 +146,7 @@ bool IceAgent::AddStream() {
     }
   }
 
+  LOG_INFO("All {} components initialized successfully", n_components_);
   return true;
 }
 
@@ -210,6 +216,8 @@ void IceAgent::SetRemoteCredentials(const std::string& ufrag, const std::string&
   if (!nice_agent_set_remote_credentials(agent_, stream_id_,
                                           ufrag.c_str(), pwd.c_str())) {
     LOG_ERROR("Failed to set remote credentials");
+  } else {
+    LOG_INFO("Remote credentials set successfully - ICE connectivity checks should start");
   }
 }
 
@@ -257,28 +265,40 @@ bool IceAgent::AddRemoteCandidate(int component_id, const std::string& candidate
     return false;
   }
 
-  LOG_DEBUG("Adding remote candidate: component={}, mid={}, mline={}, cand={}",
-            component_id, sdp_mid, sdp_mline_index, candidate_str);
+  LOG_DEBUG("Adding remote candidate: mid={}, mline={}, cand={}",
+            sdp_mid, sdp_mline_index, candidate_str);
 
   // Parse SDP candidate string to NiceCandidate
   // Format: "candidate:foundation component protocol priority ip port typ type ..."
-  NiceCandidate* candidate = nice_agent_parse_remote_candidate_sdp(agent_, stream_id_, candidate_str.c_str());
+  // Note: nice_agent_parse_remote_candidate_sdp expects "a=candidate:..." but we might receive just "candidate:..."
+  std::string sdp_line = candidate_str;
+  if (sdp_line.find("a=") != 0) {
+    sdp_line = "a=" + sdp_line;
+  }
+
+  NiceCandidate* candidate = nice_agent_parse_remote_candidate_sdp(agent_, stream_id_, sdp_line.c_str());
   if (!candidate) {
     LOG_ERROR("Failed to parse remote candidate: {}", candidate_str);
     return false;
   }
 
+  // IMPORTANT: Use component_id from the PARSED candidate, not the parameter!
+  // The component (1=RTP, 2=RTCP) is extracted by libnice from the candidate string
+  guint parsed_component_id = candidate->component_id;
+
+  LOG_DEBUG("Parsed candidate component: {}", parsed_component_id);
+
   // Add to remote candidates list
   GSList* candidates = g_slist_append(nullptr, candidate);
-  int added = nice_agent_set_remote_candidates(agent_, stream_id_, component_id, candidates);
+  int added = nice_agent_set_remote_candidates(agent_, stream_id_, parsed_component_id, candidates);
   g_slist_free_full(candidates, (GDestroyNotify)nice_candidate_free);
 
   if (added < 0) {
-    LOG_ERROR("Failed to add remote candidate for component {}", component_id);
+    LOG_ERROR("Failed to add remote candidate for component {}", parsed_component_id);
     return false;
   }
 
-  LOG_DEBUG("Added {} remote candidate(s) for component {}", added, component_id);
+  LOG_DEBUG("Added {} remote candidate(s) for component {}", added, parsed_component_id);
   return true;
 }
 

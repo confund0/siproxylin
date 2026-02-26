@@ -124,6 +124,7 @@ set(SOURCES
     src/ice_agent.cc
     src/srtp_session.cc
     src/dtls_srtp_handler.cc
+    src/sdp_parser.cc
     src/audio_track.cc
     src/video_track.cc
     src/device_manager.cc

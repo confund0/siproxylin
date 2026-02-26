@@ -237,11 +237,15 @@ std::string Session::CreateOffer() {
 
   LOG_INFO("Pipeline is now in PLAYING state");
 
-  // 2. Start ICE candidate gathering (NEW)
+  // 2. Set ICE controlling mode (OFFER = controlling)
+  ice_agent_->SetControllingMode(true);
+  LOG_INFO("ICE controlling mode: TRUE (offerer)");
+
+  // 3. Start ICE candidate gathering (NEW)
   ice_agent_->GatherCandidates();
   // NOTE: Candidates will be streamed via OnIceCandidate callbacks → PopEvent()
 
-  // 3. Get ICE credentials (NEW)
+  // 4. Get ICE credentials (NEW)
   auto [ufrag, pwd] = ice_agent_->GetLocalCredentials();
   LOG_INFO("Local ICE credentials: ufrag={}, pwd_len={}", ufrag, pwd.length());
 
@@ -303,16 +307,41 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
     LOG_INFO("Pipeline is now in PLAYING state");
   }
 
-  // 2. Parse remote SDP to extract ICE credentials (NEW)
-  // TODO: Implement SDP parser in Phase 4
-  // For now, stub extraction
-  LOG_INFO("TODO: Parse remote SDP to extract ICE credentials");
+  // 2. Parse remote SDP to extract ICE credentials and DTLS info
+  SdpParser parser;
+  if (!parser.Parse(remote_sdp)) {
+    LOG_ERROR("Failed to parse remote offer SDP");
+    return "";
+  }
+
   LOG_DEBUG("Remote offer SDP:\n{}", remote_sdp);
 
-  // 3. Set remote ICE credentials (NEW - stub for Phase 4)
-  // ice_agent_->SetRemoteCredentials(remote_ufrag, remote_pwd);
+  // 3. Extract and set remote ICE credentials
+  auto ice_creds = parser.GetIceCredentials(0);
+  if (ice_creds) {
+    LOG_INFO("Setting remote ICE credentials: ufrag={}, pwd_len={}",
+             ice_creds->ufrag, ice_creds->pwd.length());
+    ice_agent_->SetRemoteCredentials(ice_creds->ufrag, ice_creds->pwd);
+  } else {
+    LOG_WARN("No ICE credentials in remote offer");
+  }
 
-  // 4. Start ICE candidate gathering (NEW)
+  // 3.5. Extract and set DTLS fingerprint
+  auto fingerprint = parser.GetDtlsFingerprint(0);
+  if (fingerprint && dtls_srtp_) {
+    LOG_INFO("Setting peer DTLS fingerprint from offer: algorithm={}, size={} bytes",
+             fingerprint->algorithm, fingerprint->value.size());
+    dtls_srtp_->SetPeerFingerprint(fingerprint->value);
+    dtls_srtp_->SetPeerFingerprintAlgo(fingerprint->algorithm);
+  } else {
+    LOG_WARN("No DTLS fingerprint in remote offer");
+  }
+
+  // 4. Set ICE controlling mode (ANSWER = NOT controlling)
+  ice_agent_->SetControllingMode(false);
+  LOG_INFO("ICE controlling mode: FALSE (answerer)");
+
+  // 5. Start ICE candidate gathering (NEW)
   ice_agent_->GatherCandidates();
 
   // 5. Get local ICE credentials (NEW)
@@ -355,18 +384,69 @@ bool Session::SetRemoteDescription(const std::string& remote_sdp, const std::str
 
   LOG_DEBUG("Remote {} SDP:\n{}", sdp_type, remote_sdp);
 
-  // Parse SDP to extract ICE credentials (STUB - Phase 4)
-  // TODO: Implement SDP parser
-  LOG_INFO("TODO: Parse remote SDP to extract ICE credentials and candidates");
+  // Parse SDP using GStreamer's SDP API
+  SdpParser parser;
+  if (!parser.Parse(remote_sdp)) {
+    LOG_ERROR("Failed to parse remote SDP");
+    return false;
+  }
 
-  // For Phase 2, just log and return success
-  // Phase 4 will implement:
-  // 1. Parse ice-ufrag and ice-pwd from SDP
-  // 2. Call ice_agent_->SetRemoteCredentials(ufrag, pwd)
-  // 3. Extract candidates from SDP (if present)
-  // 4. Call ice_agent_->AddRemoteCandidate() for each
+  // 1. Extract and set ICE credentials (audio media, index 0)
+  auto ice_creds = parser.GetIceCredentials(0);
+  if (ice_creds) {
+    LOG_INFO("Setting remote ICE credentials: ufrag={}, pwd_len={}",
+             ice_creds->ufrag, ice_creds->pwd.length());
+    ice_agent_->SetRemoteCredentials(ice_creds->ufrag, ice_creds->pwd);
+  } else {
+    LOG_WARN("No ICE credentials found in remote SDP");
+  }
 
-  LOG_INFO("Remote description set successfully (stub)");
+  // 2. Extract and set DTLS fingerprint
+  auto fingerprint = parser.GetDtlsFingerprint(0);
+  if (fingerprint && dtls_srtp_) {
+    LOG_INFO("Setting peer DTLS fingerprint: algorithm={}, size={} bytes",
+             fingerprint->algorithm, fingerprint->value.size());
+    dtls_srtp_->SetPeerFingerprint(fingerprint->value);
+    dtls_srtp_->SetPeerFingerprintAlgo(fingerprint->algorithm);
+  } else {
+    LOG_WARN("No DTLS fingerprint found in remote SDP");
+  }
+
+  // 3. Extract setup attribute to determine DTLS role
+  auto setup = parser.GetSetupAttribute(0);
+  if (setup && dtls_srtp_) {
+    // Determine our DTLS role based on peer's setup attribute
+    // Peer "active" → we are SERVER (passive)
+    // Peer "passive" → we are CLIENT (active)
+    // Peer "actpass" → we choose (become CLIENT if answering, SERVER if offering)
+    if (setup->role == SdpParser::SetupAttribute::Role::ACTIVE) {
+      // Peer is active, we are passive (SERVER)
+      LOG_INFO("Peer is active, setting DTLS mode to SERVER");
+      dtls_srtp_->SetMode(DtlsMode::SERVER);
+    } else if (setup->role == SdpParser::SetupAttribute::Role::PASSIVE) {
+      // Peer is passive, we are active (CLIENT)
+      LOG_INFO("Peer is passive, setting DTLS mode to CLIENT");
+      dtls_srtp_->SetMode(DtlsMode::CLIENT);
+    } else if (setup->role == SdpParser::SetupAttribute::Role::ACTPASS) {
+      // Peer can do either, we choose based on SDP type
+      if (sdp_type == "offer") {
+        // We're answering, become active (CLIENT)
+        LOG_INFO("Peer is actpass (offer), setting DTLS mode to CLIENT");
+        dtls_srtp_->SetMode(DtlsMode::CLIENT);
+      } else {
+        // We're offering, become passive (SERVER)
+        LOG_INFO("Peer is actpass (answer), setting DTLS mode to SERVER");
+        dtls_srtp_->SetMode(DtlsMode::SERVER);
+      }
+    }
+  } else {
+    LOG_WARN("No setup attribute found in remote SDP");
+  }
+
+  // TODO: Extract candidates from SDP (a=candidate lines) if present
+  // This is less critical since candidates are usually sent via trickle ICE
+
+  LOG_INFO("Remote description set successfully");
   return true;
 }
 
@@ -381,10 +461,9 @@ bool Session::AddICECandidate(const std::string& candidate,
     return false;
   }
 
-  // Determine component_id from sdp_mline_index
-  // For now, simple mapping: mline 0 → Component 1, mline 1 → Component 2
-  // Phase 4 may refine this based on RTCP-mux detection
-  int component_id = sdp_mline_index + 1;
+  // Note: component_id is parsed from the candidate string itself by libnice
+  // We pass 0 as a placeholder (IceAgent::AddRemoteCandidate uses the parsed component)
+  int component_id = 0;
 
   // Add to IceAgent
   if (!ice_agent_->AddRemoteCandidate(component_id, candidate, sdp_mid, sdp_mline_index)) {
