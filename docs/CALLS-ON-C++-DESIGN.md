@@ -1,6 +1,6 @@
 # Call Service C++ Architecture Design
 
-**Status:** Phase 2 - GStreamer Integration (Building Successfully)
+**Status:** Phase 5 Complete - Audio Calls Working ✅
 **Created:** 2026-02-25
 **Last Updated:** 2026-02-25
 **Target:** Replace Pion-based Go service with GStreamer webrtcbin C++ service
@@ -11,9 +11,11 @@
 
 Rewrite `drunk_call_service` in C++ using **GStreamer webrtcbin** to achieve proper Jingle compatibility with traditional XMPP clients (Dino, Conversations.im). The Go/Pion implementation cannot generate non-BUNDLE offers, breaking interoperability.
 
-**Architecture Change (2026-02-25):** Initial plan used LibWebRTC, but prebuilt binaries were compiled with Clang/libc++, incompatible with system libraries (gRPC, spdlog) built with GCC/libstdc++. Switched to GStreamer webrtcbin from Debian packages to avoid ABI issues.
+**Architecture Decision:** Switched from LibWebRTC to GStreamer webrtcbin due to C++ stdlib ABI incompatibility (prebuilt LibWebRTC used Clang/libc++, system libraries use GCC/libstdc++). GStreamer webrtcbin is available from Debian packages and avoids ABI issues.
 
-**Key Requirement:** 100% gRPC interface compatibility - Python GUI remains unchanged.
+**Key Requirement:** 100% gRPC interface compatibility - Python GUI unchanged.
+
+**Current Status:** Full duplex audio calls working with Dino XMPP client. Both incoming and outgoing calls functional with non-BUNDLE SDP and TURN relay.
 
 ---
 
@@ -65,11 +67,12 @@ drunk_call_service/
 
 ### Core Libraries
 
-**GStreamer** (Debian packages) ✅ **IMPLEMENTED**
+**GStreamer** (Debian packages) ✅ **WORKING**
 - Purpose: WebRTC stack via webrtcbin element
 - Install: `gstreamer1.0-plugins-bad libgstreamer-plugins-bad1.0-dev gstreamer1.0-nice`
 - Version: 1.22.0 (Debian 12)
-- Bundle Policy: `GST_WEBRTC_BUNDLE_POLICY_MAX_COMPAT` for Dino compatibility
+- Bundle Policy: `GST_WEBRTC_BUNDLE_POLICY_NONE` for Dino compatibility
+- Audio: autoaudiosrc/pulsesrc (capture), autoaudiosink/pulsesink (playback)
 
 **gRPC + Protobuf** ✅ **IMPLEMENTED**
 - Purpose: Service interface
@@ -356,6 +359,31 @@ LibWebRTC requires single-threaded access to PeerConnection. Use dedicated signa
 **Binary Location:** `drunk_call_service/bin/drunk-call-service-linux`
 **Build:** `make` in drunk_call_service/ directory
 **Test:** Service responds to gRPC, clean shutdown via SIGTERM
+
+---
+
+## Critical Implementation Issues (Resolved)
+
+### GStreamer Timing Requirements
+- **on-negotiation-needed signal**: Must wait for this signal before calling create-offer
+- **Pipeline state**: Must be PLAYING before setting remote description
+- **Transceiver creation**: Must add explicit sendrecv transceiver before setting remote description for incoming calls
+
+### ICE Candidate Queuing
+- Remote candidates may arrive before CreateSession completes
+- Solution: Queue candidates in `pending_remote_candidates_` map, flush after SetRemoteDescription
+- Pattern copied from Go/Pion service (proven working)
+
+### Content Name Mapping
+- GStreamer generates mids: "audio0", "video1"
+- Jingle peers use different names: Dino uses "audio", "video"
+- Solution: Python Jingle layer maps sdpMLineIndex to actual content names from peer's session-initiate
+- C++ layer kept simple with fixed mid pattern
+
+### Audio Playback Pipeline
+- Pad linking direction critical: webrtcbin src pad → depay sink pad
+- Must create individual elements, not use gst_parse_bin_from_description (ghost pad issues)
+- Pipeline: webrtcbin → rtpopusdepay → opusdec → audioconvert → audioresample → autoaudiosink/pulsesink
 
 ---
 

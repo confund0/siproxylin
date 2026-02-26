@@ -114,9 +114,11 @@ class Session {
   static void OnIceConnectionStateChange(GstElement* webrtcbin, GParamSpec* pspec, gpointer user_data);
   static void OnIceGatheringStateChange(GstElement* webrtcbin, GParamSpec* pspec, gpointer user_data);
   static void OnNegotiationNeeded(GstElement* webrtcbin, gpointer user_data);
+  static void OnPadAdded(GstElement* webrtcbin, GstPad* pad, gpointer user_data);
 
   // Helper methods
   bool AddTransceivers();  // Create transceivers and link pipeline to webrtcbin
+  void SetupAudioPlayback(GstPad* pad);  // Setup playback pipeline for incoming audio
 
   // Internal event queue
   void PushEvent(const Event& event);
@@ -127,6 +129,7 @@ class Session {
   // GStreamer components
   GstElement* pipeline_;
   GstElement* webrtcbin_;
+  GstElement* playback_pipeline_;  // Separate pipeline for audio playback
 
   // Event queue for streaming
   std::queue<Event> event_queue_;
@@ -137,6 +140,11 @@ class Session {
   bool negotiation_needed_ = false;
   std::mutex negotiation_mutex_;
   std::condition_variable negotiation_cv_;
+
+  // Stats tracking for bandwidth calculation
+  int64_t last_bytes_sent_ = 0;
+  int64_t last_bytes_received_ = 0;
+  std::chrono::steady_clock::time_point last_stats_time_;
 };
 
 }  // namespace drunk_call

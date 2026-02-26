@@ -1,10 +1,10 @@
 # Call Service C++ Implementation Plan
 
-**Status:** Phase 0-1 Complete (Skeleton Ready)
+**Status:** Phase 5 Complete - Audio Working ✅
 **Created:** 2026-02-25
 **Last Updated:** 2026-02-25
-**Estimated Duration:** 15 days full-time (3 weeks) or 6 weeks part-time
-**Target Release:** TBD
+**Actual Duration:** 2 days (Phases 0-5)
+**Remaining Work:** Device enumeration, audio processing, video
 
 ---
 
@@ -14,21 +14,21 @@
 
 **Evidence:** Tested 2026-02-25 - Pion always generates BUNDLE offers with shared ICE credentials, regardless of policy setting.
 
-**Solution:** Rewrite drunk_call_service in C++ using LibWebRTC, which correctly implements BundlePolicyMaxCompat for both offers and answers.
+**Solution:** Rewrite drunk_call_service in C++ using GStreamer webrtcbin, which correctly implements BUNDLE_POLICY_NONE for non-BUNDLE offers.
 
-**Why LibWebRTC:** Used by Conversations.im for Jingle calls, proven interoperability, battle-tested quality.
+**Architecture Decision:** Switched from LibWebRTC to GStreamer due to C++ ABI incompatibility (LibWebRTC prebuilts used Clang/libc++, system libs use GCC/libstdc++).
 
 ---
 
 ## Goals
 
 **Primary:**
-- ✅ Video calls work with Dino (outgoing and incoming)
-- ✅ Video calls work with Conversations.im
-- ✅ Audio quality maintained or improved
+- ✅ Audio calls work with Dino (outgoing and incoming)
+- ⏳ Video calls work with Dino (pending)
+- ✅ Audio quality maintained
 - ✅ 100% gRPC interface compatibility (Python GUI unchanged)
 - ✅ Same logging format as Go version (slog-compatible structured logs)
-- ✅ Drop-in binary replacement (same path, rename Go binary)
+- ✅ Drop-in binary replacement (same path, Go binary moved to _go/)
 - ✅ Heartbeat and service lifecycle management work with Python
 
 **Secondary:**
@@ -118,58 +118,68 @@
 
 **Status:** Done (2026-02-25)
 
-**Architecture Decision:** Switched from LibWebRTC to GStreamer webrtcbin due to C++ stdlib ABI incompatibility (prebuilt LibWebRTC used Clang/libc++, system libraries use GCC/libstdc++).
-
 **Completed Tasks:**
-- ✅ Replaced LibWebRTC with GStreamer webrtcbin (Debian packages)
+- ✅ Replaced LibWebRTC with GStreamer webrtcbin
 - ✅ Session class wraps GstElement pipeline and webrtcbin
-- ✅ Configure `bundle-policy=max-compat` for separate ICE per media
+- ✅ Configure `bundle-policy=NONE` for separate ICE per media
 - ✅ TURN server configuration via `add-turn-server` signal
 - ✅ ICE transport policy (relay/all) configuration
-- ✅ Initialize() creates pipeline with proper bundle policy
-- ✅ Close() cleans up GStreamer resources
-- ✅ Binary compiles successfully (772KB)
 
-**Deliverable:** ✅ GStreamer-based service builds cleanly, bundle policy configured
+**Deliverable:** ✅ GStreamer-based service builds, bundle policy configured
 
 ---
 
-### Phase 3: SDP Negotiation (In Progress)
+### Phase 3: SDP Negotiation ✅ COMPLETE
 
-**Tasks:**
-- Implement CreateOffer RPC (webrtcbin `create-offer` signal)
-- Implement CreateAnswer RPC (webrtcbin `create-answer` signal)
-- Implement SetRemoteDescription RPC (webrtcbin `set-remote-description` signal)
-- Verify SDP output has separate ICE credentials per media
-- Add logging to analyze BUNDLE groups and ice-ufrag values
+**Status:** Done (2026-02-25)
 
-**Deliverable:** Generates correct non-BUNDLE SDP, signaling flow works
+**Completed Tasks:**
+- ✅ CreateOffer with on-negotiation-needed signal synchronization
+- ✅ CreateAnswer with proper pipeline state management (PLAYING → transceiver → remote desc)
+- ✅ SetRemoteDescription for incoming answers
+- ✅ Verified non-BUNDLE SDP with separate ICE credentials
+- ✅ ICE candidate queuing for race condition handling
 
----
+**Key Issues Resolved:**
+- Empty SDP offers: Wait for on-negotiation-needed signal
+- Empty SDP answers: Set pipeline PLAYING before remote description
+- Content name mapping: Python Jingle layer handles translation
 
-### Phase 4: ICE Handling (Day 5)
-
-**Tasks:**
-- Implement AddICECandidate RPC
-- Implement StreamEvents RPC (ICE candidate streaming)
-- Wire PeerConnection::OnIceCandidate callback
-- Wire PeerConnection::OnConnectionChange callback
-- Handle ICE restart scenarios
-
-**Deliverable:** ICE candidates flow Python ↔ C++, connection establishes
+**Deliverable:** ✅ Correct non-BUNDLE SDP, both call directions work
 
 ---
 
-### Phase 5: Audio Tracks (Days 6-7)
+### Phase 4: ICE Handling ✅ COMPLETE
 
-**Tasks:**
-- Create audio track with AudioProcessing options (echo cancel, noise suppression, gain control)
-- Map CreateSessionRequest audio parameters to LibWebRTC AudioOptions
-- Add audio track to PeerConnection
-- Implement SetMute RPC (toggle audio track enabled state)
-- Test audio-only call end-to-end
+**Status:** Done (2026-02-25)
 
-**Deliverable:** Audio calls work with Dino
+**Completed Tasks:**
+- ✅ AddICECandidate with candidate queuing
+- ✅ StreamEvents for ICE candidate streaming
+- ✅ OnIceCandidate callback implementation
+- ✅ OnConnectionStateChange callbacks
+- ✅ Pending candidate queue (prevents race condition)
+
+**Deliverable:** ✅ ICE candidates flow correctly, TURN relay connects
+
+---
+
+### Phase 5: Audio Tracks ✅ COMPLETE
+
+**Status:** Done (2026-02-25)
+
+**Completed Tasks:**
+- ✅ Microphone capture: autoaudiosrc/pulsesrc with device selection
+- ✅ Speaker playback: autoaudiosink/pulsesink with device selection
+- ✅ Audio pipeline: src → audioconvert → audioresample → opusenc → rtpopuspay → webrtcbin
+- ✅ Playback pipeline: webrtcbin → rtpopusdepay → opusdec → audioconvert → audioresample → sink
+- ✅ pad-added signal handler for incoming audio
+- ✅ Full duplex audio tested with Dino
+
+**Key Issues Resolved:**
+- Playback pad linking: GST_PAD_LINK_WRONG_DIRECTION fixed by using individual elements
+
+**Deliverable:** ✅ Audio calls work end-to-end with Dino
 
 ---
 
@@ -285,11 +295,11 @@
 | Milestone | Phase | Target | Status | Date |
 |-----------|-------|--------|--------|------|
 | **M1: Service Skeleton** | 0-1 | Day 2 | ✅ **COMPLETE** | 2026-02-25 |
-| **M2: Sessions Work** | 2 | Day 5 | 🔲 Pending | - |
-| **M3: Audio Calls Work** | 5 | Day 7 | 🔲 Pending | - |
-| **M4: Video Calls Work** | 6 | Day 8 | 🔲 Pending | - |
-| **M5: Feature Complete** | 9 | Day 10 | 🔲 Pending | - |
-| **M6: Cross-Platform** | 12 | Day 14 | 🔲 Pending | - |
+| **M2: Sessions Work** | 2-4 | Day 5 | ✅ **COMPLETE** | 2026-02-25 |
+| **M3: Audio Calls Work** | 5 | Day 7 | ✅ **COMPLETE** | 2026-02-25 |
+| **M4: Video Calls Work** | 6 | Day 8 | ⏳ **IN PROGRESS** | - |
+| **M5: Feature Complete** | 7-9 | Day 10 | 🔲 Pending | - |
+| **M6: Cross-Platform** | 11-12 | Day 14 | 🔲 Pending | - |
 | **M7: Production Ready** | 13 | Day 15 | 🔲 Pending | - |
 
 ---
@@ -416,25 +426,26 @@
 
 ## Current Status (2026-02-25)
 
-**Completed:** Phase 0-1 (Project Setup + Skeleton)
-**Next:** Phase 2 (Session Management + LibWebRTC Integration)
+**Completed:** Phase 0-5 (Audio Calls Working)
+**Next:** Phase 6-7 (Video + Device Enumeration)
 
 **What Works:**
-- ✅ Complete build system (CMake + Makefile)
-- ✅ All 13 gRPC RPCs respond correctly
-- ✅ spdlog logging with rotation (matches Go format)
-- ✅ Signal handling (no deadlocks, clean shutdown)
-- ✅ Device manager stubs (Linux platform)
-- ✅ Binary: 15MB debug build, fully testable
+- ✅ Full duplex audio calls (mic + speakers)
+- ✅ Outgoing and incoming calls with Dino
+- ✅ Non-BUNDLE SDP generation
+- ✅ ICE candidate handling with queuing
+- ✅ TURN relay connectivity
+- ✅ Device selection (microphone_device, speakers_device config)
+- ✅ gRPC interface fully compatible with Python GUI
 
-**What's Next:**
-1. Download LibWebRTC prebuilt binaries
-2. Implement PeerConnection creation with BundlePolicyMaxCompat
-3. Test non-BUNDLE SDP generation
-4. Implement real audio/video track creation
+**What's Pending:**
+- ⏳ Device enumeration RPCs (ListAudioDevices, ListVideoDevices)
+- ⏳ Audio processing (webrtcdsp for echo cancellation)
+- ⏳ Video capture (v4l2src for camera)
+- 🔲 Cross-platform builds (Windows, macOS)
 
-**Time Investment So Far:** ~4 hours (including debugging)
-**Remaining Estimate:** 10-12 days for full implementation
+**Time Investment:** ~2 days (phases 0-5)
+**Remaining Estimate:** 3-5 days for remaining features
 
 ---
 

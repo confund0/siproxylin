@@ -4,6 +4,8 @@
 #include <iomanip>
 #include <cctype>
 #include <chrono>
+#include <algorithm>
+#include <map>
 
 namespace drunk_call {
 
@@ -30,7 +32,7 @@ static std::string url_encode(const std::string& value) {
 }
 
 Session::Session(const Config& config)
-    : config_(config), pipeline_(nullptr), webrtcbin_(nullptr) {
+    : config_(config), pipeline_(nullptr), webrtcbin_(nullptr), playback_pipeline_(nullptr) {
   LOG_DEBUG("Session created: {}", config_.session_id);
 
   // Initialize GStreamer (idempotent, safe to call multiple times)
@@ -153,31 +155,54 @@ bool Session::Initialize() {
                    G_CALLBACK(OnIceGatheringStateChange), this);
   g_signal_connect(webrtcbin_, "on-negotiation-needed",
                    G_CALLBACK(OnNegotiationNeeded), this);
+  g_signal_connect(webrtcbin_, "pad-added",
+                   G_CALLBACK(OnPadAdded), this);
 
-  LOG_INFO("Connected webrtcbin signal handlers for ICE, state changes, and negotiation");
+  LOG_INFO("Connected webrtcbin signal handlers for ICE, state changes, negotiation, and pad-added");
 
-  // Add audio test source (sine wave for testing)
-  GstElement* audiotestsrc = gst_element_factory_make("audiotestsrc", "audiosrc");
+  // Create audio source based on microphone_device config
+  GstElement* audiosrc = nullptr;
+  if (!config_.microphone_device.empty()) {
+    // Use specific PulseAudio device
+    audiosrc = gst_element_factory_make("pulsesrc", "audiosrc");
+    if (audiosrc) {
+      g_object_set(audiosrc, "device", config_.microphone_device.c_str(), NULL);
+      LOG_INFO("Using selected microphone device: {}", config_.microphone_device);
+    } else {
+      LOG_ERROR("Failed to create pulsesrc element");
+      gst_object_unref(pipeline_);
+      return false;
+    }
+  } else {
+    // Use system default (auto-detect)
+    audiosrc = gst_element_factory_make("autoaudiosrc", "audiosrc");
+    if (audiosrc) {
+      LOG_INFO("Using default microphone device (autoaudiosrc)");
+    } else {
+      LOG_ERROR("Failed to create autoaudiosrc element");
+      gst_object_unref(pipeline_);
+      return false;
+    }
+  }
+
+  // Create rest of audio capture pipeline
   GstElement* audioconvert = gst_element_factory_make("audioconvert", "audioconv");
   GstElement* audioresample = gst_element_factory_make("audioresample", "audioresample");
   GstElement* opusenc = gst_element_factory_make("opusenc", "opusenc");
   GstElement* rtpopuspay = gst_element_factory_make("rtpopuspay", "rtpopuspay");
 
-  if (!audiotestsrc || !audioconvert || !audioresample || !opusenc || !rtpopuspay) {
+  if (!audioconvert || !audioresample || !opusenc || !rtpopuspay) {
     LOG_ERROR("Failed to create audio pipeline elements");
     gst_object_unref(pipeline_);
     return false;
   }
 
-  // Configure audiotestsrc to produce a sine wave
-  g_object_set(audiotestsrc, "is-live", TRUE, "wave", 0, NULL);  // wave=0 is sine
-
   // Add audio elements to pipeline
-  gst_bin_add_many(GST_BIN(pipeline_), audiotestsrc, audioconvert, audioresample,
+  gst_bin_add_many(GST_BIN(pipeline_), audiosrc, audioconvert, audioresample,
                    opusenc, rtpopuspay, NULL);
 
-  // Link audio pipeline: audiotestsrc -> audioconvert -> audioresample -> opusenc -> rtpopuspay -> webrtcbin
-  if (!gst_element_link_many(audiotestsrc, audioconvert, audioresample, opusenc, rtpopuspay, NULL)) {
+  // Link audio pipeline: audiosrc -> audioconvert -> audioresample -> opusenc -> rtpopuspay -> webrtcbin
+  if (!gst_element_link_many(audiosrc, audioconvert, audioresample, opusenc, rtpopuspay, NULL)) {
     LOG_ERROR("Failed to link audio elements");
     gst_object_unref(pipeline_);
     return false;
@@ -335,7 +360,15 @@ void Session::Close() {
 
   LOG_INFO("Closing session: {}", config_.session_id);
 
-  // Stop pipeline
+  // Stop playback pipeline first
+  if (playback_pipeline_) {
+    gst_element_set_state(playback_pipeline_, GST_STATE_NULL);
+    gst_object_unref(playback_pipeline_);
+    playback_pipeline_ = nullptr;
+    LOG_DEBUG("Playback pipeline closed");
+  }
+
+  // Stop main pipeline
   if (pipeline_) {
     gst_element_set_state(pipeline_, GST_STATE_NULL);
     gst_object_unref(pipeline_);
@@ -725,17 +758,247 @@ void Session::SetMute(bool muted) {
 Session::Stats Session::GetStats() {
   Stats stats;
 
-  // TODO: Call PeerConnection::GetStats()
-  // - Map RTCStatsReport to Stats struct
+  if (!webrtcbin_) {
+    LOG_WARN("GetStats called but webrtcbin is null");
+    stats.connection_state = "new";
+    stats.ice_connection_state = "new";
+    stats.ice_gathering_state = "new";
+    return stats;
+  }
 
-  // Stub values for testing
-  stats.connection_state = "new";
-  stats.ice_connection_state = "checking";
-  stats.ice_gathering_state = "gathering";
-  stats.bytes_sent = 0;
-  stats.bytes_received = 0;
-  stats.bandwidth_kbps = 0;
-  stats.connection_type = "unknown";
+  // Get connection states from webrtcbin properties
+  GstWebRTCPeerConnectionState connection_state = GST_WEBRTC_PEER_CONNECTION_STATE_NEW;
+  GstWebRTCICEConnectionState ice_connection_state = GST_WEBRTC_ICE_CONNECTION_STATE_NEW;
+  GstWebRTCICEGatheringState ice_gathering_state = GST_WEBRTC_ICE_GATHERING_STATE_NEW;
+
+  g_object_get(webrtcbin_,
+               "connection-state", &connection_state,
+               "ice-connection-state", &ice_connection_state,
+               "ice-gathering-state", &ice_gathering_state,
+               NULL);
+
+  // Convert enums to strings
+  const char* connection_state_names[] = {"new", "connecting", "connected", "disconnected", "failed", "closed"};
+  const char* ice_connection_state_names[] = {"new", "checking", "connected", "completed", "failed", "disconnected", "closed"};
+  const char* ice_gathering_state_names[] = {"new", "gathering", "complete"};
+
+  if (connection_state >= 0 && connection_state < 6) {
+    stats.connection_state = connection_state_names[connection_state];
+  }
+  if (ice_connection_state >= 0 && ice_connection_state < 7) {
+    stats.ice_connection_state = ice_connection_state_names[ice_connection_state];
+  }
+  if (ice_gathering_state >= 0 && ice_gathering_state < 3) {
+    stats.ice_gathering_state = ice_gathering_state_names[ice_gathering_state];
+  }
+
+  // Get WebRTC stats using get-stats signal
+  // This returns a GstStructure with detailed statistics
+  GstPromise* promise = gst_promise_new();
+  g_signal_emit_by_name(webrtcbin_, "get-stats", NULL, promise);
+
+  // Wait for promise to complete
+  gst_promise_wait(promise);
+
+  const GstStructure* stats_struct = gst_promise_get_reply(promise);
+  if (stats_struct) {
+    int64_t bytes_sent = 0;
+    int64_t bytes_received = 0;
+    std::map<std::string, std::string> local_candidates_map;
+    std::map<std::string, std::string> remote_candidates_map;
+    std::string nominated_local_id;
+    std::string nominated_remote_id;
+    std::string local_candidate_type;
+    std::string remote_candidate_type;
+
+    // DEBUG: Dump entire stats structure to see what GStreamer provides
+    int n_fields = gst_structure_n_fields(stats_struct);
+    LOG_DEBUG("GStreamer stats structure has {} fields - dumping ALL:", n_fields);
+
+    for (int i = 0; i < n_fields; i++) {  // Log ALL fields
+      const gchar* field_name = gst_structure_nth_field_name(stats_struct, i);
+      const GValue* field_value = gst_structure_get_value(stats_struct, field_name);
+      const gchar* type_name = G_VALUE_TYPE_NAME(field_value);
+
+      LOG_DEBUG("  Field[{}]: name='{}', type={}", i, field_name, type_name);
+
+      if (GST_VALUE_HOLDS_STRUCTURE(field_value)) {
+        const GstStructure* stat = gst_value_get_structure(field_value);
+        gchar* stat_str = gst_structure_to_string(stat);
+        LOG_DEBUG("    {}", stat_str);
+        g_free(stat_str);
+      }
+    }
+
+    // Iterate through all stats objects
+    for (int i = 0; i < n_fields; i++) {
+      const gchar* field_name = gst_structure_nth_field_name(stats_struct, i);
+      const GValue* field_value = gst_structure_get_value(stats_struct, field_name);
+
+      if (!GST_VALUE_HOLDS_STRUCTURE(field_value)) {
+        continue;
+      }
+
+      const GstStructure* stat = gst_value_get_structure(field_value);
+
+      // GStreamer uses GstWebRTCStatsType enum, not a string "type" field
+      // The structure name tells us the type (e.g., "outbound-rtp", "local-candidate")
+      const gchar* struct_name = gst_structure_get_name(stat);
+
+      if (!struct_name) {
+        continue;
+      }
+
+      // Parse RTP outbound stats for bytes sent
+      if (g_strcmp0(struct_name, "outbound-rtp") == 0) {
+        guint64 sent = 0;
+        if (gst_structure_get_uint64(stat, "bytes-sent", &sent)) {
+          bytes_sent += sent;
+        }
+      }
+      // Parse RTP inbound stats for bytes received
+      else if (g_strcmp0(struct_name, "inbound-rtp") == 0) {
+        guint64 received = 0;
+        if (gst_structure_get_uint64(stat, "bytes-received", &received)) {
+          bytes_received += received;
+        }
+      }
+      // Parse candidates - use FIELD NAME to determine local vs remote
+      // Field names starting with "ice-candidate-local_" are OUR candidates
+      // Field names starting with "ice-candidate-remote_" are PEER's candidates
+      else if (g_strcmp0(struct_name, "local-candidate") == 0 || g_strcmp0(struct_name, "remote-candidate") == 0) {
+        const gchar* ip = gst_structure_get_string(stat, "address");
+        guint port = 0;
+        const gchar* candidate_type = gst_structure_get_string(stat, "candidate-type");
+
+        if (ip && gst_structure_get_uint(stat, "port", &port) && candidate_type) {
+          std::string candidate_str = std::string(ip) + ":" + std::to_string(port) + " (" + candidate_type + ")";
+
+          // Use field name prefix to determine if it's local or remote
+          if (strncmp(field_name, "ice-candidate-local_", 20) == 0) {
+            // This is OUR candidate (what we sent to peer)
+            local_candidates_map[field_name] = candidate_str;
+          } else if (strncmp(field_name, "ice-candidate-remote_", 21) == 0) {
+            // This is PEER's candidate (what they sent to us)
+            remote_candidates_map[field_name] = candidate_str;
+          }
+        }
+      }
+      // Parse candidate pair to find active pair
+      else if (g_strcmp0(struct_name, "candidate-pair") == 0) {
+        // GStreamer only shows the selected/active pair in stats
+        const gchar* local_id = gst_structure_get_string(stat, "local-candidate-id");
+        const gchar* remote_id = gst_structure_get_string(stat, "remote-candidate-id");
+        if (local_id && remote_id) {
+          nominated_local_id = local_id;
+          nominated_remote_id = remote_id;
+        }
+      }
+    }
+
+    // Copy candidates to stats
+    for (const auto& pair : local_candidates_map) {
+      stats.local_candidates.push_back(pair.second);
+    }
+    for (const auto& pair : remote_candidates_map) {
+      stats.remote_candidates.push_back(pair.second);
+    }
+
+    // Sort candidates for consistent display
+    std::sort(stats.local_candidates.begin(), stats.local_candidates.end());
+    std::sort(stats.remote_candidates.begin(), stats.remote_candidates.end());
+
+    // Set byte counts
+    stats.bytes_sent = bytes_sent;
+    stats.bytes_received = bytes_received;
+
+    // Calculate bandwidth (delta over time)
+    auto now = std::chrono::steady_clock::now();
+    if (last_stats_time_.time_since_epoch().count() > 0) {
+      auto delta_time = std::chrono::duration<double>(now - last_stats_time_).count();
+      if (delta_time > 0) {
+        int64_t delta_bytes = (bytes_sent + bytes_received) - (last_bytes_sent_ + last_bytes_received_);
+        double bandwidth_bytes_per_sec = delta_bytes / delta_time;
+        stats.bandwidth_kbps = static_cast<int64_t>(bandwidth_bytes_per_sec * 8 / 1000); // Convert to Kbps
+      }
+    }
+
+    // Update last stats for next calculation
+    last_stats_time_ = now;
+    last_bytes_sent_ = bytes_sent;
+    last_bytes_received_ = bytes_received;
+
+    // Determine connection type from nominated pair
+    std::string local_ip;
+    std::string remote_ip;
+    if (!nominated_local_id.empty() && !nominated_remote_id.empty()) {
+      // Re-iterate to find candidate types and IPs for nominated pair
+      // nominated_local_id points to ice-candidate-local_* (our candidate)
+      // nominated_remote_id points to ice-candidate-remote_* (peer's candidate)
+      for (int i = 0; i < n_fields; i++) {
+        const gchar* field_name = gst_structure_nth_field_name(stats_struct, i);
+
+        // Check if this is one of the nominated candidates
+        if (g_strcmp0(field_name, nominated_local_id.c_str()) == 0) {
+          const GValue* field_value = gst_structure_get_value(stats_struct, field_name);
+          if (GST_VALUE_HOLDS_STRUCTURE(field_value)) {
+            const GstStructure* stat = gst_value_get_structure(field_value);
+            const gchar* type = gst_structure_get_string(stat, "candidate-type");
+            if (type) local_candidate_type = type;
+
+            // Get IP and port
+            const gchar* ip = gst_structure_get_string(stat, "address");
+            guint port = 0;
+            if (ip && gst_structure_get_uint(stat, "port", &port)) {
+              local_ip = std::string(ip) + ":" + std::to_string(port);
+            }
+          }
+        }
+
+        if (g_strcmp0(field_name, nominated_remote_id.c_str()) == 0) {
+          const GValue* field_value = gst_structure_get_value(stats_struct, field_name);
+          if (GST_VALUE_HOLDS_STRUCTURE(field_value)) {
+            const GstStructure* stat = gst_value_get_structure(field_value);
+            const gchar* type = gst_structure_get_string(stat, "candidate-type");
+            if (type) remote_candidate_type = type;
+
+            // Get IP and port
+            const gchar* ip = gst_structure_get_string(stat, "address");
+            guint port = 0;
+            if (ip && gst_structure_get_uint(stat, "port", &port)) {
+              remote_ip = std::string(ip) + ":" + std::to_string(port);
+            }
+          }
+        }
+      }
+
+      // Determine connection type string with IP details
+      // Show the connection path: local → remote
+      if (local_candidate_type == "relay" || remote_candidate_type == "relay") {
+        if (local_candidate_type == "relay" && remote_candidate_type == "relay") {
+          stats.connection_type = "TURN relay (" + local_ip + " → " + remote_ip + ")";
+        } else if (local_candidate_type == "relay") {
+          stats.connection_type = "TURN relay (our: " + local_ip + ")";
+        } else {
+          stats.connection_type = "TURN relay (peer: " + remote_ip + ")";
+        }
+      } else if (local_candidate_type == "srflx" && remote_candidate_type == "srflx") {
+        stats.connection_type = "P2P (NAT hole-punching)";
+      } else if (local_candidate_type == "host" && remote_candidate_type == "host") {
+        stats.connection_type = "P2P (direct)";
+      } else {
+        stats.connection_type = "P2P (" + local_candidate_type + " → " + remote_candidate_type + ")";
+      }
+    } else {
+      stats.connection_type = "Unknown";
+    }
+  }
+
+  gst_promise_unref(promise);
+
+  LOG_DEBUG("GetStats: state={}, ice={}, bytes_sent={}, bytes_received={}, bandwidth={}Kbps, type={}",
+            stats.connection_state, stats.ice_connection_state,
+            stats.bytes_sent, stats.bytes_received, stats.bandwidth_kbps, stats.connection_type);
 
   return stats;
 }
@@ -938,6 +1201,129 @@ void Session::OnNegotiationNeeded(GstElement* webrtcbin, gpointer user_data) {
     session->negotiation_needed_ = true;
   }
   session->negotiation_cv_.notify_one();
+}
+
+void Session::OnPadAdded(GstElement* webrtcbin, GstPad* pad, gpointer user_data) {
+  Session* session = static_cast<Session*>(user_data);
+
+  // Get pad name and caps to identify the media type
+  gchar* pad_name = gst_pad_get_name(pad);
+  GstCaps* caps = gst_pad_get_current_caps(pad);
+
+  if (!caps) {
+    caps = gst_pad_query_caps(pad, NULL);
+  }
+
+  gchar* caps_str = gst_caps_to_string(caps);
+  LOG_INFO("Pad added: {} with caps: {}", pad_name, caps_str);
+
+  // Check if this is an audio pad (application/x-rtp with media=audio)
+  GstStructure* structure = gst_caps_get_structure(caps, 0);
+  const gchar* media = gst_structure_get_string(structure, "media");
+
+  if (media && g_strcmp0(media, "audio") == 0) {
+    LOG_INFO("Setting up audio playback for incoming audio stream");
+    session->SetupAudioPlayback(pad);
+  } else if (media && g_strcmp0(media, "video") == 0) {
+    LOG_INFO("Video pad detected (playback not yet implemented)");
+    // TODO: Implement video playback
+  } else {
+    LOG_WARN("Unknown media type on pad: {}", media ? media : "null");
+  }
+
+  g_free(caps_str);
+  g_free(pad_name);
+  gst_caps_unref(caps);
+}
+
+void Session::SetupAudioPlayback(GstPad* pad) {
+  LOG_INFO("Creating audio playback pipeline for session: {}", config_.session_id);
+
+  // Determine audio sink based on speakers_device config
+  std::string audio_sink;
+  if (!config_.speakers_device.empty()) {
+    // Use specific PulseAudio device
+    audio_sink = "pulsesink device=" + config_.speakers_device;
+    LOG_INFO("Using selected speakers device: {}", config_.speakers_device);
+  } else {
+    // Use system default
+    audio_sink = "autoaudiosink";
+    LOG_INFO("Using default speakers device (autoaudiosink)");
+  }
+
+  // Create individual elements (not using parse_bin_from_description because of ghost pad issues)
+  GstElement* depay = gst_element_factory_make("rtpopusdepay", nullptr);
+  GstElement* decoder = gst_element_factory_make("opusdec", nullptr);
+  GstElement* convert = gst_element_factory_make("audioconvert", nullptr);
+  GstElement* resample = gst_element_factory_make("audioresample", nullptr);
+
+  // Create sink element based on config
+  GstElement* sink = nullptr;
+  if (!config_.speakers_device.empty()) {
+    sink = gst_element_factory_make("pulsesink", nullptr);
+    if (sink) {
+      g_object_set(sink, "device", config_.speakers_device.c_str(), NULL);
+    }
+  } else {
+    sink = gst_element_factory_make("autoaudiosink", nullptr);
+  }
+
+  if (!depay || !decoder || !convert || !resample || !sink) {
+    LOG_ERROR("Failed to create playback pipeline elements");
+    if (depay) gst_object_unref(depay);
+    if (decoder) gst_object_unref(decoder);
+    if (convert) gst_object_unref(convert);
+    if (resample) gst_object_unref(resample);
+    if (sink) gst_object_unref(sink);
+    return;
+  }
+
+  // Add all elements to main pipeline
+  gst_bin_add_many(GST_BIN(pipeline_), depay, decoder, convert, resample, sink, NULL);
+
+  // Link elements: depay -> decoder -> convert -> resample -> sink
+  if (!gst_element_link_many(depay, decoder, convert, resample, sink, NULL)) {
+    LOG_ERROR("Failed to link playback elements");
+    return;
+  }
+
+  LOG_INFO("Created and linked playback elements: depay -> decoder -> convert -> resample -> sink");
+
+  // Get depay's sink pad
+  GstPad* sink_pad = gst_element_get_static_pad(depay, "sink");
+  if (!sink_pad) {
+    LOG_ERROR("Failed to get sink pad from depay element");
+    return;
+  }
+
+  // Link webrtcbin's src pad to depay's sink pad
+  GstPadLinkReturn link_result = gst_pad_link(pad, sink_pad);
+  if (link_result != GST_PAD_LINK_OK) {
+    LOG_ERROR("Failed to link webrtcbin pad to depay sink: {} ({})",
+              link_result,
+              link_result == GST_PAD_LINK_WRONG_DIRECTION ? "wrong direction" :
+              link_result == GST_PAD_LINK_NOFORMAT ? "no format" :
+              link_result == GST_PAD_LINK_NOSCHED ? "no sched" :
+              link_result == GST_PAD_LINK_REFUSED ? "refused" : "unknown");
+    gst_object_unref(sink_pad);
+    return;
+  }
+
+  LOG_INFO("Linked webrtcbin audio pad to depay sink pad");
+
+  // Sync all playback elements to PLAYING state
+  gst_element_sync_state_with_parent(depay);
+  gst_element_sync_state_with_parent(decoder);
+  gst_element_sync_state_with_parent(convert);
+  gst_element_sync_state_with_parent(resample);
+  gst_element_sync_state_with_parent(sink);
+
+  LOG_INFO("Audio playback pipeline created and started successfully");
+
+  // Store reference to first element for cleanup
+  playback_pipeline_ = depay;
+
+  gst_object_unref(sink_pad);
 }
 
 }  // namespace drunk_call
