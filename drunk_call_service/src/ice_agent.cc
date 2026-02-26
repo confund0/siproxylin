@@ -308,16 +308,33 @@ bool IceAgent::Send(int component_id, const uint8_t* data, size_t len) {
     return false;
   }
 
-  int sent = nice_agent_send(agent_, stream_id_, component_id,
-                              len, reinterpret_cast<const gchar*>(data));
+  // Use send_messages_nonblocking like Dino (NOT blocking send!)
+  // This is critical - blocking send can deadlock with ICE state machine
+  GOutputVector vector;
+  vector.buffer = data;
+  vector.size = len;
+
+  NiceOutputMessage message;
+  message.buffers = &vector;
+  message.n_buffers = 1;
+
+  GError* error = nullptr;
+  gint sent = nice_agent_send_messages_nonblocking(agent_, stream_id_, component_id,
+                                                    &message, 1, nullptr, &error);
 
   if (sent < 0) {
-    LOG_ERROR("Failed to send data on component {}: {}", component_id, strerror(errno));
+    if (error) {
+      LOG_ERROR("Failed to send data on component {}: {}", component_id, error->message);
+      g_error_free(error);
+    } else {
+      LOG_ERROR("Failed to send data on component {}", component_id);
+    }
     return false;
   }
 
-  if (static_cast<size_t>(sent) != len) {
-    LOG_WARN("Partial send on component {}: {} of {} bytes", component_id, sent, len);
+  if (sent == 0) {
+    LOG_DEBUG("Send would block on component {} (not ready yet)", component_id);
+    return false;
   }
 
   return true;
