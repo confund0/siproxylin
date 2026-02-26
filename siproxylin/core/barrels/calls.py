@@ -680,6 +680,8 @@ class CallBarrel:
                     session_info = self.jingle_adapter.get_session_info(session_id)
                     offer_details = session_info.get('offer_details', {}) if session_info else {}
                     offer_has_bundle = offer_details.get('bundle_group') is not None
+                    # is_trickle_only_peer detected but not used yet (for future Option E implementation)
+                    # is_trickle_only_peer = session_info.get('is_trickle_only_peer', False) if session_info else False
 
                     # Create CallBridge session (incoming call)
                     success = await self.call_bridge.create_session(
@@ -817,6 +819,13 @@ class CallBarrel:
             # Load video device settings (pass session_id to check incoming call media)
             camera_device = self._load_video_settings(session_id)
 
+            # Check if offer has BUNDLE and is trickle-only (for deferred answer creation)
+            session_info = self.jingle_adapter.get_session_info(session_id)
+            offer_details = session_info.get('offer_details', {}) if session_info else {}
+            offer_has_bundle = offer_details.get('bundle_group') is not None
+            # is_trickle_only_peer detected but not used yet (for future Option E implementation)
+            # is_trickle_only_peer = session_info.get('is_trickle_only_peer', False) if session_info else False
+
             # Create CallBridge session (incoming call)
             # Candidates were already added to Pion before this callback
             success = await self.call_bridge.create_session(
@@ -837,14 +846,15 @@ class CallBarrel:
                 echo_suppression_level=audio_proc['echo_suppression_level'],
                 noise_suppression=audio_proc['noise_suppression'],
                 noise_suppression_level=audio_proc['noise_suppression_level'],
-                gain_control=audio_proc['gain_control']
+                gain_control=audio_proc['gain_control'],
+                offer_has_bundle=offer_has_bundle
             )
             if not success:
                 raise RuntimeError("Failed to create CallBridge session")
 
             # Create SDP answer via CallBridge (also sets remote SDP)
             # Now Pion already has remote candidates, so ICE checking will start properly
-            sdp_answer = await self.call_bridge.create_answer(session_id, sdp_offer)
+            sdp_answer = await self.call_bridge.create_answer(session_id, sdp_offer, offer_has_bundle)
 
             # Send Jingle session-accept via JingleAdapter
             await self.jingle_adapter.send_answer(session_id, sdp_answer)

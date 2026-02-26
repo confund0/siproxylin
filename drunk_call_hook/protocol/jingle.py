@@ -262,9 +262,11 @@ class JingleAdapter:
         # This causes a race condition: we call setRemoteDescription(offer) with 0 candidates,
         # Pion starts ICE checking with 0 remote candidates, then candidates arrive 400ms later.
         # Fix: Defer answer creation until we receive at least one candidate via transport-info.
+        # ALSO: Mark as trickle-only peer to enable special handling (force component 2 generation)
         if candidate_count == 0:
             self.logger.info(f"[TRICKLE-ICE] Offer has 0 candidates - deferring answer until candidates arrive")
             self.sessions[sid]['waiting_for_candidates'] = True
+            self.sessions[sid]['is_trickle_only_peer'] = True  # Enable special handling
             self.sessions[sid]['sdp_offer'] = sdp_offer  # Store for later
 
             # Safety timeout: If no candidates arrive within 5 seconds, proceed anyway
@@ -283,6 +285,7 @@ class JingleAdapter:
         else:
             self.logger.info(f"[TRICKLE-ICE] Offer has {candidate_count} candidates - proceeding normally")
             self.sessions[sid]['waiting_for_candidates'] = False
+            self.sessions[sid]['is_trickle_only_peer'] = False  # Normal peer with candidates in SDP
 
         self.logger.info(f"Incoming call from {peer_jid}: {media_types}")
 

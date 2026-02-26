@@ -81,6 +81,9 @@ message CreateSessionRequest {
 
   // BUNDLE policy for compatibility (Dino doesn't use BUNDLE)
   bool offer_has_bundle = 20;    // Whether the offer includes BUNDLE group (for incoming calls), default: true
+
+  // Trickle-only peer detection (Conversations.im sends 0 candidates in SDP)
+  bool is_trickle_only_peer = 21;  // If true, enable dual-component ICE (for legacy Jingle compatibility)
 }
 
 message CreateSessionResponse {
@@ -96,6 +99,7 @@ message CreateAnswerRequest {
   string session_id = 1;
   string remote_sdp = 2;
   bool offer_has_bundle = 3;  // Whether the offer includes a BUNDLE group (for compatibility)
+  bool is_trickle_only_peer = 4;  // Peer sent 0 candidates in SDP (pure trickle ICE) - enables dual-component mode
 }
 
 message SDPResponse {
