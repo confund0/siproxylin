@@ -111,38 +111,9 @@ bool Session::Initialize() {
     }
   );
 
-  // 7. Create ICE stream (NEW)
-  if (!ice_agent_->AddStream()) {
-    LOG_ERROR("Failed to add ICE stream");
-    gst_object_unref(pipeline_);
-    return false;
-  }
-
-  // 8. Configure STUN/TURN after stream is created (CHANGED from webrtcbin)
-  if (!config_.turn_server.empty()) {
-    // Parse TURN server: "turn:host:port?transport=udp"
-    std::string host_port = config_.turn_server;
-    if (host_port.find("turn:") == 0) {
-      host_port = host_port.substr(5);
-    }
-    size_t query_pos = host_port.find('?');
-    if (query_pos != std::string::npos) {
-      host_port = host_port.substr(0, query_pos);
-    }
-
-    // Extract host and port
-    size_t colon_pos = host_port.find(':');
-    if (colon_pos != std::string::npos) {
-      std::string host = host_port.substr(0, colon_pos);
-      uint16_t port = std::stoi(host_port.substr(colon_pos + 1));
-
-      // Set STUN (for relay discovery)
-      ice_agent_->SetStunServer(host, port);
-
-      // Set TURN (for both components)
-      ice_agent_->SetTurnServer(host, port, config_.turn_username, config_.turn_password);
-    }
-  }
+  // NOTE: AddStream() is NOT called here!
+  // CRITICAL (Dino pattern): AddStream() must be called AFTER SetControllingMode()
+  // which is done in CreateOffer()/CreateAnswer() based on role
 
   // 9. Create and initialize DTLS-SRTP handler (Phase 3)
   dtls_srtp_ = std::make_unique<DtlsSrtpHandler>();
@@ -238,10 +209,43 @@ std::string Session::CreateOffer() {
   LOG_INFO("Pipeline is now in PLAYING state");
 
   // 2. Set ICE controlling mode (OFFER = controlling)
+  // CRITICAL (Dino pattern): This MUST be BEFORE AddStream()
   ice_agent_->SetControllingMode(true);
   LOG_INFO("ICE controlling mode: TRUE (offerer)");
 
-  // 3. Start ICE candidate gathering (NEW)
+  // 3. Add ICE stream (Dino pattern: AFTER SetControllingMode)
+  if (!ice_agent_->AddStream()) {
+    LOG_ERROR("Failed to add ICE stream");
+    return "";
+  }
+
+  // 4. Configure STUN/TURN (Dino pattern: AFTER AddStream, BEFORE gather_candidates)
+  if (!config_.turn_server.empty()) {
+    // Parse TURN server: "turn:host:port?transport=udp"
+    std::string host_port = config_.turn_server;
+    if (host_port.find("turn:") == 0) {
+      host_port = host_port.substr(5);
+    }
+    size_t query_pos = host_port.find('?');
+    if (query_pos != std::string::npos) {
+      host_port = host_port.substr(0, query_pos);
+    }
+
+    // Extract host and port
+    size_t colon_pos = host_port.find(':');
+    if (colon_pos != std::string::npos) {
+      std::string host = host_port.substr(0, colon_pos);
+      uint16_t port = std::stoi(host_port.substr(colon_pos + 1));
+
+      // Set STUN (for relay discovery)
+      ice_agent_->SetStunServer(host, port);
+
+      // Set TURN (for both components)
+      ice_agent_->SetTurnServer(host, port, config_.turn_username, config_.turn_password);
+    }
+  }
+
+  // 5. Start ICE candidate gathering (Dino pattern: LAST step)
   ice_agent_->GatherCandidates();
   // NOTE: Candidates will be streamed via OnIceCandidate callbacks → PopEvent()
 
@@ -249,18 +253,23 @@ std::string Session::CreateOffer() {
   auto [ufrag, pwd] = ice_agent_->GetLocalCredentials();
   LOG_INFO("Local ICE credentials: ufrag={}, pwd_len={}", ufrag, pwd.length());
 
-  // 4. Construct SDP manually (STUB - Phase 4)
-  // TODO: Implement full SDP generation in Phase 4
-  // For now, return hardcoded SDP for testing
+  // 4. Construct SDP manually (STUB - needs proper negotiation)
+  // TODO: Implement proper SDP negotiation:
+  //   - Parse offer's m= line to extract protocol (UDP/TLS/RTP/SAVPF vs UDP/TLS/RTP/SAVP)
+  //   - Parse offered codecs and generate intersection (answer must be subset of offer)
+  //   - Use GstSDPMessage API: gst_sdp_media_get_proto(), gst_sdp_media_get_format()
+  // For now, hardcode UDP/TLS/RTP/SAVPF (DTLS-SRTP with RTCP feedback) with Opus
+  // NOTE: NO rtcp-mux - we need 2 components (RTP + RTCP separate) for Conversations.im compatibility
   std::string sdp =
     "v=0\r\n"
     "o=- 0 0 IN IP4 0.0.0.0\r\n"
     "s=-\r\n"
     "t=0 0\r\n"
-    "m=audio 9 RTP/AVP 96\r\n"
+    "m=audio 9 UDP/TLS/RTP/SAVPF 96\r\n"  // DTLS-SRTP (was: RTP/AVP - wrong!)
     "c=IN IP4 0.0.0.0\r\n"
+    "a=rtcp:9 IN IP4 0.0.0.0\r\n"  // RTCP port (separate from RTP = 2 components)
     "a=rtpmap:96 opus/48000/2\r\n"
-    "a=mid:audio0\r\n"
+    "a=mid:audio\r\n"  // NOTE: Must match Jingle content name from offer ("audio" not "audio0")
     "a=sendrecv\r\n"
     "a=ice-ufrag:" + ufrag + "\r\n"
     "a=ice-pwd:" + pwd + "\r\n"
@@ -274,6 +283,9 @@ std::string Session::CreateOffer() {
   LOG_INFO("Generated stub SDP offer ({} bytes)", sdp.size());
   LOG_DEBUG("SDP Offer:\n{}", sdp);
 
+  // Flush buffered candidates now that CreateOffer is complete
+  FlushCandidateBuffer();
+
   return sdp;
 }
 
@@ -281,6 +293,9 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
                                   bool offer_has_bundle) {
   LOG_INFO("Creating answer for session: {} (offer_has_bundle={})",
             config_.session_id, offer_has_bundle);
+
+  LOG_DEBUG("CreateAnswer: remote_sdp length = {} bytes", remote_sdp.length());
+  LOG_DEBUG("CreateAnswer: remote_sdp content:\n{}", remote_sdp);
 
   if (!initialized_) {
     LOG_ERROR("Cannot create answer: session not initialized");
@@ -291,20 +306,30 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
   GstState current_state;
   gst_element_get_state(pipeline_, &current_state, NULL, 0);
 
+  LOG_DEBUG("CreateAnswer: Current pipeline state: {}", gst_element_state_get_name(current_state));
+
   if (current_state != GST_STATE_PLAYING) {
+    LOG_DEBUG("CreateAnswer: Setting pipeline to PLAYING...");
     GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
+    LOG_DEBUG("CreateAnswer: gst_element_set_state returned: {}", ret);
+
     if (ret == GST_STATE_CHANGE_FAILURE) {
       LOG_ERROR("Failed to set pipeline to PLAYING state");
       return "";
     }
 
+    LOG_DEBUG("CreateAnswer: Waiting for pipeline to reach PLAYING state (5s timeout)...");
     ret = gst_element_get_state(pipeline_, NULL, NULL, 5 * GST_SECOND);
+    LOG_DEBUG("CreateAnswer: gst_element_get_state returned: {}", ret);
+
     if (ret == GST_STATE_CHANGE_FAILURE) {
       LOG_ERROR("Pipeline failed to reach PLAYING state");
       return "";
     }
 
     LOG_INFO("Pipeline is now in PLAYING state");
+  } else {
+    LOG_DEBUG("CreateAnswer: Pipeline already in PLAYING state, skipping state change");
   }
 
   // 2. Parse remote SDP to extract ICE credentials and DTLS info
@@ -316,8 +341,49 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
 
   LOG_DEBUG("Remote offer SDP:\n{}", remote_sdp);
 
-  // 3. Extract and set remote ICE credentials
+  // 2. Extract ICE credentials and DTLS fingerprint (but don't set yet - need stream first!)
   auto ice_creds = parser.GetIceCredentials(0);
+  auto fingerprint = parser.GetDtlsFingerprint(0);
+
+  // 3. Set ICE controlling mode (ANSWER = NOT controlling)
+  // CRITICAL (Dino pattern): This MUST be BEFORE AddStream()
+  ice_agent_->SetControllingMode(false);
+  LOG_INFO("ICE controlling mode: FALSE (answerer)");
+
+  // 4. Add ICE stream (Dino pattern: AFTER SetControllingMode)
+  if (!ice_agent_->AddStream()) {
+    LOG_ERROR("Failed to add ICE stream");
+    return "";
+  }
+
+  // 5. Configure STUN/TURN (Dino pattern: AFTER AddStream, BEFORE gather_candidates)
+  if (!config_.turn_server.empty()) {
+    // Parse TURN server: "turn:host:port?transport=udp"
+    std::string host_port = config_.turn_server;
+    if (host_port.find("turn:") == 0) {
+      host_port = host_port.substr(5);
+    }
+    size_t query_pos = host_port.find('?');
+    if (query_pos != std::string::npos) {
+      host_port = host_port.substr(0, query_pos);
+    }
+
+    // Extract host and port
+    size_t colon_pos = host_port.find(':');
+    if (colon_pos != std::string::npos) {
+      std::string host = host_port.substr(0, colon_pos);
+      uint16_t port = std::stoi(host_port.substr(colon_pos + 1));
+
+      // Set STUN (for relay discovery)
+      ice_agent_->SetStunServer(host, port);
+
+      // Set TURN (for both components)
+      ice_agent_->SetTurnServer(host, port, config_.turn_username, config_.turn_password);
+    }
+  }
+
+  // 6. Set remote ICE credentials (Dino pattern: AFTER AddStream)
+  // See Dino transport_parameters.vala:216-219
   if (ice_creds) {
     LOG_INFO("Setting remote ICE credentials: ufrag={}, pwd_len={}",
              ice_creds->ufrag, ice_creds->pwd.length());
@@ -326,8 +392,7 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
     LOG_WARN("No ICE credentials in remote offer");
   }
 
-  // 3.5. Extract and set DTLS fingerprint
-  auto fingerprint = parser.GetDtlsFingerprint(0);
+  // 7. Set DTLS fingerprint from remote offer
   if (fingerprint && dtls_srtp_) {
     LOG_INFO("Setting peer DTLS fingerprint from offer: algorithm={}, size={} bytes",
              fingerprint->algorithm, fingerprint->value.size());
@@ -337,38 +402,59 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
     LOG_WARN("No DTLS fingerprint in remote offer");
   }
 
-  // 4. Set ICE controlling mode (ANSWER = NOT controlling)
-  ice_agent_->SetControllingMode(false);
-  LOG_INFO("ICE controlling mode: FALSE (answerer)");
+  // 8. Extract and add candidates from remote offer SDP if present
+  // (Same as in SetRemoteDescription - Conversations.im may include candidates in offer)
+  auto sdp_candidates = parser.GetCandidates(0);
+  if (!sdp_candidates.empty()) {
+    LOG_INFO("Extracting {} candidates from remote offer SDP", sdp_candidates.size());
+    for (const auto& cand : sdp_candidates) {
+      if (!ice_agent_->AddRemoteCandidate(cand.component_id, cand.candidate_str,
+                                          "audio", 0)) {
+        LOG_WARN("Failed to add SDP candidate from offer: component={}", cand.component_id);
+      }
+    }
+  }
 
-  // 5. Start ICE candidate gathering (NEW)
+  // 9. Start ICE candidate gathering (Dino pattern: LAST step)
   ice_agent_->GatherCandidates();
 
-  // 5. Get local ICE credentials (NEW)
+  // 10. Get local ICE credentials
   auto [ufrag, pwd] = ice_agent_->GetLocalCredentials();
 
-  // 6. Construct answer SDP (STUB - Phase 4)
+  // 11. Construct answer SDP (STUB - needs proper negotiation)
+  // TODO: Implement proper SDP answer negotiation (RFC 3264):
+  //   - Parse offer's m= line to match protocol exactly (UDP/TLS/RTP/SAVPF, etc.)
+  //   - Parse offered codecs and intersect with supported codecs
+  //   - Answer MUST be a subset of offer (can't add new codecs!)
+  //   - Use GstSDPMessage API from parser.GetMessage()
+  //   - Match mid from offer (currently hardcoded to "audio0" but offer might use "audio")
+  // For now, hardcode UDP/TLS/RTP/SAVPF (DTLS-SRTP) with Opus
+  // NOTE: NO rtcp-mux - we need 2 components (RTP + RTCP separate) for Conversations.im compatibility
   std::string sdp =
     "v=0\r\n"
     "o=- 0 0 IN IP4 0.0.0.0\r\n"
     "s=-\r\n"
     "t=0 0\r\n"
-    "m=audio 9 RTP/AVP 96\r\n"
+    "m=audio 9 UDP/TLS/RTP/SAVPF 96\r\n"  // DTLS-SRTP (was: RTP/AVP - WRONG! Python rejected it!)
     "c=IN IP4 0.0.0.0\r\n"
+    "a=rtcp:9 IN IP4 0.0.0.0\r\n"  // RTCP port (separate from RTP = 2 components)
     "a=rtpmap:96 opus/48000/2\r\n"
-    "a=mid:audio0\r\n"
+    "a=mid:audio\r\n"  // NOTE: Must match Jingle content name from offer ("audio" not "audio0")
     "a=sendrecv\r\n"
     "a=ice-ufrag:" + ufrag + "\r\n"
     "a=ice-pwd:" + pwd + "\r\n"
     "a=ice-options:trickle\r\n"
     "a=fingerprint:sha-256 " + dtls_srtp_->GetFingerprintString() + "\r\n"
-    "a=setup:active\r\n";  // active for answer
+    "a=setup:active\r\n";  // active for answer (we initiate DTLS)
 
   // Set mode to CLIENT (we're active, we initiate DTLS)
   dtls_srtp_->SetMode(DtlsMode::CLIENT);
 
   LOG_INFO("Generated stub SDP answer ({} bytes)", sdp.size());
   LOG_DEBUG("SDP Answer:\n{}", sdp);
+
+  // Flush buffered candidates now that CreateAnswer is complete
+  FlushCandidateBuffer();
 
   return sdp;
 }
@@ -443,8 +529,25 @@ bool Session::SetRemoteDescription(const std::string& remote_sdp, const std::str
     LOG_WARN("No setup attribute found in remote SDP");
   }
 
-  // TODO: Extract candidates from SDP (a=candidate lines) if present
-  // This is less critical since candidates are usually sent via trickle ICE
+  // 4. Extract and add candidates from SDP (a=candidate lines) if present
+  // CRITICAL: Conversations.im sends candidates in the SDP answer, not just via trickle ICE
+  // Dino also processes these immediately (see transport_parameters.vala:247-256)
+  auto sdp_candidates = parser.GetCandidates(0);
+  if (!sdp_candidates.empty()) {
+    LOG_INFO("Extracting {} candidates from remote SDP", sdp_candidates.size());
+    for (const auto& cand : sdp_candidates) {
+      // Add each candidate to IceAgent
+      if (!ice_agent_->AddRemoteCandidate(cand.component_id, cand.candidate_str,
+                                          "audio0", 0)) {
+        LOG_WARN("Failed to add SDP candidate: component={}, cand={}",
+                 cand.component_id, cand.candidate_str);
+      } else {
+        LOG_DEBUG("Added SDP candidate: component={}", cand.component_id);
+      }
+    }
+  } else {
+    LOG_DEBUG("No candidates in remote SDP (will use trickle ICE only)");
+  }
 
   LOG_INFO("Remote description set successfully");
   return true;
@@ -1000,6 +1103,23 @@ void Session::OnIceCandidate(int component_id, const std::string& candidate,
   LOG_DEBUG("ICE candidate: component={}, mid={}, mline={}, cand={}",
             component_id, sdp_mid, sdp_mline_index, candidate);
 
+  std::lock_guard<std::mutex> lock(candidate_buffer_mutex_);
+
+  // Buffer candidates until CreateOffer/CreateAnswer completes
+  // (Like Go Pion and webrtcbin implementations)
+  if (buffer_candidates_) {
+    BufferedCandidate buffered;
+    buffered.component_id = component_id;
+    buffered.candidate = candidate;
+    buffered.sdp_mid = sdp_mid;
+    buffered.sdp_mline_index = sdp_mline_index;
+    candidate_buffer_.push_back(buffered);
+
+    LOG_DEBUG("Buffered ICE candidate (buffer_size={})", candidate_buffer_.size());
+    return;
+  }
+
+  // Normal path: send immediately
   Event event;
   event.type = Event::ICE_CANDIDATE;
   event.sdp_mid = sdp_mid;
@@ -1007,6 +1127,35 @@ void Session::OnIceCandidate(int component_id, const std::string& candidate,
   event.data = candidate;
 
   PushEvent(event);
+}
+
+void Session::FlushCandidateBuffer() {
+  std::lock_guard<std::mutex> lock(candidate_buffer_mutex_);
+
+  if (candidate_buffer_.empty()) {
+    LOG_DEBUG("No buffered candidates to flush");
+    buffer_candidates_ = false;  // Stop buffering from now on
+    return;
+  }
+
+  LOG_INFO("Flushing {} buffered ICE candidates", candidate_buffer_.size());
+
+  // Disable buffering first (so new candidates go directly to events)
+  buffer_candidates_ = false;
+
+  // Send all buffered candidates as events
+  for (const auto& buffered : candidate_buffer_) {
+    Event event;
+    event.type = Event::ICE_CANDIDATE;
+    event.sdp_mid = buffered.sdp_mid;
+    event.sdp_mline_index = buffered.sdp_mline_index;
+    event.data = buffered.candidate;
+
+    PushEvent(event);
+  }
+
+  // Clear the buffer
+  candidate_buffer_.clear();
 }
 
 void Session::OnComponentStateChanged(int component_id, const std::string& state) {

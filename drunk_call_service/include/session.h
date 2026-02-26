@@ -140,6 +140,9 @@ class Session {
 
   // Internal event queue
   void PushEvent(const Event& event);
+
+  // Flush buffered candidates to event queue
+  void FlushCandidateBuffer();
   Config config_;
   bool initialized_ = false;
   bool muted_ = false;
@@ -171,6 +174,18 @@ class Session {
   std::queue<Event> event_queue_;
   std::mutex event_mutex_;
   std::condition_variable event_cv_;
+
+  // Candidate buffering (like Go Pion and webrtcbin implementations)
+  // Buffer candidates until CreateOffer/CreateAnswer completes
+  struct BufferedCandidate {
+    int component_id;
+    std::string candidate;
+    std::string sdp_mid;
+    int sdp_mline_index;
+  };
+  std::vector<BufferedCandidate> candidate_buffer_;
+  bool buffer_candidates_ = true;  // Buffer until session setup completes
+  std::mutex candidate_buffer_mutex_;
 
   // Negotiation signal synchronization
   bool negotiation_needed_ = false;

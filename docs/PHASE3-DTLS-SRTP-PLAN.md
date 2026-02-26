@@ -1155,3 +1155,52 @@ nice_agent_set_remote_candidates(agent_, stream_id_, parsed_component_id, ...);
 **Document Status:** Major Fixes Applied ✅ - Ready for Extended Testing
 **Last Updated:** 2026-02-26 18:00 (post-fix)
 **Based on:** Dino 0.4.x implementation + GStreamer's candidate handling
+
+---
+
+## Session Rotation Context (Merged 2026-02-26 22:06)
+
+### The Debugging Journey
+
+After implementing DTLS-SRTP (Phase 3 above), incoming calls were still failing. We initially believed ICE implementation had subtle bugs from not perfectly translating Dino's patterns.
+
+**Investigation Focus (WRONG):**
+- ICE initialization order
+- `send_messages_nonblocking()` vs `send()` timing
+- Controlling mode placement
+- Component handling
+
+**The REAL Problem (Found 2026-02-26):**
+Stub SDP format bugs in C++ - NOT ICE at all!
+
+1. **Wrong Protocol:** `m=audio 9 RTP/AVP 96` → Should be `UDP/TLS/RTP/SAVPF`
+2. **Mid Mismatch:** `a=mid:audio0` → Should be `a=mid:audio` (match offer)
+
+**The Fix:**
+```cpp
+// drunk_call_service/src/session.cc (both CreateOffer and CreateAnswer)
+"m=audio 9 UDP/TLS/RTP/SAVPF 96\r\n"
+"a=mid:audio\r\n"  // Matches Jingle <content name="audio">
+```
+
+**Result:** ✅ Incoming calls work (session: e3e7062b-b790-4395-b998-195087b2c134)
+
+### Lessons from This Journey
+
+1. **Simple bugs hide** - Spent hours on ICE when it was just SDP format
+2. **Test incrementally** - Should have validated SDP generation first
+3. **Log everything** - Python's `[SDP-VALID]` showed "0 media sections" immediately
+4. **Mid matching matters** - Jingle content names must match offer ↔ answer
+5. **SDES + DTLS coexist** - The `<encryption>` element works alongside DTLS-SRTP
+
+---
+
+## Final Status (2026-02-26 22:06)
+
+✅ **Phase 3 COMPLETE**: DTLS-SRTP encryption working
+✅ **Incoming calls from Dino**: Working
+✅ **Outgoing calls to Dino**: Working
+✅ **Audio bidirectional**: Confirmed
+✅ **2-component ICE**: RTP + RTCP separate (Conversations.im compatible)
+
+**Next work:** See SESSION-ROTATE.md for immediate cleanup tasks

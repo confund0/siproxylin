@@ -10,6 +10,7 @@ IceAgent::IceAgent(int n_components)
     : n_components_(n_components),
       initialized_(false),
       relay_only_(false),
+      controlling_mode_set_(false),
       agent_(nullptr),
       stream_id_(0),
       thread_context_(nullptr),
@@ -118,6 +119,13 @@ bool IceAgent::AddStream() {
     return false;
   }
 
+  // CRITICAL: Dino pattern requires SetControllingMode() BEFORE AddStream()
+  // See transport_parameters.vala line 97-98
+  if (!controlling_mode_set_) {
+    LOG_ERROR("CRITICAL: SetControllingMode() must be called BEFORE AddStream()! (Dino pattern requirement)");
+    return false;
+  }
+
   LOG_INFO("Adding ICE stream with {} components", n_components_);
 
   // Create stream with n_components (CRITICAL: 2 for RTP + RTCP)
@@ -201,8 +209,14 @@ void IceAgent::SetControllingMode(bool controlling) {
     return;
   }
 
-  LOG_INFO("Setting ICE controlling mode: {}", controlling);
+  if (stream_id_ != 0) {
+    LOG_ERROR("CRITICAL: SetControllingMode() must be called BEFORE AddStream()! (Dino pattern requirement)");
+    return;
+  }
+
+  LOG_INFO("Setting ICE controlling mode: {} (Dino pattern: BEFORE add_stream)", controlling);
   g_object_set(agent_, "controlling-mode", controlling ? TRUE : FALSE, NULL);
+  controlling_mode_set_ = true;
 }
 
 void IceAgent::SetRemoteCredentials(const std::string& ufrag, const std::string& pwd) {
@@ -366,7 +380,10 @@ bool IceAgent::IsComponentReady(int component_id) const {
   if (it == component_states_.end()) {
     return false;
   }
-  return it->second == NICE_COMPONENT_STATE_READY;
+  // Dino pattern: Both CONNECTED and READY states are valid for sending data
+  // See Dino util.vala is_component_ready()
+  return it->second == NICE_COMPONENT_STATE_CONNECTED ||
+         it->second == NICE_COMPONENT_STATE_READY;
 }
 
 std::string IceAgent::GetComponentState(int component_id) const {
@@ -407,10 +424,12 @@ void IceAgent::OnNewCandidateFull(NiceAgent* agent, NiceCandidate* candidate, gp
 
   std::lock_guard<std::mutex> lock(self->callback_mutex_);
   if (self->on_candidate_) {
-    // For Jingle compatibility, use content name as sdp_mid
-    // Component ID maps to mline index (0-based)
+    // CRITICAL: In 2-component ICE (RTP + RTCP), BOTH components belong to the SAME m-line!
+    // Component 1 = RTP, Component 2 = RTCP, but both use mline_index=0 for audio
+    // Component ID is used by libnice internally, NOT for SDP m-line mapping
+    // See Dino: All candidates for same stream go to same m-line
     self->on_candidate_(candidate->component_id, candidate_str,
-                        "audio", candidate->component_id - 1);
+                        "audio", 0);  // Always mline=0 for audio (single media line)
   }
 }
 

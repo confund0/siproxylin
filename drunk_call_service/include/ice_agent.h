@@ -98,6 +98,7 @@ class IceAgent {
   int n_components_;
   bool initialized_;
   bool relay_only_;
+  bool controlling_mode_set_;  // Track if SetControllingMode() was called
 
   // libnice objects
   NiceAgent* agent_;

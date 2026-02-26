@@ -56,6 +56,13 @@ public:
     // Get media type (e.g., "audio", "video")
     std::string GetMediaType(int media_index) const;
 
+    // Extract ICE candidates from SDP (a=candidate lines)
+    struct IceCandidate {
+        int component_id;  // 1=RTP, 2=RTCP
+        std::string candidate_str;  // Full candidate string (for AddICECandidate)
+    };
+    std::vector<IceCandidate> GetCandidates(int media_index = 0) const;
+
     // Get raw GstSDPMessage (for advanced use)
     const GstSDPMessage* GetMessage() const { return message_; }
 

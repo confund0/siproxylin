@@ -218,4 +218,54 @@ std::optional<SdpParser::SetupAttribute> SdpParser::ParseSetup(const char* setup
     return attr;
 }
 
+std::vector<SdpParser::IceCandidate> SdpParser::GetCandidates(int media_index) const {
+    std::vector<IceCandidate> candidates;
+
+    if (!message_) {
+        return candidates;
+    }
+
+    // Get media section
+    const GstSDPMedia* media = gst_sdp_message_get_media(message_, media_index);
+    if (!media) {
+        LOG_WARN("No media section at index {}", media_index);
+        return candidates;
+    }
+
+    // Iterate through all attributes looking for "candidate"
+    guint attr_count = gst_sdp_media_attributes_len(media);
+    for (guint i = 0; i < attr_count; i++) {
+        const GstSDPAttribute* attr = gst_sdp_media_get_attribute(media, i);
+        if (!attr || !attr->key || !attr->value) {
+            continue;
+        }
+
+        // Check if this is a candidate attribute
+        if (std::strcmp(attr->key, "candidate") == 0) {
+            // Parse component ID from candidate string
+            // Format: "foundation component protocol priority..."
+            // Example: "1 1 UDP 2015363327 192.168.0.129 40338 typ host"
+            std::string cand_str(attr->value);
+            std::istringstream iss(cand_str);
+            std::string foundation;
+            int component_id = 0;
+
+            iss >> foundation >> component_id;
+
+            if (component_id > 0) {
+                IceCandidate candidate;
+                candidate.component_id = component_id;
+                candidate.candidate_str = "candidate:" + cand_str;  // Add "candidate:" prefix
+                candidates.push_back(candidate);
+
+                LOG_DEBUG("Extracted SDP candidate: component={}, cand={}",
+                         component_id, candidate.candidate_str);
+            }
+        }
+    }
+
+    LOG_DEBUG("Extracted {} candidates from SDP media section {}", candidates.size(), media_index);
+    return candidates;
+}
+
 }  // namespace drunk_call
