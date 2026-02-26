@@ -29,6 +29,15 @@ find_package(PkgConfig REQUIRED)
 # GStreamer dependencies
 pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0)
 
+# libnice for ICE (2-component support)
+pkg_check_modules(NICE REQUIRED nice>=0.1.18)
+
+# GnuTLS for DTLS (will be added in Phase 3)
+# pkg_check_modules(GNUTLS REQUIRED gnutls>=3.6.0)
+
+# libsrtp2 for SRTP encryption (will be added in Phase 3)
+# pkg_check_modules(SRTP REQUIRED libsrtp2>=2.3.0)
+
 # Find gRPC C++ plugin (sometimes CMake doesn't set this correctly)
 find_program(GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin)
 if(NOT GRPC_CPP_PLUGIN_EXECUTABLE)
@@ -101,6 +110,7 @@ include_directories(
     ${PROTOBUF_INCLUDE_DIRS}
     ${GRPC_INCLUDE_DIRS}
     ${GSTREAMER_INCLUDE_DIRS}
+    ${NICE_INCLUDE_DIRS}
 )
 
 # Source files
@@ -109,6 +119,7 @@ set(SOURCES
     src/logger.cc
     src/call_server.cc
     src/session.cc
+    src/ice_agent.cc
     src/audio_track.cc
     src/video_track.cc
     src/device_manager.cc
@@ -135,6 +146,7 @@ target_link_libraries(drunk-call-service-${PLATFORM_NAME}
     ${PROTOBUF_LIBRARIES}
     spdlog::spdlog
     ${GSTREAMER_LIBRARIES}
+    ${NICE_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT}
     ${PLATFORM_LIBS}
 )
