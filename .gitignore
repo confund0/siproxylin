@@ -19,3 +19,6 @@ test-drunk-xmpp-logs
 *.db
 *.zsync
 old_docs
+docs/archive/
+*DINO*
+docs/RTPBIN-MIGRATION-PLAN.md
