@@ -1,59 +1,105 @@
-#include "session.h"
-#include "logger.h"
-#include <sstream>
-#include <iomanip>
-#include <cctype>
-#include <chrono>
-#include <algorithm>
-#include <map>
+# Phase 2: Method Signatures & Integration Plan
 
-namespace drunk_call {
+**Goal:** Replace webrtcbin with rtpbin + IceAgent while preserving 100% gRPC compatibility
 
-// URL encode a string according to RFC 3986
-// Encodes all characters except: A-Z a-z 0-9 - _ . ~
-static std::string url_encode(const std::string& value) {
-  std::ostringstream escaped;
-  escaped.fill('0');
-  escaped << std::hex;
+---
 
-  for (unsigned char c : value) {
-    // Keep alphanumeric and safe characters intact
-    if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
-      escaped << c;
-    } else {
-      // Encode special characters as %XX
-      escaped << std::uppercase;
-      escaped << '%' << std::setw(2) << static_cast<int>(c);
-      escaped << std::nouppercase;
-    }
-  }
+## Session Class Structure
 
-  return escaped.str();
-}
+### Private Members (session.h)
 
+```cpp
+class Session {
+ private:
+  // Configuration
+  Config config_;
+  bool initialized_ = false;
+  bool muted_ = false;
+  bool rtcp_mux_ = true;  // RTCP-mux mode (Component 1 for RTCP)
+
+  // GStreamer components
+  GstElement* pipeline_;
+  GstElement* rtpbin_;  // CHANGED: was webrtcbin_
+
+  // Appsink elements (capture outgoing RTP/RTCP from rtpbin)
+  GstElement* send_rtp_appsink_;   // NEW
+  GstElement* send_rtcp_appsink_;  // NEW
+
+  // Appsrc elements (inject incoming RTP/RTCP to rtpbin)
+  GstElement* recv_rtp_appsrc_;   // NEW
+  GstElement* recv_rtcp_appsrc_;  // NEW
+
+  // Audio elements (store references for cleanup)
+  GstElement* audio_src_;   // NEW: microphone source
+  GstElement* audio_sink_;  // NEW: speaker sink (from SetupAudioPlayback)
+
+  // ICE agent (replaces webrtcbin's ICE)
+  std::unique_ptr<IceAgent> ice_agent_;  // NEW
+
+  // Event queue (unchanged)
+  std::queue<Event> event_queue_;
+  std::mutex event_mutex_;
+  std::condition_variable event_cv_;
+
+  // Stats tracking (unchanged)
+  int64_t last_bytes_sent_ = 0;
+  int64_t last_bytes_received_ = 0;
+  std::chrono::steady_clock::time_point last_stats_time_;
+};
+```
+
+---
+
+## Constructor & Destructor
+
+### `Session::Session(const Config& config)`
+
+```cpp
 Session::Session(const Config& config)
     : config_(config),
       pipeline_(nullptr),
-      rtpbin_(nullptr),
-      send_rtp_appsink_(nullptr),
-      send_rtcp_appsink_(nullptr),
-      recv_rtp_appsrc_(nullptr),
-      recv_rtcp_appsrc_(nullptr),
-      audio_src_(nullptr),
-      audio_sink_(nullptr) {
+      rtpbin_(nullptr),  // CHANGED from webrtcbin_
+      send_rtp_appsink_(nullptr),   // NEW
+      send_rtcp_appsink_(nullptr),  // NEW
+      recv_rtp_appsrc_(nullptr),    // NEW
+      recv_rtcp_appsrc_(nullptr),   // NEW
+      audio_src_(nullptr),          // NEW
+      audio_sink_(nullptr)          // NEW
+{
   LOG_DEBUG("Session created: {}", config_.session_id);
-
-  // Initialize GStreamer (idempotent, safe to call multiple times)
-  gst_init(nullptr, nullptr);
+  gst_init(nullptr, nullptr);  // Idempotent
 }
+```
 
+**Changes:** Initialize new member pointers to nullptr
+
+---
+
+### `Session::~Session()`
+
+```cpp
 Session::~Session() {
   if (initialized_) {
     Close();
   }
   LOG_DEBUG("Session destroyed: {}", config_.session_id);
+  // ice_agent_ automatically deleted (unique_ptr)
 }
+```
 
+**Changes:** None (unique_ptr handles IceAgent cleanup)
+
+---
+
+## Lifecycle Methods
+
+### `bool Session::Initialize()`
+
+**gRPC contract:** Same signature, same return type
+**Called by:** Python once per session
+
+**New implementation:**
+```cpp
 bool Session::Initialize() {
   LOG_INFO("Initializing session: {}", config_.session_id);
 
@@ -155,8 +201,25 @@ bool Session::Initialize() {
   LOG_INFO("Session initialized: {}", config_.session_id);
   return true;
 }
+```
 
+**Changes:**
+- Replace webrtcbin creation with SetupRtpbin()
+- Add SetupAppsinkAppsrc()
+- Create IceAgent and wire callbacks
+- Move STUN/TURN config to IceAgent
+- Remove webrtcbin signal handlers
+- Add SetupAudioPipeline() helper
 
+---
+
+### `void Session::Close()`
+
+**gRPC contract:** Same signature
+**Called by:** Python when ending session
+
+**New implementation:**
+```cpp
 void Session::Close() {
   if (!initialized_) {
     return;
@@ -164,19 +227,19 @@ void Session::Close() {
 
   LOG_INFO("Closing session: {}", config_.session_id);
 
-  // Shutdown IceAgent first (NEW)
+  // 1. Shutdown IceAgent first (NEW)
   if (ice_agent_) {
     ice_agent_->Shutdown();
     ice_agent_.reset();
-    LOG_DEBUG("IceAgent shutdown complete");
   }
 
-  // Stop main pipeline
+  // 2. Stop pipeline
   if (pipeline_) {
     gst_element_set_state(pipeline_, GST_STATE_NULL);
     gst_object_unref(pipeline_);
     pipeline_ = nullptr;
-    rtpbin_ = nullptr;  // rtpbin is owned by pipeline
+    // All elements owned by pipeline (rtpbin, appsink, appsrc, etc.)
+    rtpbin_ = nullptr;
     send_rtp_appsink_ = nullptr;
     send_rtcp_appsink_ = nullptr;
     recv_rtp_appsrc_ = nullptr;
@@ -188,7 +251,23 @@ void Session::Close() {
   initialized_ = false;
   LOG_INFO("Session closed: {}", config_.session_id);
 }
+```
 
+**Changes:**
+- Add IceAgent shutdown before pipeline
+- Clear new element pointers
+
+---
+
+## SDP Methods (STUBS for Phase 2)
+
+### `std::string Session::CreateOffer()`
+
+**gRPC contract:** Same signature, returns SDP string
+**Called by:** Python for outgoing calls
+
+**Phase 2 stub implementation:**
+```cpp
 std::string Session::CreateOffer() {
   LOG_INFO("Creating offer for session: {}", config_.session_id);
 
@@ -244,11 +323,25 @@ std::string Session::CreateOffer() {
 
   return sdp;
 }
+```
 
-std::string Session::CreateAnswer(const std::string& remote_sdp,
-                                  bool offer_has_bundle) {
+**Changes:**
+- Remove webrtcbin create-offer logic
+- Add IceAgent::GatherCandidates()
+- Return stub SDP (Phase 4 will implement full generation)
+
+---
+
+### `std::string Session::CreateAnswer(const std::string& remote_sdp, bool offer_has_bundle)`
+
+**gRPC contract:** Same signature
+**Called by:** Python for incoming calls
+
+**Phase 2 stub implementation:**
+```cpp
+std::string Session::CreateAnswer(const std::string& remote_sdp, bool offer_has_bundle) {
   LOG_INFO("Creating answer for session: {} (offer_has_bundle={})",
-            config_.session_id, offer_has_bundle);
+           config_.session_id, offer_has_bundle);
 
   if (!initialized_) {
     LOG_ERROR("Cannot create answer: session not initialized");
@@ -312,10 +405,25 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
 
   return sdp;
 }
+```
 
+**Changes:**
+- Remove webrtcbin set-remote-description and create-answer logic
+- Add IceAgent::SetRemoteCredentials() (stub)
+- Return stub SDP
+
+---
+
+### `bool Session::SetRemoteDescription(const std::string& remote_sdp, const std::string& sdp_type)`
+
+**gRPC contract:** Same signature
+**Called by:** Python after CreateOffer to set peer's answer
+
+**Phase 2 implementation:**
+```cpp
 bool Session::SetRemoteDescription(const std::string& remote_sdp, const std::string& sdp_type) {
   LOG_INFO("Setting remote description for session: {} (type: {})",
-            config_.session_id, sdp_type);
+           config_.session_id, sdp_type);
 
   if (!initialized_) {
     LOG_ERROR("Cannot set remote description: session not initialized");
@@ -338,7 +446,24 @@ bool Session::SetRemoteDescription(const std::string& remote_sdp, const std::str
   LOG_INFO("Remote description set successfully (stub)");
   return true;
 }
+```
 
+**Changes:**
+- Remove webrtcbin set-remote-description logic
+- Add stub for SDP parsing
+- Will implement in Phase 4
+
+---
+
+## ICE Methods
+
+### `bool Session::AddICECandidate(const std::string& candidate, const std::string& sdp_mid, int32_t sdp_mline_index)`
+
+**gRPC contract:** Same signature
+**Called by:** Python repeatedly as remote candidates arrive
+
+**Phase 2 implementation:**
+```cpp
 bool Session::AddICECandidate(const std::string& candidate,
                               const std::string& sdp_mid,
                               int32_t sdp_mline_index) {
@@ -364,14 +489,23 @@ bool Session::AddICECandidate(const std::string& candidate,
   LOG_DEBUG("ICE candidate added successfully to IceAgent");
   return true;
 }
+```
 
-void Session::SetMute(bool muted) {
-  muted_ = muted;
-  LOG_INFO("Session {} mute state: {}", config_.session_id, muted);
+**Changes:**
+- Replace webrtcbin add-ice-candidate with IceAgent::AddRemoteCandidate()
+- Map sdp_mline_index to component_id
 
-  // TODO: Enable/disable audio track
-}
+---
 
+## Stats & Control
+
+### `Session::Stats Session::GetStats()`
+
+**gRPC contract:** Same signature and return type
+**Called by:** Python polls repeatedly
+
+**Phase 2 implementation:**
+```cpp
 Session::Stats Session::GetStats() {
   Stats stats;
 
@@ -385,8 +519,10 @@ Session::Stats Session::GetStats() {
 
   // Get ICE connection state from IceAgent
   bool comp1_ready = ice_agent_->IsComponentReady(1);
+  bool comp2_ready = ice_agent_->IsComponentReady(2);
 
   std::string comp1_state = ice_agent_->GetComponentState(1);
+  std::string comp2_state = ice_agent_->GetComponentState(2);
 
   // Map IceAgent component states to WebRTC states
   if (comp1_ready) {
@@ -427,41 +563,42 @@ Session::Stats Session::GetStats() {
 
   return stats;
 }
+```
 
+**Changes:**
+- Get states from IceAgent instead of webrtcbin
+- Stub bytes/bandwidth/candidates (Phase 4)
 
-// ============================================================================
-// Event Queue Management
-// ============================================================================
+---
 
-void Session::PushEvent(const Event& event) {
-  std::lock_guard<std::mutex> lock(event_mutex_);
-  event_queue_.push(event);
-  event_cv_.notify_one();
+### `void Session::SetMute(bool muted)`
 
-  const char* event_type = "";
-  switch (event.type) {
-    case Event::ICE_CANDIDATE:
-      event_type = "ICE_CANDIDATE";
-      break;
-    case Event::CONNECTION_STATE_CHANGE:
-      event_type = "CONNECTION_STATE_CHANGE";
-      break;
-    case Event::ICE_CONNECTION_STATE_CHANGE:
-      event_type = "ICE_CONNECTION_STATE_CHANGE";
-      break;
-    case Event::ICE_GATHERING_STATE_CHANGE:
-      event_type = "ICE_GATHERING_STATE_CHANGE";
-      break;
-  }
+**gRPC contract:** Same signature
+**Called by:** Python for mute/unmute
 
-  LOG_DEBUG("Event queued: {} (queue size: {})", event_type, event_queue_.size());
+**Implementation:** UNCHANGED
+```cpp
+void Session::SetMute(bool muted) {
+  muted_ = muted;
+  LOG_INFO("Session {} mute state: {}", config_.session_id, muted);
+  // TODO: Enable/disable audio track
 }
+```
 
+---
+
+## Event Queue (UNCHANGED)
+
+### `bool Session::PopEvent(Event& event, int timeout_ms)`
+
+**gRPC contract:** UNCHANGED
+**Implementation:** UNCHANGED
+
+```cpp
 bool Session::PopEvent(Event& event, int timeout_ms) {
   std::unique_lock<std::mutex> lock(event_mutex_);
 
   if (event_queue_.empty()) {
-    // Wait for event with timeout
     auto timeout = std::chrono::milliseconds(timeout_ms);
     if (!event_cv_.wait_for(lock, timeout, [this] { return !event_queue_.empty(); })) {
       return false;  // Timeout
@@ -476,211 +613,21 @@ bool Session::PopEvent(Event& event, int timeout_ms) {
 
   return false;
 }
+```
 
-bool Session::HasPendingEvents() {
-  std::lock_guard<std::mutex> lock(event_mutex_);
-  return !event_queue_.empty();
-}
+### `void Session::PushEvent(const Event& event)`
 
-// ============================================================================
-// GStreamer Signal Callbacks (OLD webrtcbin callbacks removed)
-// ============================================================================
+**Implementation:** UNCHANGED
 
-void Session::OnPadAdded(GstElement* rtpbin, GstPad* pad, gpointer user_data) {
-  Session* session = static_cast<Session*>(user_data);
+---
 
-  // Get pad name
-  gchar* pad_name = gst_pad_get_name(pad);
-  LOG_INFO("rtpbin pad added: {}", pad_name);
+## Helper Methods (NEW)
 
-  // Handle send_rtcp_src_0 pad (dynamically created by rtpbin)
-  if (g_str_has_prefix(pad_name, "send_rtcp_src_")) {
-    LOG_INFO("Linking {} to RTCP appsink", pad_name);
-    GstPad* rtcp_sink = gst_element_get_static_pad(session->send_rtcp_appsink_, "sink");
-    if (gst_pad_link(pad, rtcp_sink) != GST_PAD_LINK_OK) {
-      LOG_ERROR("Failed to link {} to RTCP appsink", pad_name);
-    } else {
-      LOG_INFO("RTCP appsink linked successfully");
-    }
-    gst_object_unref(rtcp_sink);
-    g_free(pad_name);
-    return;
-  }
+### `bool Session::SetupRtpbin()`
 
-  // Handle recv_rtp_src pads (incoming RTP for playback)
-  if (g_str_has_prefix(pad_name, "recv_rtp_src_")) {
-    GstCaps* caps = gst_pad_get_current_caps(pad);
-    if (!caps) {
-      caps = gst_pad_query_caps(pad, NULL);
-    }
+**Private helper for Initialize()**
 
-    gchar* caps_str = gst_caps_to_string(caps);
-    LOG_INFO("Incoming RTP stream: {} with caps: {}", pad_name, caps_str);
-    g_free(caps_str);
-
-    // Check if this is an audio pad
-    GstStructure* structure = gst_caps_get_structure(caps, 0);
-    const gchar* media = gst_structure_get_string(structure, "media");
-
-    if (media && g_strcmp0(media, "audio") == 0) {
-      LOG_INFO("Setting up audio playback for incoming audio stream");
-      session->SetupAudioPlayback(pad);
-    } else if (media && g_strcmp0(media, "video") == 0) {
-      LOG_INFO("Video pad detected (playback not yet implemented)");
-    } else {
-      LOG_DEBUG("Non-media pad (media={})", media ? media : "null");
-    }
-
-    gst_caps_unref(caps);
-  }
-
-  g_free(pad_name);
-}
-
-void Session::SetupAudioPlayback(GstPad* pad) {
-  LOG_INFO("Creating audio playback pipeline for session: {}", config_.session_id);
-
-  // Determine audio sink based on speakers_device config
-  std::string audio_sink;
-  if (!config_.speakers_device.empty()) {
-    // Use specific PulseAudio device
-    audio_sink = "pulsesink device=" + config_.speakers_device;
-    LOG_INFO("Using selected speakers device: {}", config_.speakers_device);
-  } else {
-    // Use system default
-    audio_sink = "autoaudiosink";
-    LOG_INFO("Using default speakers device (autoaudiosink)");
-  }
-
-  // Create individual elements (not using parse_bin_from_description because of ghost pad issues)
-  GstElement* depay = gst_element_factory_make("rtpopusdepay", nullptr);
-  GstElement* decoder = gst_element_factory_make("opusdec", nullptr);
-  GstElement* convert = gst_element_factory_make("audioconvert", nullptr);
-  GstElement* resample = gst_element_factory_make("audioresample", nullptr);
-
-  // Create sink element based on config
-  GstElement* sink = nullptr;
-  if (!config_.speakers_device.empty()) {
-    sink = gst_element_factory_make("pulsesink", nullptr);
-    if (sink) {
-      g_object_set(sink, "device", config_.speakers_device.c_str(), NULL);
-    }
-  } else {
-    sink = gst_element_factory_make("autoaudiosink", nullptr);
-  }
-
-  if (!depay || !decoder || !convert || !resample || !sink) {
-    LOG_ERROR("Failed to create playback pipeline elements");
-    if (depay) gst_object_unref(depay);
-    if (decoder) gst_object_unref(decoder);
-    if (convert) gst_object_unref(convert);
-    if (resample) gst_object_unref(resample);
-    if (sink) gst_object_unref(sink);
-    return;
-  }
-
-  // Add all elements to main pipeline
-  gst_bin_add_many(GST_BIN(pipeline_), depay, decoder, convert, resample, sink, NULL);
-
-  // Link elements: depay -> decoder -> convert -> resample -> sink
-  if (!gst_element_link_many(depay, decoder, convert, resample, sink, NULL)) {
-    LOG_ERROR("Failed to link playback elements");
-    return;
-  }
-
-  LOG_INFO("Created and linked playback elements: depay -> decoder -> convert -> resample -> sink");
-
-  // Get depay's sink pad
-  GstPad* sink_pad = gst_element_get_static_pad(depay, "sink");
-  if (!sink_pad) {
-    LOG_ERROR("Failed to get sink pad from depay element");
-    return;
-  }
-
-  // Link webrtcbin's src pad to depay's sink pad
-  GstPadLinkReturn link_result = gst_pad_link(pad, sink_pad);
-  if (link_result != GST_PAD_LINK_OK) {
-    LOG_ERROR("Failed to link webrtcbin pad to depay sink: {} ({})",
-              link_result,
-              link_result == GST_PAD_LINK_WRONG_DIRECTION ? "wrong direction" :
-              link_result == GST_PAD_LINK_NOFORMAT ? "no format" :
-              link_result == GST_PAD_LINK_NOSCHED ? "no sched" :
-              link_result == GST_PAD_LINK_REFUSED ? "refused" : "unknown");
-    gst_object_unref(sink_pad);
-    return;
-  }
-
-  LOG_INFO("Linked webrtcbin audio pad to depay sink pad");
-
-  // Sync all playback elements to PLAYING state
-  gst_element_sync_state_with_parent(depay);
-  gst_element_sync_state_with_parent(decoder);
-  gst_element_sync_state_with_parent(convert);
-  gst_element_sync_state_with_parent(resample);
-  gst_element_sync_state_with_parent(sink);
-
-  LOG_INFO("Audio playback pipeline created and started successfully");
-
-  // Note: playback elements are owned by main pipeline, no need to track separately
-  gst_object_unref(sink_pad);
-}
-
-// ============================================================================
-// GStreamer Signal Callbacks (rtpbin migration)
-// ============================================================================
-
-// Static callback for appsink new-sample signal
-GstFlowReturn Session::OnAppsinkNewSample(GstAppSink* appsink, gpointer user_data) {
-  Session* session = static_cast<Session*>(user_data);
-
-  // Pull sample from appsink
-  GstSample* sample = gst_app_sink_pull_sample(appsink);
-  if (!sample) {
-    LOG_ERROR("Failed to pull sample from appsink");
-    return GST_FLOW_ERROR;
-  }
-
-  // Get buffer from sample
-  GstBuffer* buffer = gst_sample_get_buffer(sample);
-  if (!buffer) {
-    LOG_ERROR("Failed to get buffer from sample");
-    gst_sample_unref(sample);
-    return GST_FLOW_ERROR;
-  }
-
-  // Map buffer to read data
-  GstMapInfo map;
-  if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
-    LOG_ERROR("Failed to map buffer");
-    gst_sample_unref(sample);
-    return GST_FLOW_ERROR;
-  }
-
-  // Determine if this is RTP or RTCP based on appsink name
-  GstElement* element = GST_ELEMENT(appsink);
-  const gchar* name = gst_element_get_name(element);
-
-  if (g_str_has_prefix(name, "send_rtp_appsink")) {
-    // This is outgoing RTP data from rtpbin → send via ICE Component 1
-    session->SendRtpData(map.data, map.size);
-  } else if (g_str_has_prefix(name, "send_rtcp_appsink")) {
-    // This is outgoing RTCP data from rtpbin → send via ICE Component 1 or 2
-    session->SendRtcpData(map.data, map.size);
-  } else {
-    LOG_WARN("Unknown appsink: {}", name);
-  }
-
-  // Cleanup
-  gst_buffer_unmap(buffer, &map);
-  gst_sample_unref(sample);
-
-  return GST_FLOW_OK;
-}
-
-// ============================================================================
-// Helper Methods (NEW for rtpbin migration)
-// ============================================================================
-
+```cpp
 bool Session::SetupRtpbin() {
   LOG_INFO("Setting up rtpbin for session: {}", config_.session_id);
 
@@ -708,7 +655,15 @@ bool Session::SetupRtpbin() {
   LOG_INFO("rtpbin created and configured successfully");
   return true;
 }
+```
 
+---
+
+### `bool Session::SetupAppsinkAppsrc()`
+
+**Private helper for Initialize()**
+
+```cpp
 bool Session::SetupAppsinkAppsrc() {
   LOG_INFO("Setting up appsink/appsrc elements");
 
@@ -719,7 +674,7 @@ bool Session::SetupAppsinkAppsrc() {
     return false;
   }
 
-  // Configure appsink
+  // Configure appsink (no emit-signals, we'll pull samples)
   g_object_set(send_rtp_appsink_, "emit-signals", TRUE, "sync", FALSE, NULL);
   g_signal_connect(send_rtp_appsink_, "new-sample",
                    G_CALLBACK(OnAppsinkNewSample), this);
@@ -760,48 +715,56 @@ bool Session::SetupAppsinkAppsrc() {
                    recv_rtp_appsrc_, recv_rtcp_appsrc_,
                    NULL);
 
-  // NOTE: We do NOT link appsinks yet!
-  // rtpbin's send_rtp_src_0 and send_rtcp_src_0 pads are created AFTER
-  // we link the audio pipeline to send_rtp_sink_0.
-  // We'll link them dynamically when rtpbin creates the pads.
-
-  // Link appsrc → rtpbin for incoming (these pads exist immediately)
-  GstPad* rtp_appsrc_pad = gst_element_get_static_pad(recv_rtp_appsrc_, "src");
-  GstPad* rtp_recv_pad = gst_element_request_pad_simple(rtpbin_, "recv_rtp_sink_0");
-  if (!rtp_recv_pad) {
-    LOG_ERROR("Failed to request recv_rtp_sink_0 pad from rtpbin");
-    gst_object_unref(rtp_appsrc_pad);
+  // Link rtpbin → appsink for outgoing
+  GstPad* rtp_src = gst_element_get_request_pad(rtpbin_, "send_rtp_src_0");
+  GstPad* rtp_sink = gst_element_get_static_pad(send_rtp_appsink_, "sink");
+  if (gst_pad_link(rtp_src, rtp_sink) != GST_PAD_LINK_OK) {
+    LOG_ERROR("Failed to link rtpbin send_rtp_src_0 to appsink");
     return false;
   }
+  gst_object_unref(rtp_src);
+  gst_object_unref(rtp_sink);
+
+  GstPad* rtcp_src = gst_element_get_request_pad(rtpbin_, "send_rtcp_src_0");
+  GstPad* rtcp_sink = gst_element_get_static_pad(send_rtcp_appsink_, "sink");
+  if (gst_pad_link(rtcp_src, rtcp_sink) != GST_PAD_LINK_OK) {
+    LOG_ERROR("Failed to link rtpbin send_rtcp_src_0 to appsink");
+    return false;
+  }
+  gst_object_unref(rtcp_src);
+  gst_object_unref(rtcp_sink);
+
+  // Link appsrc → rtpbin for incoming
+  GstPad* rtp_appsrc_pad = gst_element_get_static_pad(recv_rtp_appsrc_, "src");
+  GstPad* rtp_recv_pad = gst_element_get_request_pad(rtpbin_, "recv_rtp_sink_0");
   if (gst_pad_link(rtp_appsrc_pad, rtp_recv_pad) != GST_PAD_LINK_OK) {
     LOG_ERROR("Failed to link appsrc to rtpbin recv_rtp_sink_0");
-    gst_object_unref(rtp_appsrc_pad);
-    gst_object_unref(rtp_recv_pad);
     return false;
   }
   gst_object_unref(rtp_appsrc_pad);
   gst_object_unref(rtp_recv_pad);
 
   GstPad* rtcp_appsrc_pad = gst_element_get_static_pad(recv_rtcp_appsrc_, "src");
-  GstPad* rtcp_recv_pad = gst_element_request_pad_simple(rtpbin_, "recv_rtcp_sink_0");
-  if (!rtcp_recv_pad) {
-    LOG_ERROR("Failed to request recv_rtcp_sink_0 pad from rtpbin");
-    gst_object_unref(rtcp_appsrc_pad);
-    return false;
-  }
+  GstPad* rtcp_recv_pad = gst_element_get_request_pad(rtpbin_, "recv_rtcp_sink_0");
   if (gst_pad_link(rtcp_appsrc_pad, rtcp_recv_pad) != GST_PAD_LINK_OK) {
     LOG_ERROR("Failed to link appsrc to rtpbin recv_rtcp_sink_0");
-    gst_object_unref(rtcp_appsrc_pad);
-    gst_object_unref(rtcp_recv_pad);
     return false;
   }
   gst_object_unref(rtcp_appsrc_pad);
   gst_object_unref(rtcp_recv_pad);
 
-  LOG_INFO("appsink/appsrc elements created and linked (appsinks will be linked after audio pipeline)");
+  LOG_INFO("appsink/appsrc elements created and linked successfully");
   return true;
 }
+```
 
+---
+
+### `bool Session::SetupAudioPipeline()`
+
+**Private helper for Initialize()**
+
+```cpp
 bool Session::SetupAudioPipeline() {
   LOG_INFO("Setting up audio pipeline");
 
@@ -844,7 +807,7 @@ bool Session::SetupAudioPipeline() {
 
   // Link rtpopuspay → rtpbin send_rtp_sink_0 (CHANGED from webrtcbin)
   GstPad* audio_src_pad = gst_element_get_static_pad(rtpopuspay, "src");
-  GstPad* audio_sink_pad = gst_element_request_pad_simple(rtpbin_, "send_rtp_sink_0");
+  GstPad* audio_sink_pad = gst_element_get_request_pad(rtpbin_, "send_rtp_sink_0");
 
   if (gst_pad_link(audio_src_pad, audio_sink_pad) != GST_PAD_LINK_OK) {
     LOG_ERROR("Failed to link audio to rtpbin");
@@ -857,34 +820,110 @@ bool Session::SetupAudioPipeline() {
   gst_object_unref(audio_sink_pad);
   LOG_INFO("Audio pipeline linked to rtpbin successfully");
 
-  // NOW link the RTP appsink (send_rtp_src_0 exists after linking send_rtp_sink_0)
-  GstPad* rtp_src = gst_element_get_static_pad(rtpbin_, "send_rtp_src_0");
-  if (!rtp_src) {
-    LOG_ERROR("Failed to get send_rtp_src_0 pad from rtpbin");
-    return false;
-  }
-  GstPad* rtp_sink = gst_element_get_static_pad(send_rtp_appsink_, "sink");
-  if (gst_pad_link(rtp_src, rtp_sink) != GST_PAD_LINK_OK) {
-    LOG_ERROR("Failed to link rtpbin send_rtp_src_0 to appsink");
-    gst_object_unref(rtp_src);
-    gst_object_unref(rtp_sink);
-    return false;
-  }
-  gst_object_unref(rtp_src);
-  gst_object_unref(rtp_sink);
-  LOG_INFO("RTP appsink linked to rtpbin send_rtp_src_0");
-
-  // NOTE: send_rtcp_src_0 is created dynamically by rtpbin when RTCP is generated
-  // We handle it in the OnPadAdded callback (already connected in SetupRtpbin)
-  LOG_INFO("RTCP appsink will be linked dynamically when rtpbin creates send_rtcp_src_0");
-
   return true;
 }
+```
 
-// ============================================================================
-// IceAgent Callbacks (NEW)
-// ============================================================================
+---
 
+## GStreamer Callbacks
+
+### `static GstFlowReturn Session::OnAppsinkNewSample(GstAppSink* appsink, gpointer user_data)`
+
+**Called by:** GStreamer when rtpbin produces RTP/RTCP packets
+
+```cpp
+GstFlowReturn Session::OnAppsinkNewSample(GstAppSink* appsink, gpointer user_data) {
+  Session* session = static_cast<Session*>(user_data);
+
+  // Pull sample from appsink
+  GstSample* sample = gst_app_sink_pull_sample(appsink);
+  if (!sample) {
+    LOG_ERROR("Failed to pull sample from appsink");
+    return GST_FLOW_ERROR;
+  }
+
+  // Get buffer
+  GstBuffer* buffer = gst_sample_get_buffer(sample);
+  if (!buffer) {
+    LOG_ERROR("Failed to get buffer from sample");
+    gst_sample_unref(sample);
+    return GST_FLOW_ERROR;
+  }
+
+  // Extract data
+  GstMapInfo map;
+  if (!gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+    LOG_ERROR("Failed to map buffer");
+    gst_sample_unref(sample);
+    return GST_FLOW_ERROR;
+  }
+
+  // Determine if RTP or RTCP based on which appsink this is
+  if (appsink == GST_APP_SINK(session->send_rtp_appsink_)) {
+    // RTP packet - send via Component 1
+    session->SendRtpData(map.data, map.size);
+  } else if (appsink == GST_APP_SINK(session->send_rtcp_appsink_)) {
+    // RTCP packet - send via Component 2 (or 1 if rtcp_mux)
+    session->SendRtcpData(map.data, map.size);
+  }
+
+  gst_buffer_unmap(buffer, &map);
+  gst_sample_unref(sample);
+
+  return GST_FLOW_OK;
+}
+```
+
+---
+
+### `static void Session::OnPadAdded(GstElement* rtpbin, GstPad* pad, gpointer user_data)`
+
+**Called by:** GStreamer when rtpbin creates dynamic pad for incoming stream
+
+**Implementation:** MOSTLY UNCHANGED (rtpbin generates same recv_rtp_src pads)
+
+```cpp
+void Session::OnPadAdded(GstElement* rtpbin, GstPad* pad, gpointer user_data) {
+  Session* session = static_cast<Session*>(user_data);
+
+  gchar* pad_name = gst_pad_get_name(pad);
+  GstCaps* caps = gst_pad_get_current_caps(pad);
+
+  if (!caps) {
+    caps = gst_pad_query_caps(pad, NULL);
+  }
+
+  gchar* caps_str = gst_caps_to_string(caps);
+  LOG_INFO("Pad added: {} with caps: {}", pad_name, caps_str);
+
+  GstStructure* structure = gst_caps_get_structure(caps, 0);
+  const gchar* media = gst_structure_get_string(structure, "media");
+
+  if (media && g_strcmp0(media, "audio") == 0) {
+    LOG_INFO("Setting up audio playback for incoming audio stream");
+    session->SetupAudioPlayback(pad);
+  } else if (media && g_strcmp0(media, "video") == 0) {
+    LOG_INFO("Video pad detected (playback not yet implemented)");
+  } else {
+    LOG_WARN("Unknown media type on pad: {}", media ? media : "null");
+  }
+
+  g_free(caps_str);
+  g_free(pad_name);
+  gst_caps_unref(caps);
+}
+```
+
+---
+
+## IceAgent Callbacks (NEW)
+
+### `void Session::OnIceCandidate(int component_id, const std::string& candidate, const std::string& sdp_mid, int sdp_mline_index)`
+
+**Called by:** IceAgent when new candidate is discovered
+
+```cpp
 void Session::OnIceCandidate(int component_id, const std::string& candidate,
                               const std::string& sdp_mid, int sdp_mline_index) {
   LOG_DEBUG("ICE candidate: component={}, mid={}, mline={}, cand={}",
@@ -898,7 +937,15 @@ void Session::OnIceCandidate(int component_id, const std::string& candidate,
 
   PushEvent(event);
 }
+```
 
+---
+
+### `void Session::OnComponentStateChanged(int component_id, const std::string& state)`
+
+**Called by:** IceAgent when component state changes
+
+```cpp
 void Session::OnComponentStateChanged(int component_id, const std::string& state) {
   LOG_INFO("Component {} state changed: {}", component_id, state);
 
@@ -926,7 +973,15 @@ void Session::OnComponentStateChanged(int component_id, const std::string& state
   conn_event.data = event.data;
   PushEvent(conn_event);
 }
+```
 
+---
+
+### `void Session::OnIceDataReceived(int component_id, const uint8_t* data, size_t len)`
+
+**Called by:** IceAgent when data arrives from network
+
+```cpp
 void Session::OnIceDataReceived(int component_id, const uint8_t* data, size_t len) {
   LOG_DEBUG("Received {} bytes on component {}", len, component_id);
 
@@ -943,7 +998,15 @@ void Session::OnIceDataReceived(int component_id, const uint8_t* data, size_t le
   //   PushRtcpData(decrypted_data, decrypted_len);
   // }
 }
+```
 
+---
+
+### `void Session::OnGatheringDone()`
+
+**Called by:** IceAgent when all candidates gathered
+
+```cpp
 void Session::OnGatheringDone() {
   LOG_INFO("ICE candidate gathering done");
 
@@ -953,11 +1016,15 @@ void Session::OnGatheringDone() {
 
   PushEvent(event);
 }
+```
 
-// ============================================================================
-// Data Flow Helpers (NEW - STUBS for Phase 3)
-// ============================================================================
+---
 
+## Data Flow Helpers (NEW - STUBS for Phase 3)
+
+### `void Session::SendRtpData(const uint8_t* data, size_t len)`
+
+```cpp
 void Session::SendRtpData(const uint8_t* data, size_t len) {
   LOG_DEBUG("Sending {} bytes of RTP via Component 1", len);
 
@@ -970,7 +1037,13 @@ void Session::SendRtpData(const uint8_t* data, size_t len) {
   // size_t encrypted_len = dtls_srtp_->EncryptRTP(data, len, encrypted);
   // ice_agent_->Send(1, encrypted, encrypted_len);
 }
+```
 
+---
+
+### `void Session::SendRtcpData(const uint8_t* data, size_t len)`
+
+```cpp
 void Session::SendRtcpData(const uint8_t* data, size_t len) {
   int component_id = rtcp_mux_ ? 1 : 2;
   LOG_DEBUG("Sending {} bytes of RTCP via Component {}", len, component_id);
@@ -981,7 +1054,13 @@ void Session::SendRtcpData(const uint8_t* data, size_t len) {
   // Phase 4 will implement:
   // ice_agent_->Send(component_id, encrypted, encrypted_len);
 }
+```
 
+---
+
+### `void Session::PushRtpData(const uint8_t* data, size_t len)`
+
+```cpp
 void Session::PushRtpData(const uint8_t* data, size_t len) {
   LOG_DEBUG("Pushing {} bytes of RTP to rtpbin", len);
 
@@ -998,7 +1077,13 @@ void Session::PushRtpData(const uint8_t* data, size_t len) {
     LOG_ERROR("Failed to push RTP buffer to appsrc: {}", ret);
   }
 }
+```
 
+---
+
+### `void Session::PushRtcpData(const uint8_t* data, size_t len)`
+
+```cpp
 void Session::PushRtcpData(const uint8_t* data, size_t len) {
   LOG_DEBUG("Pushing {} bytes of RTCP to rtpbin", len);
 
@@ -1015,5 +1100,28 @@ void Session::PushRtcpData(const uint8_t* data, size_t len) {
     LOG_ERROR("Failed to push RTCP buffer to appsrc: {}", ret);
   }
 }
+```
 
-}  // namespace drunk_call
+---
+
+## Summary
+
+**Phase 2 Complete When:**
+- ✅ All methods have correct signatures
+- ✅ IceAgent fully integrated
+- ✅ rtpbin + appsink/appsrc pipeline working
+- ✅ Event queue populated from IceAgent callbacks
+- ✅ Compiles without errors
+- ✅ Python gRPC integration unchanged
+
+**Stubs for Phase 3/4:**
+- SDP parsing and generation
+- DTLS-SRTP encryption/decryption
+- Actual data flow through encryption layer
+- rtpbin stats extraction
+
+**Files to modify:**
+- `drunk_call_service/include/session.h` - Update private members
+- `drunk_call_service/src/session.cc` - Implement all methods above
+
+**Ready to implement?**

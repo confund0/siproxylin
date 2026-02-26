@@ -27,7 +27,7 @@ find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 
 # GStreamer dependencies
-pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0)
+pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0 gstreamer-app-1.0 gstreamer-rtp-1.0)
 
 # libnice for ICE (2-component support)
 pkg_check_modules(NICE REQUIRED nice>=0.1.18)

@@ -9,7 +9,12 @@
 
 // GStreamer headers
 #include <gst/gst.h>
-#include <gst/webrtc/webrtc.h>
+#include <gst/app/gstappsink.h>
+#include <gst/app/gstappsrc.h>
+#include <gst/rtp/rtp.h>
+
+// Internal headers
+#include "ice_agent.h"
 
 namespace drunk_call {
 
@@ -109,27 +114,53 @@ class Session {
 
  private:
   // GStreamer signal callbacks (must be static)
-  static void OnIceCandidate(GstElement* webrtcbin, guint mline_index, gchar* candidate, gpointer user_data);
-  static void OnConnectionStateChange(GstElement* webrtcbin, GParamSpec* pspec, gpointer user_data);
-  static void OnIceConnectionStateChange(GstElement* webrtcbin, GParamSpec* pspec, gpointer user_data);
-  static void OnIceGatheringStateChange(GstElement* webrtcbin, GParamSpec* pspec, gpointer user_data);
-  static void OnNegotiationNeeded(GstElement* webrtcbin, gpointer user_data);
-  static void OnPadAdded(GstElement* webrtcbin, GstPad* pad, gpointer user_data);
+  static void OnPadAdded(GstElement* rtpbin, GstPad* pad, gpointer user_data);
+  static GstFlowReturn OnAppsinkNewSample(GstAppSink* appsink, gpointer user_data);
+
+  // IceAgent callbacks
+  void OnIceCandidate(int component_id, const std::string& candidate,
+                      const std::string& sdp_mid, int sdp_mline_index);
+  void OnComponentStateChanged(int component_id, const std::string& state);
+  void OnIceDataReceived(int component_id, const uint8_t* data, size_t len);
+  void OnGatheringDone();
 
   // Helper methods
-  bool AddTransceivers();  // Create transceivers and link pipeline to webrtcbin
+  bool SetupAudioPipeline();  // Create audio source/sink and link to rtpbin
+  bool SetupRtpbin();  // Create and configure rtpbin element
+  bool SetupAppsinkAppsrc();  // Create appsink/appsrc for RTP/RTCP flow
   void SetupAudioPlayback(GstPad* pad);  // Setup playback pipeline for incoming audio
+
+  // Data flow helpers
+  void SendRtpData(const uint8_t* data, size_t len);  // Encrypt and send via ICE Component 1
+  void SendRtcpData(const uint8_t* data, size_t len);  // Encrypt and send via ICE Component 1 or 2
+  void PushRtpData(const uint8_t* data, size_t len);  // Push decrypted RTP to rtpbin via appsrc
+  void PushRtcpData(const uint8_t* data, size_t len);  // Push decrypted RTCP to rtpbin via appsrc
 
   // Internal event queue
   void PushEvent(const Event& event);
   Config config_;
   bool initialized_ = false;
   bool muted_ = false;
+  bool rtcp_mux_ = true;  // RTCP-mux mode (use Component 1 for RTCP)
 
   // GStreamer components
   GstElement* pipeline_;
-  GstElement* webrtcbin_;
-  GstElement* playback_pipeline_;  // Separate pipeline for audio playback
+  GstElement* rtpbin_;  // Replaces webrtcbin_
+
+  // Appsink elements (capture outgoing RTP/RTCP from rtpbin)
+  GstElement* send_rtp_appsink_;
+  GstElement* send_rtcp_appsink_;
+
+  // Appsrc elements (inject incoming RTP/RTCP to rtpbin)
+  GstElement* recv_rtp_appsrc_;
+  GstElement* recv_rtcp_appsrc_;
+
+  // Audio elements
+  GstElement* audio_src_;  // Microphone capture
+  GstElement* audio_sink_;  // Speaker playback
+
+  // ICE agent (replaces webrtcbin's ICE)
+  std::unique_ptr<IceAgent> ice_agent_;
 
   // Event queue for streaming
   std::queue<Event> event_queue_;
