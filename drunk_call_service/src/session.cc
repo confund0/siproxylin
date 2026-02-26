@@ -86,7 +86,39 @@ bool Session::Initialize() {
     return false;
   }
 
-  // 5. Configure STUN/TURN on IceAgent (CHANGED from webrtcbin)
+  // 5. Set ICE transport policy (CHANGED from webrtcbin)
+  ice_agent_->SetTransportPolicy(config_.relay_only);
+
+  // 6. Wire IceAgent callbacks to event queue (NEW)
+  ice_agent_->SetOnCandidateCallback(
+    [this](int comp_id, const std::string& cand, const std::string& mid, int mline_idx) {
+      this->OnIceCandidate(comp_id, cand, mid, mline_idx);
+    }
+  );
+  ice_agent_->SetOnComponentStateCallback(
+    [this](int comp_id, const std::string& state) {
+      this->OnComponentStateChanged(comp_id, state);
+    }
+  );
+  ice_agent_->SetOnDataReceivedCallback(
+    [this](int comp_id, const uint8_t* data, size_t len) {
+      this->OnIceDataReceived(comp_id, data, len);
+    }
+  );
+  ice_agent_->SetOnGatheringDoneCallback(
+    [this]() {
+      this->OnGatheringDone();
+    }
+  );
+
+  // 7. Create ICE stream (NEW)
+  if (!ice_agent_->AddStream()) {
+    LOG_ERROR("Failed to add ICE stream");
+    gst_object_unref(pipeline_);
+    return false;
+  }
+
+  // 8. Configure STUN/TURN after stream is created (CHANGED from webrtcbin)
   if (!config_.turn_server.empty()) {
     // Parse TURN server: "turn:host:port?transport=udp"
     std::string host_port = config_.turn_server;
@@ -112,39 +144,25 @@ bool Session::Initialize() {
     }
   }
 
-  // 6. Set ICE transport policy (CHANGED from webrtcbin)
-  ice_agent_->SetTransportPolicy(config_.relay_only);
-
-  // 7. Wire IceAgent callbacks to event queue (NEW)
-  ice_agent_->SetOnCandidateCallback(
-    [this](int comp_id, const std::string& cand, const std::string& mid, int mline_idx) {
-      this->OnIceCandidate(comp_id, cand, mid, mline_idx);
-    }
-  );
-  ice_agent_->SetOnComponentStateCallback(
-    [this](int comp_id, const std::string& state) {
-      this->OnComponentStateChanged(comp_id, state);
-    }
-  );
-  ice_agent_->SetOnDataReceivedCallback(
-    [this](int comp_id, const uint8_t* data, size_t len) {
-      this->OnIceDataReceived(comp_id, data, len);
-    }
-  );
-  ice_agent_->SetOnGatheringDoneCallback(
-    [this]() {
-      this->OnGatheringDone();
-    }
-  );
-
-  // 8. Create ICE stream (NEW)
-  if (!ice_agent_->AddStream()) {
-    LOG_ERROR("Failed to add ICE stream");
+  // 9. Create and initialize DTLS-SRTP handler (Phase 3)
+  dtls_srtp_ = std::make_unique<DtlsSrtpHandler>();
+  if (!dtls_srtp_->GenerateCertificate()) {
+    LOG_ERROR("Failed to generate DTLS certificate");
     gst_object_unref(pipeline_);
     return false;
   }
 
-  // 9. Create audio pipeline (SAME as before, but link to rtpbin)
+  LOG_INFO("DTLS certificate generated, fingerprint: {}", dtls_srtp_->GetFingerprintString());
+
+  // Wire DTLS send callback to IceAgent Component 1
+  dtls_srtp_->SetSendDataCallback([this](const uint8_t* data, size_t len) {
+    // Send DTLS packets over Component 1
+    if (!ice_agent_->Send(1, data, len)) {
+      LOG_ERROR("Failed to send DTLS packet via ICE");
+    }
+  });
+
+  // 10. Create audio pipeline (SAME as before, but link to rtpbin)
   if (!SetupAudioPipeline()) {
     LOG_ERROR("Failed to setup audio pipeline");
     gst_object_unref(pipeline_);
@@ -164,7 +182,14 @@ void Session::Close() {
 
   LOG_INFO("Closing session: {}", config_.session_id);
 
-  // Shutdown IceAgent first (NEW)
+  // Stop DTLS handshake if running (Phase 3)
+  if (dtls_srtp_) {
+    dtls_srtp_->StopHandshake();
+    dtls_srtp_.reset();
+    LOG_DEBUG("DTLS-SRTP handler destroyed");
+  }
+
+  // Shutdown IceAgent (NEW)
   if (ice_agent_) {
     ice_agent_->Shutdown();
     ice_agent_.reset();
@@ -236,8 +261,11 @@ std::string Session::CreateOffer() {
     "a=ice-ufrag:" + ufrag + "\r\n"
     "a=ice-pwd:" + pwd + "\r\n"
     "a=ice-options:trickle\r\n"
-    "a=fingerprint:sha-256 TODO-FINGERPRINT\r\n"
+    "a=fingerprint:sha-256 " + dtls_srtp_->GetFingerprintString() + "\r\n"
     "a=setup:actpass\r\n";
+
+  // Set mode to SERVER (we'll be passive, waiting for peer to connect)
+  dtls_srtp_->SetMode(DtlsMode::SERVER);
 
   LOG_INFO("Generated stub SDP offer ({} bytes)", sdp.size());
   LOG_DEBUG("SDP Offer:\n{}", sdp);
@@ -304,8 +332,11 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
     "a=ice-ufrag:" + ufrag + "\r\n"
     "a=ice-pwd:" + pwd + "\r\n"
     "a=ice-options:trickle\r\n"
-    "a=fingerprint:sha-256 TODO-FINGERPRINT\r\n"
+    "a=fingerprint:sha-256 " + dtls_srtp_->GetFingerprintString() + "\r\n"
     "a=setup:active\r\n";  // active for answer
+
+  // Set mode to CLIENT (we're active, we initiate DTLS)
+  dtls_srtp_->SetMode(DtlsMode::CLIENT);
 
   LOG_INFO("Generated stub SDP answer ({} bytes)", sdp.size());
   LOG_DEBUG("SDP Answer:\n{}", sdp);
@@ -925,23 +956,43 @@ void Session::OnComponentStateChanged(int component_id, const std::string& state
   conn_event.type = Event::CONNECTION_STATE_CHANGE;
   conn_event.data = event.data;
   PushEvent(conn_event);
+
+  // Start DTLS handshake when Component 1 is ready (Phase 3)
+  if (component_id == 1 && (state == "READY" || state == "CONNECTED") &&
+      dtls_srtp_ && !dtls_srtp_->IsReady()) {
+    LOG_INFO("Component 1 ready, starting DTLS handshake");
+    dtls_srtp_->StartHandshake();
+  }
 }
 
 void Session::OnIceDataReceived(int component_id, const uint8_t* data, size_t len) {
   LOG_DEBUG("Received {} bytes on component {}", len, component_id);
 
-  // Phase 3 will decrypt via DTLS-SRTP here
-  // For Phase 2, just stub
-  LOG_DEBUG("TODO: Decrypt DTLS-SRTP and push to rtpbin via appsrc");
+  if (!dtls_srtp_) {
+    LOG_ERROR("DTLS-SRTP handler not initialized");
+    return;
+  }
 
-  // Phase 4 will implement:
-  // if (component_id == 1) {
-  //   // Decrypt RTP
-  //   PushRtpData(decrypted_data, decrypted_len);
-  // } else if (component_id == 2) {
-  //   // Decrypt RTCP
-  //   PushRtcpData(decrypted_data, decrypted_len);
-  // }
+  // Process incoming data (handles DTLS and SRTP decryption)
+  auto decrypted = dtls_srtp_->ProcessIncomingData(component_id, data, len);
+
+  if (decrypted.empty()) {
+    // Either DTLS packet (handled internally) or error
+    return;
+  }
+
+  // Push decrypted RTP/RTCP to rtpbin
+  if (component_id == 1) {
+    // Component 1: Could be RTP or RTCP (check packet type)
+    if (len >= 2 && data[1] >= 192 && data[1] < 224) {
+      PushRtcpData(decrypted.data(), decrypted.size());
+    } else {
+      PushRtpData(decrypted.data(), decrypted.size());
+    }
+  } else if (component_id == 2) {
+    // Component 2: Always RTCP
+    PushRtcpData(decrypted.data(), decrypted.size());
+  }
 }
 
 void Session::OnGatheringDone() {
@@ -959,27 +1010,46 @@ void Session::OnGatheringDone() {
 // ============================================================================
 
 void Session::SendRtpData(const uint8_t* data, size_t len) {
-  LOG_DEBUG("Sending {} bytes of RTP via Component 1", len);
+  LOG_DEBUG("Sending {} bytes of RTP", len);
 
-  // Phase 3 will encrypt via DTLS-SRTP here
-  // For Phase 2, just stub
-  LOG_DEBUG("TODO: Encrypt DTLS-SRTP and send via IceAgent");
+  if (!dtls_srtp_ || !dtls_srtp_->IsReady()) {
+    LOG_DEBUG("DTLS-SRTP not ready, cannot send RTP");
+    return;
+  }
 
-  // Phase 4 will implement:
-  // uint8_t encrypted[len + SRTP_OVERHEAD];
-  // size_t encrypted_len = dtls_srtp_->EncryptRTP(data, len, encrypted);
-  // ice_agent_->Send(1, encrypted, encrypted_len);
+  // Encrypt RTP via DTLS-SRTP
+  auto encrypted = dtls_srtp_->ProcessOutgoingData(1, data, len);
+  if (encrypted.empty()) {
+    LOG_ERROR("Failed to encrypt RTP");
+    return;
+  }
+
+  // Send encrypted RTP via Component 1
+  if (!ice_agent_->Send(1, encrypted.data(), encrypted.size())) {
+    LOG_ERROR("Failed to send encrypted RTP via ICE");
+  }
 }
 
 void Session::SendRtcpData(const uint8_t* data, size_t len) {
   int component_id = rtcp_mux_ ? 1 : 2;
   LOG_DEBUG("Sending {} bytes of RTCP via Component {}", len, component_id);
 
-  // Phase 3 will encrypt via DTLS-SRTP here
-  LOG_DEBUG("TODO: Encrypt DTLS-SRTP and send via IceAgent");
+  if (!dtls_srtp_ || !dtls_srtp_->IsReady()) {
+    LOG_DEBUG("DTLS-SRTP not ready, cannot send RTCP");
+    return;
+  }
 
-  // Phase 4 will implement:
-  // ice_agent_->Send(component_id, encrypted, encrypted_len);
+  // Encrypt RTCP via DTLS-SRTP
+  auto encrypted = dtls_srtp_->ProcessOutgoingData(component_id, data, len);
+  if (encrypted.empty()) {
+    LOG_ERROR("Failed to encrypt RTCP");
+    return;
+  }
+
+  // Send encrypted RTCP
+  if (!ice_agent_->Send(component_id, encrypted.data(), encrypted.size())) {
+    LOG_ERROR("Failed to send encrypted RTCP via ICE");
+  }
 }
 
 void Session::PushRtpData(const uint8_t* data, size_t len) {

@@ -15,6 +15,7 @@
 
 // Internal headers
 #include "ice_agent.h"
+#include "dtls_srtp_handler.h"
 
 namespace drunk_call {
 
@@ -161,6 +162,9 @@ class Session {
 
   // ICE agent (replaces webrtcbin's ICE)
   std::unique_ptr<IceAgent> ice_agent_;
+
+  // DTLS-SRTP handler (Phase 3)
+  std::unique_ptr<DtlsSrtpHandler> dtls_srtp_;
 
   // Event queue for streaming
   std::queue<Event> event_queue_;
