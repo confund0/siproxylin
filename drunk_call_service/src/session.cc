@@ -421,25 +421,54 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
   // 10. Get local ICE credentials
   auto [ufrag, pwd] = ice_agent_->GetLocalCredentials();
 
-  // 11. Construct answer SDP (STUB - needs proper negotiation)
-  // TODO: Implement proper SDP answer negotiation (RFC 3264):
-  //   - Parse offer's m= line to match protocol exactly (UDP/TLS/RTP/SAVPF, etc.)
-  //   - Parse offered codecs and intersect with supported codecs
-  //   - Answer MUST be a subset of offer (can't add new codecs!)
-  //   - Use GstSDPMessage API from parser.GetMessage()
-  //   - Match mid from offer (currently hardcoded to "audio0" but offer might use "audio")
-  // For now, hardcode UDP/TLS/RTP/SAVPF (DTLS-SRTP) with Opus
+  // 11. Extract dynamic values from offer for proper SDP answer negotiation (RFC 3264)
+  // Based on GStreamer webrtcbin patterns
+  auto mid = parser.GetMid(0);
+  auto protocol = parser.GetProtocol(0);
+  auto offered_codecs = parser.GetCodecFormats(0);
+
+  // Use extracted values with fallbacks
+  std::string answer_mid = mid.value_or("audio");
+  std::string answer_protocol = protocol.value_or("UDP/TLS/RTP/SAVPF");
+
+  LOG_INFO("Extracted from offer: mid={}, protocol={}, codec_count={}",
+           answer_mid, answer_protocol, offered_codecs.size());
+
+  // Codec negotiation: Find Opus in offered codecs (answer MUST be subset of offer)
+  int chosen_pt = 96;           // Default fallback
+  int chosen_clockrate = 48000; // Default fallback
+  std::string chosen_codec = "opus";
+  bool codec_found = false;
+
+  for (const auto& codec : offered_codecs) {
+    if (codec.name == "opus") {
+      chosen_pt = codec.payload_type;
+      chosen_clockrate = codec.clockrate;
+      codec_found = true;
+      LOG_INFO("Matched codec: opus (pt={}, clockrate={})", chosen_pt, chosen_clockrate);
+      break;
+    }
+  }
+
+  if (!codec_found) {
+    LOG_WARN("Opus not found in offer! Falling back to pt=96. Offered codecs:");
+    for (const auto& codec : offered_codecs) {
+      LOG_WARN("  - {} (pt={}, clockrate={})", codec.name, codec.payload_type, codec.clockrate);
+    }
+  }
+
+  // 12. Construct answer SDP dynamically matching offer
   // NOTE: NO rtcp-mux - we need 2 components (RTP + RTCP separate) for Conversations.im compatibility
   std::string sdp =
     "v=0\r\n"
     "o=- 0 0 IN IP4 0.0.0.0\r\n"
     "s=-\r\n"
     "t=0 0\r\n"
-    "m=audio 9 UDP/TLS/RTP/SAVPF 96\r\n"  // DTLS-SRTP (was: RTP/AVP - WRONG! Python rejected it!)
+    "m=audio 9 " + answer_protocol + " " + std::to_string(chosen_pt) + "\r\n"
     "c=IN IP4 0.0.0.0\r\n"
-    "a=rtcp:9 IN IP4 0.0.0.0\r\n"  // RTCP port (separate from RTP = 2 components)
-    "a=rtpmap:96 opus/48000/2\r\n"
-    "a=mid:audio\r\n"  // NOTE: Must match Jingle content name from offer ("audio" not "audio0")
+    "a=rtcp:9 IN IP4 0.0.0.0\r\n"
+    "a=rtpmap:" + std::to_string(chosen_pt) + " " + chosen_codec + "/" + std::to_string(chosen_clockrate) + "/2\r\n"
+    "a=mid:" + answer_mid + "\r\n"
     "a=sendrecv\r\n"
     "a=ice-ufrag:" + ufrag + "\r\n"
     "a=ice-pwd:" + pwd + "\r\n"

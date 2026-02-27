@@ -268,4 +268,127 @@ std::vector<SdpParser::IceCandidate> SdpParser::GetCandidates(int media_index) c
     return candidates;
 }
 
+std::optional<std::string> SdpParser::GetMid(int media_index) const {
+    if (!message_) {
+        return std::nullopt;
+    }
+
+    // Get media section
+    const GstSDPMedia* media = gst_sdp_message_get_media(message_, media_index);
+    if (!media) {
+        LOG_WARN("No media section at index {}", media_index);
+        return std::nullopt;
+    }
+
+    // Extract mid attribute
+    // Based on GStreamer webrtcbin: webrtcsdp.c:198
+    const char* mid = gst_sdp_media_get_attribute_val(media, "mid");
+    if (!mid || std::strlen(mid) == 0) {
+        LOG_WARN("No mid attribute found in media section {}", media_index);
+        return std::nullopt;
+    }
+
+    LOG_DEBUG("Extracted mid: {} (media_index={})", mid, media_index);
+    return std::string(mid);
+}
+
+std::optional<std::string> SdpParser::GetProtocol(int media_index) const {
+    if (!message_) {
+        return std::nullopt;
+    }
+
+    // Get media section
+    const GstSDPMedia* media = gst_sdp_message_get_media(message_, media_index);
+    if (!media) {
+        LOG_WARN("No media section at index {}", media_index);
+        return std::nullopt;
+    }
+
+    // Extract protocol from m= line
+    // Based on GStreamer webrtcbin: gstwebrtcbin.c:5522
+    const char* proto = gst_sdp_media_get_proto(media);
+    if (!proto) {
+        LOG_WARN("No protocol found in media section {}", media_index);
+        return std::nullopt;
+    }
+
+    LOG_DEBUG("Extracted protocol: {} (media_index={})", proto, media_index);
+    return std::string(proto);
+}
+
+std::vector<SdpParser::CodecFormat> SdpParser::GetCodecFormats(int media_index) const {
+    std::vector<CodecFormat> formats;
+
+    if (!message_) {
+        return formats;
+    }
+
+    // Get media section
+    const GstSDPMedia* media = gst_sdp_message_get_media(message_, media_index);
+    if (!media) {
+        LOG_WARN("No media section at index {}", media_index);
+        return formats;
+    }
+
+    // Iterate through all payload types in m= line
+    // Based on GStreamer webrtcbin: utils.c:205-209
+    guint formats_len = gst_sdp_media_formats_len(media);
+    for (guint i = 0; i < formats_len; i++) {
+        const char* format_str = gst_sdp_media_get_format(media, i);
+        if (!format_str) {
+            continue;
+        }
+
+        // Parse payload type
+        int pt = std::atoi(format_str);
+
+        // Use GStreamer's built-in caps parser to extract rtpmap info
+        // This automatically parses "a=rtpmap:96 opus/48000/2" into structured caps
+        GstCaps* caps = gst_sdp_media_get_caps_from_media(media, pt);
+        if (!caps) {
+            // No rtpmap for this payload type (might be static PT like 0=PCMU, 8=PCMA)
+            LOG_DEBUG("No caps for payload type {} (media_index={})", pt, media_index);
+            continue;
+        }
+
+        // Extract codec info from caps
+        if (gst_caps_get_size(caps) > 0) {
+            GstStructure* s = gst_caps_get_structure(caps, 0);
+
+            CodecFormat codec;
+            codec.payload_type = pt;
+
+            // Extract encoding-name (codec name)
+            const char* encoding_name = gst_structure_get_string(s, "encoding-name");
+            if (encoding_name) {
+                codec.encoding = encoding_name;
+                // Convert to lowercase for name field (e.g., "OPUS" -> "opus")
+                codec.name = encoding_name;
+                std::transform(codec.name.begin(), codec.name.end(), codec.name.begin(), ::tolower);
+            } else {
+                codec.name = "";
+                codec.encoding = "";
+            }
+
+            // Extract clock-rate
+            int clockrate = 0;
+            if (gst_structure_get_int(s, "clock-rate", &clockrate)) {
+                codec.clockrate = clockrate;
+            } else {
+                codec.clockrate = 0;
+            }
+
+            formats.push_back(codec);
+
+            LOG_DEBUG("Extracted codec: pt={}, name={}, encoding={}, clockrate={}",
+                     codec.payload_type, codec.name, codec.encoding, codec.clockrate);
+        }
+
+        gst_caps_unref(caps);
+    }
+
+    LOG_DEBUG("Extracted {} codec formats from SDP media section {}", formats.size(), media_index);
+    return formats;
+}
+
 }  // namespace drunk_call

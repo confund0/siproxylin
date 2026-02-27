@@ -63,6 +63,24 @@ public:
     };
     std::vector<IceCandidate> GetCandidates(int media_index = 0) const;
 
+    // Extract mid attribute (e.g., "audio", "0")
+    // Based on webrtcsdp.c:198 (GStreamer webrtcbin)
+    std::optional<std::string> GetMid(int media_index = 0) const;
+
+    // Extract protocol from m= line (e.g., "UDP/TLS/RTP/SAVPF", "RTP/AVP")
+    // Based on gstwebrtcbin.c:5522 (GStreamer webrtcbin)
+    std::optional<std::string> GetProtocol(int media_index = 0) const;
+
+    // Extract codec formats with rtpmap details
+    // Based on utils.c:205-209 (GStreamer webrtcbin)
+    struct CodecFormat {
+        int payload_type;       // e.g., 96
+        std::string name;       // e.g., "opus" (from a=rtpmap)
+        int clockrate;          // e.g., 48000
+        std::string encoding;   // Full encoding-name from rtpmap
+    };
+    std::vector<CodecFormat> GetCodecFormats(int media_index = 0) const;
+
     // Get raw GstSDPMessage (for advanced use)
     const GstSDPMessage* GetMessage() const { return message_; }
 
