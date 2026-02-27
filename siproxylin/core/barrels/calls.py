@@ -119,6 +119,7 @@ class CallBarrel:
         self.call_bridge = None  # CallBridge instance (Go service)
         self.jingle_adapter = None  # JingleAdapter for Jingle signaling
         self.pending_call_offers: Dict[str, str] = {}  # session_id → sdp_offer (temp storage)
+        self.pending_answers: Dict[str, str] = {}  # session_id → sdp_answer (pre-created answers, Dino pattern)
         self.accepted_calls: set = set()  # Track calls user accepted (sent proceed, waiting for session-initiate)
         self.incoming_call_timers: Dict[str, Any] = {}  # session_id → QTimer (60s timeout for unanswered calls)
         self.incoming_call_media: Dict[str, list] = {}  # session_id → media types (['audio'] or ['audio', 'video'])
@@ -626,7 +627,8 @@ class CallBarrel:
         """
         Handle incoming Jingle session-initiate (from JingleAdapter).
 
-        This has the actual SDP offer, unlike XEP-0353 propose which just announces the call.
+        Following Dino/GStreamer pattern: Create session + answer IMMEDIATELY when offer arrives.
+        This ensures session exists when ICE candidates arrive (no more "Session not found" errors).
         """
         if self.logger:
             self.logger.debug(f"Jingle session-initiate from {peer_jid}: {media} (sid={session_id})")
@@ -634,91 +636,100 @@ class CallBarrel:
         # Store SDP offer
         self.pending_call_offers[session_id] = sdp_offer
 
-        # Check if we need to wait for candidates (trickle-only offer)
-        waiting_for_candidates = self.jingle_adapter.sessions.get(session_id, {}).get('waiting_for_candidates', False)
-
-        # If user already accepted (sent proceed), complete the acceptance now
-        if session_id in self.accepted_calls:
-                # User already accepted, now we have SDP
-                if waiting_for_candidates:
-                    # TRICKLE-ICE FIX: Defer answer creation until candidates arrive
-                    if self.logger:
-                        self.logger.debug(f"[TRICKLE-ICE] User accepted but offer has 0 candidates - deferring answer creation for {session_id}")
-                    # The _on_candidates_ready callback will complete the acceptance
-                    return
-
-                # Normal flow: proceed with answer creation immediately
+        # IMMEDIATE SESSION CREATION (Dino/GStreamer pattern)
+        # Create C++ session + generate answer SDP right now (not when user accepts)
+        try:
+            # Query XEP-0215 for TURN servers
+            turn_server, turn_username, turn_password = '', '', ''
+            try:
                 if self.logger:
-                    self.logger.debug(f"User already accepted, completing call acceptance for {session_id}")
+                    self.logger.debug("Querying server for TURN servers (XEP-0215)")
+                services = await self.client.get_external_services()
+                if services:
+                    ice_servers = self.client.format_ice_servers(services)
+                    turn_server, turn_username, turn_password = self._extract_turn_server(ice_servers)
+                    if turn_server and self.logger:
+                        self.logger.debug(f"Using TURN server from XEP-0215: {turn_server}")
+                elif self.logger:
+                    self.logger.debug("Server does not support XEP-0215, will use Jami TURN")
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"Failed to query XEP-0215: {e}, will use Jami TURN")
+
+            # Load audio device and processing settings
+            mic_device, speakers_device, audio_proc = self._load_audio_settings()
+
+            # Load video device settings (pass session_id to check incoming call media)
+            camera_device = self._load_video_settings(session_id)
+
+            # Check if offer has BUNDLE for compatibility (Dino doesn't use BUNDLE)
+            session_info = self.jingle_adapter.get_session_info(session_id)
+            offer_details = session_info.get('offer_details', {}) if session_info else {}
+            offer_has_bundle = offer_details.get('bundle_group') is not None
+
+            # Create CallBridge session (incoming call)
+            if self.logger:
+                self.logger.info(f"Creating C++ session for incoming call {session_id} (Dino pattern: immediate)")
+            success = await self.call_bridge.create_session(
+                peer_jid, session_id, mic_device, speakers_device, camera_device,
+                proxy_host=self.proxy_host or "",
+                proxy_port=self.proxy_port or 0,
+                proxy_username=self.proxy_username or "",
+                proxy_password=self.proxy_password or "",
+                proxy_type=self.proxy_type or "",
+                turn_server=turn_server,
+                turn_username=turn_username,
+                turn_password=turn_password,
+                echo_cancel=audio_proc['echo_cancel'],
+                echo_suppression_level=audio_proc['echo_suppression_level'],
+                noise_suppression=audio_proc['noise_suppression'],
+                noise_suppression_level=audio_proc['noise_suppression_level'],
+                gain_control=audio_proc['gain_control'],
+                offer_has_bundle=offer_has_bundle
+            )
+            if not success:
+                raise RuntimeError("Failed to create CallBridge session")
+
+            # Create SDP answer via CallBridge (also sets remote SDP)
+            if self.logger:
+                self.logger.info(f"Generating answer SDP for {session_id} (Dino pattern: immediate)")
+            sdp_answer = await self.call_bridge.create_answer(session_id, sdp_offer, offer_has_bundle)
+
+            # Store answer for later (when user accepts, we'll send it)
+            self.pending_answers[session_id] = sdp_answer
+
+            if self.logger:
+                self.logger.info(f"Session {session_id} ready - answer SDP generated and stored")
+
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to create session/answer for {session_id}: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
+            # Don't fail - user might still decline the call
+            return
+
+        # If user already accepted (sent proceed), send the pre-created answer now
+        if session_id in self.accepted_calls:
+                if self.logger:
+                    self.logger.debug(f"User already accepted, sending pre-created answer for {session_id}")
 
                 try:
-                    # Query XEP-0215 for TURN servers
-                    turn_server, turn_username, turn_password = '', '', ''
-                    try:
+                    # Send the pre-created answer SDP via Jingle session-accept
+                    if session_id in self.pending_answers:
+                        await self.jingle_adapter.send_answer(session_id, self.pending_answers[session_id])
                         if self.logger:
-                            self.logger.debug("Querying server for TURN servers (XEP-0215)")
-                        services = await self.client.get_external_services()
-                        if services:
-                            ice_servers = self.client.format_ice_servers(services)
-                            turn_server, turn_username, turn_password = self._extract_turn_server(ice_servers)
-                            if turn_server and self.logger:
-                                self.logger.debug(f"Using TURN server from XEP-0215: {turn_server}")
-                        elif self.logger:
-                            self.logger.debug("Server does not support XEP-0215, will use Jami TURN")
-                    except Exception as e:
-                        if self.logger:
-                            self.logger.warning(f"Failed to query XEP-0215: {e}, will use Jami TURN")
-
-                    # Load audio device and processing settings
-                    mic_device, speakers_device, audio_proc = self._load_audio_settings()
-
-                    # Load video device settings (pass session_id to check incoming call media)
-                    camera_device = self._load_video_settings(session_id)
-
-                    # Check if offer has BUNDLE for compatibility (Dino doesn't use BUNDLE)
-                    # This must be checked BEFORE creating the session
-                    session_info = self.jingle_adapter.get_session_info(session_id)
-                    offer_details = session_info.get('offer_details', {}) if session_info else {}
-                    offer_has_bundle = offer_details.get('bundle_group') is not None
-                    # is_trickle_only_peer detected but not used yet (for future Option E implementation)
-                    # is_trickle_only_peer = session_info.get('is_trickle_only_peer', False) if session_info else False
-
-                    # Create CallBridge session (incoming call)
-                    success = await self.call_bridge.create_session(
-                        peer_jid, session_id, mic_device, speakers_device, camera_device,
-                        proxy_host=self.proxy_host or "",
-                        proxy_port=self.proxy_port or 0,
-                        proxy_username=self.proxy_username or "",
-                        proxy_password=self.proxy_password or "",
-                        proxy_type=self.proxy_type or "",
-                        turn_server=turn_server,
-                        turn_username=turn_username,
-                        turn_password=turn_password,
-                        echo_cancel=audio_proc['echo_cancel'],
-                        echo_suppression_level=audio_proc['echo_suppression_level'],
-                        noise_suppression=audio_proc['noise_suppression'],
-                        noise_suppression_level=audio_proc['noise_suppression_level'],
-                        gain_control=audio_proc['gain_control'],
-                        offer_has_bundle=offer_has_bundle
-                    )
-                    if not success:
-                        raise RuntimeError("Failed to create CallBridge session")
-
-                    # Create SDP answer via CallBridge (also sets remote SDP)
-                    sdp_answer = await self.call_bridge.create_answer(session_id, sdp_offer, offer_has_bundle)
-
-                    # Send Jingle session-accept via JingleAdapter
-                    await self.jingle_adapter.send_answer(session_id, sdp_answer)
-
-                    if self.logger:
-                        self.logger.debug(f"Sent Jingle session-accept for {session_id}")
+                            self.logger.info(f"Sent session-accept for {session_id}")
+                        self.pending_answers.pop(session_id, None)
+                    else:
+                        raise RuntimeError(f"No answer SDP found for {session_id}")
 
                     # Remove from accepted_calls set
                     self.accepted_calls.discard(session_id)
 
                 except Exception as e:
                     if self.logger:
-                        self.logger.error(f"Failed to complete call acceptance: {e}")
+                        self.logger.error(f"Failed to send session-accept: {e}")
                         import traceback
                         self.logger.error(traceback.format_exc())
                     await self.call_bridge.end_session(session_id)
@@ -772,106 +783,12 @@ class CallBarrel:
         """
         Handle candidates arriving for trickle-only offers.
 
-        This callback is triggered when we receive the first ICE candidate via transport-info
-        for an incoming call that had 0 candidates in the offer SDP (trickle-only mode).
-
-        The answer creation was deferred waiting for candidates to avoid the race condition
-        where Pion starts ICE checking with 0 remote candidates.
+        NOTE: This callback is now a no-op since we create sessions immediately (Dino pattern).
+        Session already exists when candidates arrive, so they're added directly.
+        Keeping this callback for compatibility with JingleAdapter.
         """
         if self.logger:
-            self.logger.debug(f"[TRICKLE-ICE] Candidates ready, proceeding with deferred answer creation for {session_id}")
-
-        # Check if user already accepted this call
-        if session_id not in self.accepted_calls:
-            if self.logger:
-                self.logger.warning(f"Candidates ready but call {session_id} not yet accepted by user")
-            return
-
-        # Get stored SDP offer
-        if session_id not in self.pending_call_offers:
-            if self.logger:
-                self.logger.error(f"No stored SDP offer for session {session_id}")
-            return
-
-        sdp_offer = self.pending_call_offers[session_id]
-
-        try:
-            # Query XEP-0215 for TURN servers
-            turn_server, turn_username, turn_password = '', '', ''
-            try:
-                if self.logger:
-                    self.logger.debug("Querying server for TURN servers (XEP-0215)")
-                services = await self.client.get_external_services()
-                if services:
-                    ice_servers = self.client.format_ice_servers(services)
-                    turn_server, turn_username, turn_password = self._extract_turn_server(ice_servers)
-                    if turn_server and self.logger:
-                        self.logger.debug(f"Using TURN server from XEP-0215: {turn_server}")
-                elif self.logger:
-                    self.logger.debug("Server does not support XEP-0215, will use Jami TURN")
-            except Exception as e:
-                if self.logger:
-                    self.logger.warning(f"Failed to query XEP-0215: {e}, will use Jami TURN")
-
-            # Load audio device and processing settings
-            mic_device, speakers_device, audio_proc = self._load_audio_settings()
-
-            # Load video device settings (pass session_id to check incoming call media)
-            camera_device = self._load_video_settings(session_id)
-
-            # Check if offer has BUNDLE and is trickle-only (for deferred answer creation)
-            session_info = self.jingle_adapter.get_session_info(session_id)
-            offer_details = session_info.get('offer_details', {}) if session_info else {}
-            offer_has_bundle = offer_details.get('bundle_group') is not None
-            # is_trickle_only_peer detected but not used yet (for future Option E implementation)
-            # is_trickle_only_peer = session_info.get('is_trickle_only_peer', False) if session_info else False
-
-            # Create CallBridge session (incoming call)
-            # Candidates were already added to Pion before this callback
-            success = await self.call_bridge.create_session(
-                self.jingle_adapter.sessions[session_id]['peer_jid'],
-                session_id,
-                mic_device,
-                speakers_device,
-                camera_device,
-                proxy_host=self.proxy_host or "",
-                proxy_port=self.proxy_port or 0,
-                proxy_username=self.proxy_username or "",
-                proxy_password=self.proxy_password or "",
-                proxy_type=self.proxy_type or "",
-                turn_server=turn_server,
-                turn_username=turn_username,
-                turn_password=turn_password,
-                echo_cancel=audio_proc['echo_cancel'],
-                echo_suppression_level=audio_proc['echo_suppression_level'],
-                noise_suppression=audio_proc['noise_suppression'],
-                noise_suppression_level=audio_proc['noise_suppression_level'],
-                gain_control=audio_proc['gain_control'],
-                offer_has_bundle=offer_has_bundle
-            )
-            if not success:
-                raise RuntimeError("Failed to create CallBridge session")
-
-            # Create SDP answer via CallBridge (also sets remote SDP)
-            # Now Pion already has remote candidates, so ICE checking will start properly
-            sdp_answer = await self.call_bridge.create_answer(session_id, sdp_offer, offer_has_bundle)
-
-            # Send Jingle session-accept via JingleAdapter
-            await self.jingle_adapter.send_answer(session_id, sdp_answer)
-
-            if self.logger:
-                self.logger.debug(f"Sent Jingle session-accept for {session_id} (deferred)")
-
-            # Remove from accepted_calls set
-            self.accepted_calls.discard(session_id)
-
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"Failed to complete deferred call acceptance: {e}")
-                import traceback
-                self.logger.error(traceback.format_exc())
-            await self.call_bridge.end_session(session_id)
-            self.accepted_calls.discard(session_id)
+            self.logger.debug(f"[TRICKLE-ICE] Candidates ready for {session_id} (no action needed - session already exists)")
 
     # ============================================================================
     # Legacy Jingle Callbacks (kept for reference)
@@ -1271,31 +1188,29 @@ class CallBarrel:
             if self.logger:
                 self.logger.error(f"Failed to send proceed: {e}")
 
-        # Get stored SDP offer (set by _on_jingle_incoming_call when session-initiate arrives)
-        sdp_offer = self.pending_call_offers.get(session_id)
-        if not sdp_offer:
-            # For XEP-0353, SDP comes in session-initiate AFTER proceed
-            # Will be completed when session-initiate arrives
+        # Check if session-initiate already arrived (answer already created)
+        if session_id in self.pending_answers:
+            # Answer SDP already created in _on_jingle_incoming_call (Dino pattern)
             if self.logger:
-                self.logger.debug(f"Waiting for session-initiate for {session_id}")
-            return
-
-        try:
-            # Create SDP answer via CallBridge
-            sdp_answer = await self.call_bridge.create_answer(session_id, sdp_offer)
-
-            # Send Jingle session-accept via JingleAdapter
-            await self.jingle_adapter.send_answer(session_id, sdp_answer)
-
+                self.logger.info(f"Sending pre-created answer for {session_id}")
+            try:
+                # Send the pre-created answer via Jingle session-accept
+                await self.jingle_adapter.send_answer(session_id, self.pending_answers[session_id])
+                if self.logger:
+                    self.logger.info(f"Sent session-accept for {session_id}")
+                self.pending_answers.pop(session_id, None)
+                self.accepted_calls.discard(session_id)
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"Failed to send session-accept: {e}")
+                    import traceback
+                    self.logger.error(traceback.format_exc())
+                await self.call_bridge.end_session(session_id)
+        else:
+            # For XEP-0353, session-initiate comes AFTER proceed
+            # Will be completed when _on_jingle_incoming_call is called
             if self.logger:
-                self.logger.info(f"Sent Jingle session-accept for {session_id}")
-
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"Failed to accept call: {e}")
-                import traceback
-                self.logger.error(traceback.format_exc())
-            await self.call_bridge.end_session(session_id)
+                self.logger.debug(f"Waiting for session-initiate to arrive for {session_id}")
 
     async def hangup_call(self, session_id: str):
         """

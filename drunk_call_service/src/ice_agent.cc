@@ -51,12 +51,15 @@ bool IceAgent::Initialize() {
     return false;
   }
 
-  // Configure agent
+  // Configure agent (following Dino's pattern - see module.vala:23-24)
   g_object_set(agent_, "ice-tcp", FALSE, NULL);  // UDP only
+  nice_agent_set_software(agent_, "DrunkCallService");  // Like Dino's "Dino" - helps with STUN debugging
 
-  // Connect signals
+  // Connect signals (following Dino's pattern - see transport_parameters.vala:91-95)
   g_signal_connect(agent_, "candidate-gathering-done",
                    G_CALLBACK(OnCandidateGatheringDone), this);
+  g_signal_connect(agent_, "initial-binding-request-received",
+                   G_CALLBACK(OnInitialBindingRequestReceived), this);
   g_signal_connect(agent_, "new-candidate-full",
                    G_CALLBACK(OnNewCandidateFull), this);
   g_signal_connect(agent_, "component-state-changed",
@@ -398,103 +401,161 @@ std::string IceAgent::GetComponentState(int component_id) const {
 // Static signal handlers
 
 void IceAgent::OnCandidateGatheringDone(NiceAgent* agent, guint stream_id, gpointer user_data) {
-  auto* self = static_cast<IceAgent*>(user_data);
-  LOG_INFO("Candidate gathering done for stream {}", stream_id);
+  try {
+    auto* self = static_cast<IceAgent*>(user_data);
+    LOG_INFO("Candidate gathering done for stream {}", stream_id);
 
-  std::lock_guard<std::mutex> lock(self->callback_mutex_);
-  if (self->on_gathering_done_) {
-    self->on_gathering_done_();
+    std::lock_guard<std::mutex> lock(self->callback_mutex_);
+    if (self->on_gathering_done_) {
+      self->on_gathering_done_();
+    }
+  } catch (const std::exception& e) {
+    LOG_ERROR("Exception in OnCandidateGatheringDone: {}", e.what());
+  } catch (...) {
+    LOG_ERROR("Unknown exception in OnCandidateGatheringDone");
+  }
+}
+
+void IceAgent::OnInitialBindingRequestReceived(NiceAgent* agent, guint stream_id, gpointer user_data) {
+  try {
+    auto* self = static_cast<IceAgent*>(user_data);
+    if (stream_id != self->stream_id_) {
+      return;
+    }
+    // Following Dino's pattern (transport_parameters.vala:285-288)
+    // Dino just logs this - it indicates the first STUN binding request from peer was received
+    LOG_INFO("Initial STUN binding request received for stream {} (connectivity checks starting)", stream_id);
+  } catch (const std::exception& e) {
+    LOG_ERROR("Exception in OnInitialBindingRequestReceived: {}", e.what());
+  } catch (...) {
+    LOG_ERROR("Unknown exception in OnInitialBindingRequestReceived");
   }
 }
 
 void IceAgent::OnNewCandidateFull(NiceAgent* agent, NiceCandidate* candidate, gpointer user_data) {
-  auto* self = static_cast<IceAgent*>(user_data);
+  try {
+    auto* self = static_cast<IceAgent*>(user_data);
 
-  std::string candidate_str = self->NiceCandidateToString(candidate);
-  LOG_DEBUG("New candidate: component={}, type={}, {}",
-            candidate->component_id,
-            nice_candidate_type_to_string(candidate->type),
-            candidate_str);
+    std::string candidate_str = self->NiceCandidateToString(candidate);
+    LOG_DEBUG("New candidate: component={}, type={}, {}",
+              candidate->component_id,
+              nice_candidate_type_to_string(candidate->type),
+              candidate_str);
 
-  // Filter candidates based on relay-only policy
-  if (self->relay_only_ && candidate->type != NICE_CANDIDATE_TYPE_RELAYED) {
-    LOG_DEBUG("Filtering non-relay candidate (relay-only mode)");
-    return;
-  }
+    // Filter candidates based on relay-only policy
+    if (self->relay_only_ && candidate->type != NICE_CANDIDATE_TYPE_RELAYED) {
+      LOG_DEBUG("Filtering non-relay candidate (relay-only mode)");
+      return;
+    }
 
-  std::lock_guard<std::mutex> lock(self->callback_mutex_);
-  if (self->on_candidate_) {
-    // CRITICAL: In 2-component ICE (RTP + RTCP), BOTH components belong to the SAME m-line!
-    // Component 1 = RTP, Component 2 = RTCP, but both use mline_index=0 for audio
-    // Component ID is used by libnice internally, NOT for SDP m-line mapping
-    // See Dino: All candidates for same stream go to same m-line
-    self->on_candidate_(candidate->component_id, candidate_str,
-                        "audio", 0);  // Always mline=0 for audio (single media line)
+    std::lock_guard<std::mutex> lock(self->callback_mutex_);
+    if (self->on_candidate_) {
+      // CRITICAL: In 2-component ICE (RTP + RTCP), BOTH components belong to the SAME m-line!
+      // Component 1 = RTP, Component 2 = RTCP, but both use mline_index=0 for audio
+      // Component ID is used by libnice internally, NOT for SDP m-line mapping
+      // Following GStreamer webrtcbin pattern (gstwebrtcbin.c:6858-6859):
+      //   IceAgent emits mlineindex, Session maps to mid
+      // See Dino: All candidates for same stream go to same m-line
+      self->on_candidate_(candidate->component_id, candidate_str, 0);  // mline_index=0 for single audio line
+    }
+  } catch (const std::exception& e) {
+    LOG_ERROR("Exception in OnNewCandidateFull: {}", e.what());
+  } catch (...) {
+    LOG_ERROR("Unknown exception in OnNewCandidateFull");
   }
 }
 
 void IceAgent::OnComponentStateChanged(NiceAgent* agent, guint stream_id,
                                         guint component_id, guint state, gpointer user_data) {
-  auto* self = static_cast<IceAgent*>(user_data);
-  NiceComponentState nice_state = static_cast<NiceComponentState>(state);
-  std::string state_str = self->ComponentStateToString(nice_state);
+  try {
+    auto* self = static_cast<IceAgent*>(user_data);
+    NiceComponentState nice_state = static_cast<NiceComponentState>(state);
+    std::string state_str = self->ComponentStateToString(nice_state);
 
-  LOG_INFO("Component {} state changed: {}", component_id, state_str);
+    LOG_INFO("Component {} state changed: {}", component_id, state_str);
 
-  // Update internal state
-  {
-    std::lock_guard<std::mutex> lock(self->state_mutex_);
-    self->component_states_[component_id] = nice_state;
-  }
+    // Update internal state
+    {
+      std::lock_guard<std::mutex> lock(self->state_mutex_);
+      self->component_states_[component_id] = nice_state;
+    }
 
-  // Notify callback
-  std::lock_guard<std::mutex> lock(self->callback_mutex_);
-  if (self->on_component_state_) {
-    self->on_component_state_(component_id, state_str);
+    // Notify callback
+    std::lock_guard<std::mutex> lock(self->callback_mutex_);
+    if (self->on_component_state_) {
+      self->on_component_state_(component_id, state_str);
+    }
+  } catch (const std::exception& e) {
+    LOG_ERROR("Exception in OnComponentStateChanged: {}", e.what());
+  } catch (...) {
+    LOG_ERROR("Unknown exception in OnComponentStateChanged");
   }
 }
 
 void IceAgent::OnNewSelectedPairFull(NiceAgent* agent, guint stream_id, guint component_id,
                                       NiceCandidate* local, NiceCandidate* remote, gpointer user_data) {
-  auto* self = static_cast<IceAgent*>(user_data);
+  try {
+    auto* self = static_cast<IceAgent*>(user_data);
 
-  std::string local_str = self->NiceCandidateToString(local);
-  std::string remote_str = self->NiceCandidateToString(remote);
+    std::string local_str = self->NiceCandidateToString(local);
+    std::string remote_str = self->NiceCandidateToString(remote);
 
-  LOG_INFO("Selected candidate pair for component {}: local={}, remote={}",
-           component_id, local_str, remote_str);
+    LOG_INFO("Selected candidate pair for component {}: local={}, remote={}",
+             component_id, local_str, remote_str);
+  } catch (const std::exception& e) {
+    LOG_ERROR("Exception in OnNewSelectedPairFull: {}", e.what());
+  } catch (...) {
+    LOG_ERROR("Unknown exception in OnNewSelectedPairFull");
+  }
 }
 
 void IceAgent::OnRecv(NiceAgent* agent, guint stream_id, guint component_id,
                       guint len, gchar* buf, gpointer user_data) {
-  auto* self = static_cast<IceAgent*>(user_data);
+  try {
+    auto* self = static_cast<IceAgent*>(user_data);
 
-  LOG_DEBUG("Received {} bytes on component {}", len, component_id);
+    LOG_DEBUG("Received {} bytes on component {}", len, component_id);
 
-  std::lock_guard<std::mutex> lock(self->callback_mutex_);
-  if (self->on_data_received_) {
-    self->on_data_received_(component_id, reinterpret_cast<uint8_t*>(buf), len);
+    std::lock_guard<std::mutex> lock(self->callback_mutex_);
+    if (self->on_data_received_) {
+      self->on_data_received_(component_id, reinterpret_cast<uint8_t*>(buf), len);
+    }
+  } catch (const std::exception& e) {
+    LOG_ERROR("Exception in OnRecv: {}", e.what());
+  } catch (...) {
+    LOG_ERROR("Unknown exception in OnRecv");
   }
 }
 
 // Thread function
 
 void IceAgent::IceThreadFunc() {
-  LOG_INFO("ICE thread started");
+  try {
+    LOG_INFO("ICE thread started");
 
-  // Push thread context as default
-  g_main_context_push_thread_default(thread_context_);
+    // Push thread context as default
+    g_main_context_push_thread_default(thread_context_);
 
-  // Create main loop
-  thread_loop_ = g_main_loop_new(thread_context_, FALSE);
+    // Create main loop
+    thread_loop_ = g_main_loop_new(thread_context_, FALSE);
 
-  // Run loop until quit
-  g_main_loop_run(thread_loop_);
+    // Run loop until quit
+    g_main_loop_run(thread_loop_);
 
-  // Cleanup
-  g_main_context_pop_thread_default(thread_context_);
+    // Cleanup
+    g_main_context_pop_thread_default(thread_context_);
 
-  LOG_INFO("ICE thread stopped");
+    LOG_INFO("ICE thread stopped");
+  } catch (const std::exception& e) {
+    LOG_ERROR("FATAL: Exception in ICE thread: {}", e.what());
+    LOG_ERROR("ICE thread crashed - this will terminate the service!");
+    // Let exception propagate to terminate cleanly with error message
+    throw;
+  } catch (...) {
+    LOG_ERROR("FATAL: Unknown exception in ICE thread!");
+    LOG_ERROR("ICE thread crashed - this will terminate the service!");
+    throw;
+  }
 }
 
 // Helper methods
@@ -503,6 +564,12 @@ std::string IceAgent::NiceCandidateToString(NiceCandidate* candidate) {
   gchar* sdp = nice_agent_generate_local_candidate_sdp(agent_, candidate);
   std::string result(sdp);
   g_free(sdp);
+
+  // Remove "a=" prefix if present (Python expects "candidate:..." not "a=candidate:...")
+  if (result.find("a=") == 0) {
+    result = result.substr(2);  // Skip "a="
+  }
+
   return result;
 }
 

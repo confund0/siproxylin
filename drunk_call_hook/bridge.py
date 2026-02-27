@@ -87,7 +87,7 @@ class GoCallService:
             env = os.environ.copy()
             env['GST_DEBUG'] = 'webrtcbin:5'
             env['G_MESSAGES_DEBUG'] = 'all'  # Enable all glib debug logging
-            env['NICE_DEBUG'] = 'all'  # Enable libnice debug: nice,stun,pseudotcp,all
+            env['NICE_DEBUG'] = '1'  # Enable libnice debug: nice,stun,pseudotcp,all
 
             self._process = subprocess.Popen(
                 [binary_path, "-log-level", "DEBUG", "-log-path", str(go_log_file)],

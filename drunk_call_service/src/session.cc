@@ -90,9 +90,13 @@ bool Session::Initialize() {
   ice_agent_->SetTransportPolicy(config_.relay_only);
 
   // 6. Wire IceAgent callbacks to event queue (NEW)
+  // Following GStreamer webrtcbin pattern: IceAgent doesn't know about mid,
+  // Session captures local_mid_ in the lambda when candidates arrive
+  // Reference: gst-plugins-bad/ext/webrtc/gstwebrtcbin.c:6858-6859
   ice_agent_->SetOnCandidateCallback(
-    [this](int comp_id, const std::string& cand, const std::string& mid, int mline_idx) {
-      this->OnIceCandidate(comp_id, cand, mid, mline_idx);
+    [this](int comp_id, const std::string& cand, int mline_idx) {
+      // Use the mid we set in CreateOffer/CreateAnswer
+      this->OnIceCandidate(comp_id, cand, local_mid_, mline_idx);
     }
   );
   ice_agent_->SetOnComponentStateCallback(
@@ -193,20 +197,18 @@ std::string Session::CreateOffer() {
     return "";
   }
 
-  // 1. Set pipeline to PLAYING (SAME)
+  // 1. Set pipeline to PLAYING (Dino pattern: non-blocking!)
+  // Reference: Dino plugin.vala:122 and pause/unpause:29-43
+  // GStreamer webrtcbin: Doesn't manage state at all (application's job)
+  // CRITICAL: Do NOT block with gst_element_get_state() - state transition is async!
   GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
   if (ret == GST_STATE_CHANGE_FAILURE) {
     LOG_ERROR("Failed to set pipeline to PLAYING state");
     return "";
   }
 
-  ret = gst_element_get_state(pipeline_, NULL, NULL, 5 * GST_SECOND);
-  if (ret == GST_STATE_CHANGE_FAILURE) {
-    LOG_ERROR("Pipeline failed to reach PLAYING state");
-    return "";
-  }
-
-  LOG_INFO("Pipeline is now in PLAYING state");
+  // Pipeline will transition to PLAYING asynchronously - don't wait!
+  LOG_INFO("Pipeline state change to PLAYING initiated (async)");
 
   // 2. Set ICE controlling mode (OFFER = controlling)
   // CRITICAL (Dino pattern): This MUST be BEFORE AddStream()
@@ -253,7 +255,13 @@ std::string Session::CreateOffer() {
   auto [ufrag, pwd] = ice_agent_->GetLocalCredentials();
   LOG_INFO("Local ICE credentials: ufrag={}, pwd_len={}", ufrag, pwd.length());
 
-  // 4. Construct SDP manually (STUB - needs proper negotiation)
+  // 5. Set our local mid for this session (used when emitting candidates)
+  // Following Dino pattern: we use "audio" as mid for offers
+  // Reference: Dino plugins/ice/transport_parameters.vala + Jingle content creation
+  local_mid_ = "audio";
+  LOG_DEBUG("Set local mid: {}", local_mid_);
+
+  // 6. Construct SDP manually (STUB - needs proper negotiation)
   // TODO: Implement proper SDP negotiation:
   //   - Parse offer's m= line to extract protocol (UDP/TLS/RTP/SAVPF vs UDP/TLS/RTP/SAVP)
   //   - Parse offered codecs and generate intersection (answer must be subset of offer)
@@ -302,7 +310,10 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
     return "";
   }
 
-  // 1. Set pipeline to PLAYING FIRST (SAME - critical!)
+  // 1. Set pipeline to PLAYING FIRST (Dino pattern: non-blocking!)
+  // Reference: Dino plugin.vala:122 and pause/unpause:29-43
+  // GStreamer webrtcbin: Doesn't manage state at all (application's job)
+  // CRITICAL: Do NOT block with gst_element_get_state() - state transition is async!
   GstState current_state;
   gst_element_get_state(pipeline_, &current_state, NULL, 0);
 
@@ -318,16 +329,9 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
       return "";
     }
 
-    LOG_DEBUG("CreateAnswer: Waiting for pipeline to reach PLAYING state (5s timeout)...");
-    ret = gst_element_get_state(pipeline_, NULL, NULL, 5 * GST_SECOND);
-    LOG_DEBUG("CreateAnswer: gst_element_get_state returned: {}", ret);
-
-    if (ret == GST_STATE_CHANGE_FAILURE) {
-      LOG_ERROR("Pipeline failed to reach PLAYING state");
-      return "";
-    }
-
-    LOG_INFO("Pipeline is now in PLAYING state");
+    // Pipeline will transition to PLAYING asynchronously - don't wait!
+    // Dino does NOT block here (plugin.vala:40 just sets state and returns)
+    LOG_INFO("Pipeline state change to PLAYING initiated (async)");
   } else {
     LOG_DEBUG("CreateAnswer: Pipeline already in PLAYING state, skipping state change");
   }
@@ -355,6 +359,10 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
     LOG_ERROR("Failed to add ICE stream");
     return "";
   }
+
+  // 4a. Drain any remote candidates that arrived before stream was created
+  // This handles the race condition where transport-info arrives before CreateAnswer
+  DrainRemoteCandidateQueue();
 
   // 5. Configure STUN/TURN (Dino pattern: AFTER AddStream, BEFORE gather_candidates)
   if (!config_.turn_server.empty()) {
@@ -430,6 +438,11 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
   // Use extracted values with fallbacks
   std::string answer_mid = mid.value_or("audio");
   std::string answer_protocol = protocol.value_or("UDP/TLS/RTP/SAVPF");
+
+  // 12. Set our local mid for this session (used when emitting candidates)
+  // CRITICAL: Use the SAME mid as in the offer - this is what peer expects!
+  // Reference: GStreamer webrtcbin answer negotiation + Dino transport_parameters.vala
+  local_mid_ = answer_mid;
 
   LOG_INFO("Extracted from offer: mid={}, protocol={}, codec_count={}",
            answer_mid, answer_protocol, offered_codecs.size());
@@ -591,6 +604,24 @@ bool Session::AddICECandidate(const std::string& candidate,
   if (!initialized_ || !ice_agent_) {
     LOG_ERROR("Cannot add ICE candidate: session not initialized");
     return false;
+  }
+
+  // Check if ICE stream has been created yet
+  // Stream is created in CreateAnswer() after SetControllingMode()
+  if (ice_agent_->stream_id() == 0) {
+    // Stream not created yet - queue the candidate
+    std::lock_guard<std::mutex> lock(remote_candidate_queue_mutex_);
+
+    QueuedRemoteCandidate queued;
+    queued.candidate = candidate;
+    queued.sdp_mid = sdp_mid;
+    queued.sdp_mline_index = sdp_mline_index;
+
+    remote_candidate_queue_.push_back(queued);
+
+    LOG_INFO("ICE stream not created yet, queued remote candidate (queue_size={})",
+             remote_candidate_queue_.size());
+    return true;
   }
 
   // Note: component_id is parsed from the candidate string itself by libnice
@@ -1185,6 +1216,33 @@ void Session::FlushCandidateBuffer() {
 
   // Clear the buffer
   candidate_buffer_.clear();
+}
+
+void Session::DrainRemoteCandidateQueue() {
+  std::lock_guard<std::mutex> lock(remote_candidate_queue_mutex_);
+
+  if (remote_candidate_queue_.empty()) {
+    LOG_DEBUG("No queued remote candidates to drain");
+    return;
+  }
+
+  LOG_INFO("Draining {} queued remote candidates (after ICE stream creation)",
+           remote_candidate_queue_.size());
+
+  // Add all queued candidates to IceAgent
+  for (const auto& queued : remote_candidate_queue_) {
+    int component_id = 0;  // Parsed from candidate string by libnice
+
+    if (!ice_agent_->AddRemoteCandidate(component_id, queued.candidate,
+                                        queued.sdp_mid, queued.sdp_mline_index)) {
+      LOG_WARN("Failed to add queued remote candidate: {}", queued.candidate);
+    } else {
+      LOG_DEBUG("Added queued remote candidate: {}", queued.candidate);
+    }
+  }
+
+  // Clear the queue
+  remote_candidate_queue_.clear();
 }
 
 void Session::OnComponentStateChanged(int component_id, const std::string& state) {

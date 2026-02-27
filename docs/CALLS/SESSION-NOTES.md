@@ -9,44 +9,72 @@
 ## Current Work: Phase 2 - rtpbin Implementation
 
 **Branch:** `calls-rtpbin`
-**Focus:** Fix ICE connectivity, add video support
+**Status:** ✅ ICE/DTLS working with Dino (both directions)
+**Focus:** Audio verification, video support
 **Strategy:** Copy Dino's architecture exactly
+
+---
+
+## Dino Source Code Reference
+
+**Local Copy:** `/home/m/claude/siproxylin/drunk_call_service/tmp/dino`
+
+**Key Files to Reference:**
+- `plugins/ice/src/transport_parameters.vala` - ICE agent initialization (lines 98-150)
+- `plugins/ice/src/dtls_srtp.vala` - DTLS-SRTP handler
+- `plugins/rtp/src/stream.vala` - rtpbin pipeline setup
+- `crypto-vala/src/srtp.vala` - libsrtp2 wrapper
+
+**Quick Navigation:**
+```bash
+cd /home/m/claude/siproxylin/drunk_call_service/tmp/dino
+grep -n "add_stream" plugins/ice/src/transport_parameters.vala
+```
 
 ---
 
 ## Known Issues & Fixes
 
-### Issue 1: ICE Connectivity Timeouts ⚠️
+### Issue 1: Remote Candidate Queueing ✅ **[FIXED 2026-02-27]**
 
-**Symptom:** Both components reach CONNECTING state but FAIL after 7-8 seconds
+**Symptom:** Candidates arriving before ICE stream creation were rejected
 
-**Evidence:**
+**Root Cause:**
+- Python sends remote candidates via `AddICECandidate()` from Jingle transport-info
+- In incoming calls, candidates arrive BEFORE `CreateAnswer()` creates the ICE stream
+- C++ session exists but `stream_id_ == 0` → "Agent or stream not initialized"
+- Candidates were silently dropped → ICE failure
+
+**The Fix:**
+Queue candidates when stream doesn't exist, drain after stream creation:
+
+```cpp
+// In AddICECandidate():
+if (ice_agent_->stream_id() == 0) {
+  remote_candidate_queue_.push_back(queued);
+  return true;  // Queue for later
+}
+
+// In CreateAnswer() after AddStream():
+DrainRemoteCandidateQueue();  // Add queued candidates now
 ```
-Component 1: NEW → CONNECTING → checking → FAILED (7s)
-Component 2: NEW → CONNECTING → checking → FAILED (7s)
-```
 
-**What Works:**
-- ✅ Candidates parse correctly (4/4 candidates)
-- ✅ Remote candidates added successfully
-- ✅ ICE gathering completes
-- ✅ Components reach CONNECTING state
+**Files Changed:**
+- `drunk_call_service/include/session.h:193-201` - Queue structures
+- `drunk_call_service/src/session.cc:607-620` - Queue logic
+- `drunk_call_service/src/session.cc:1217-1242` - Drain implementation
+- `drunk_call_service/src/session.cc:363-365` - Call drain
 
-**What Doesn't Work:**
-- ❌ Connectivity checks timeout
-- ❌ No component reaches READY/COMPLETED state
+**Result:**
+- ✅ Incoming calls from Dino: 44+ seconds stable
+- ✅ Outgoing calls to Dino: 91+ seconds stable
+- ✅ Both components reach CONNECTED → READY
+- ✅ DTLS handshake completes
+- ✅ No crashes, clean shutdown
 
-**Possible Causes:**
-1. Test duration too short (user hanging up < 10s)
-2. TURN relay timing (needs more time to establish)
-3. Missing connectivity check configuration
-4. Dino does something different in ICE agent setup
-
-**Next Steps:**
-1. Read Dino's `plugins/ice/transport_parameters.vala:98-150`
-2. Compare ICE agent initialization line-by-line
-3. Test with 20+ second call duration
-4. Enable libnice debug logs: `NICE_DEBUG=all`
+**Test Sessions:**
+- Incoming: `f850362c-3c94-4009-b561-97b7ff497f3a`
+- Outgoing: `71513754-6a1e-4942-953b-218f32419d40`
 
 ### Issue 2: Candidate Parsing (FIXED ✅)
 
@@ -300,10 +328,12 @@ drunk_call_service/
 ```
 
 ### Dino Reference Files
+**Location:** `/home/m/claude/siproxylin/drunk_call_service/tmp/dino`
+
 ```
-dino/
+tmp/dino/
 ├── plugins/ice/src/
-│   ├── transport_parameters.vala  # ICE agent creation
+│   ├── transport_parameters.vala  # ICE agent creation (lines 98-150)
 │   └── dtls_srtp.vala             # DTLS-SRTP handler
 ├── plugins/rtp/src/
 │   └── stream.vala                # rtpbin pipeline
@@ -311,38 +341,32 @@ dino/
     └── srtp.vala                  # libsrtp2 wrapper
 ```
 
-**Download Dino:**
-```bash
-cd /tmp
-git clone https://github.com/dino/dino.git
-```
-
 ---
 
 ## Next Session TODO
 
-1. **Download Dino source** (if not already)
-   ```bash
-   cd /tmp && git clone https://github.com/dino/dino.git
-   ```
+1. **Verify Audio Flow** (PRIORITY)
+   - Make call with Dino, verify bidirectional audio
+   - Check GetStats for bytes_sent/bytes_received > 0
+   - Monitor RTP packet flow
 
-2. **Compare ICE initialization** with Dino
-   - Read: `dino/plugins/ice/src/transport_parameters.vala:98-150`
-   - Compare: `drunk_call_service/src/ice_agent.cc:AddStream()`
-   - Look for: Timing, configuration, callback wiring differences
+2. **Long Duration Testing**
+   - 5+ minute calls
+   - Memory usage monitoring
+   - Service stability
 
-3. **Test with extended call duration**
-   - Make call, wait 30+ seconds
-   - Check if ICE eventually succeeds (just slow, not broken)
-
-4. **Add missing pieces** from Dino
-   - Copy any initialization steps we're missing
-   - Add connectivity check configuration if needed
-
-5. **Once ICE works: Add video support**
+3. **Add Video Support**
    - Camera capture pipeline
-   - UDP streaming to Python/Qt
+   - Multiple video codecs
    - Test with Dino video calls
+
+4. **Heartbeat Monitor** (copy from Go service)
+   - Prevent orphan processes
+   - 10s timeout without heartbeat
+
+5. **Performance Optimization**
+   - Reduce logging verbosity for production
+   - Profile critical paths
 
 ---
 

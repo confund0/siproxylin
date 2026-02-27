@@ -143,10 +143,13 @@ class Session {
 
   // Flush buffered candidates to event queue
   void FlushCandidateBuffer();
+
+  // Drain queued remote candidates (candidates that arrived before ICE stream creation)
+  void DrainRemoteCandidateQueue();
   Config config_;
   bool initialized_ = false;
   bool muted_ = false;
-  bool rtcp_mux_ = true;  // RTCP-mux mode (use Component 1 for RTCP)
+  bool rtcp_mux_ = false;  // NO rtcp-mux (2 components: RTP=1, RTCP=2 for Conversations.im)
 
   // GStreamer components
   GstElement* pipeline_;
@@ -175,6 +178,9 @@ class Session {
   std::mutex event_mutex_;
   std::condition_variable event_cv_;
 
+  // SDP negotiation state
+  std::string local_mid_;  // The mid attribute for our media (set in CreateOffer/CreateAnswer)
+
   // Candidate buffering (like Go Pion and webrtcbin implementations)
   // Buffer candidates until CreateOffer/CreateAnswer completes
   struct BufferedCandidate {
@@ -186,6 +192,16 @@ class Session {
   std::vector<BufferedCandidate> candidate_buffer_;
   bool buffer_candidates_ = true;  // Buffer until session setup completes
   std::mutex candidate_buffer_mutex_;
+
+  // Remote candidate queue (for candidates arriving before ICE stream creation)
+  // Separate from local candidate buffer above
+  struct QueuedRemoteCandidate {
+    std::string candidate;
+    std::string sdp_mid;
+    int32_t sdp_mline_index;
+  };
+  std::vector<QueuedRemoteCandidate> remote_candidate_queue_;
+  std::mutex remote_candidate_queue_mutex_;
 
   // Negotiation signal synchronization
   bool negotiation_needed_ = false;

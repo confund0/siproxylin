@@ -56,9 +56,11 @@ class IceAgent {
   bool Send(int component_id, const uint8_t* data, size_t len);
 
   // Callbacks
+  // Following GStreamer webrtcbin pattern: IceAgent only knows about mlineindex (session_id),
+  // Session layer handles mid mapping
+  // Reference: gst-plugins-bad/ext/webrtc/gstwebrtcbin.c:6869-6876
   using CandidateCallback = std::function<void(int component_id,
                                                 const std::string& candidate,
-                                                const std::string& sdp_mid,
                                                 int sdp_mline_index)>;
   using ComponentStateCallback = std::function<void(int component_id,
                                                      const std::string& state)>;
@@ -79,6 +81,7 @@ class IceAgent {
  private:
   // libnice signal handlers (must be static)
   static void OnCandidateGatheringDone(NiceAgent* agent, guint stream_id, gpointer user_data);
+  static void OnInitialBindingRequestReceived(NiceAgent* agent, guint stream_id, gpointer user_data);
   static void OnNewCandidateFull(NiceAgent* agent, NiceCandidate* candidate, gpointer user_data);
   static void OnComponentStateChanged(NiceAgent* agent, guint stream_id,
                                       guint component_id, guint state, gpointer user_data);
