@@ -935,9 +935,11 @@ GstFlowReturn Session::OnAppsinkNewSample(GstAppSink* appsink, gpointer user_dat
 
   if (g_str_has_prefix(name, "send_rtp_appsink")) {
     // This is outgoing RTP data from rtpbin → send via ICE Component 1
+    LOG_DEBUG("📤 Sending {} bytes of RTP from rtpbin to network", map.size);
     session->SendRtpData(map.data, map.size);
   } else if (g_str_has_prefix(name, "send_rtcp_appsink")) {
     // This is outgoing RTCP data from rtpbin → send via ICE Component 1 or 2
+    LOG_DEBUG("📤 Sending {} bytes of RTCP from rtpbin to network", map.size);
     session->SendRtcpData(map.data, map.size);
   } else {
     LOG_WARN("Unknown appsink: {}", name);
@@ -1015,8 +1017,18 @@ bool Session::SetupAppsinkAppsrc() {
     return false;
   }
 
-  // Configure appsrc
-  g_object_set(recv_rtp_appsrc_, "format", GST_FORMAT_TIME, NULL);
+  // Configure appsrc with RTP caps for Opus
+  // CRITICAL: rtpbin needs to know the codec/payload to create depayloader pads
+  // These caps must match what's negotiated in SDP (PT=111 for Opus is standard)
+  GstCaps* rtp_caps = gst_caps_new_simple("application/x-rtp",
+      "media", G_TYPE_STRING, "audio",
+      "clock-rate", G_TYPE_INT, 48000,
+      "encoding-name", G_TYPE_STRING, "OPUS",
+      "payload", G_TYPE_INT, 111,
+      NULL);
+  g_object_set(recv_rtp_appsrc_, "caps", rtp_caps, "format", GST_FORMAT_TIME, NULL);
+  gst_caps_unref(rtp_caps);
+  LOG_INFO("Set RTP caps on recv_rtp_appsrc: application/x-rtp,encoding-name=OPUS,payload=111");
 
   // Create appsrc for incoming RTCP
   recv_rtcp_appsrc_ = gst_element_factory_make("appsrc", "recv_rtcp_appsrc");
@@ -1368,7 +1380,7 @@ void Session::SendRtcpData(const uint8_t* data, size_t len) {
 }
 
 void Session::PushRtpData(const uint8_t* data, size_t len) {
-  LOG_DEBUG("Pushing {} bytes of RTP to rtpbin", len);
+  LOG_DEBUG("📥 Received {} bytes of RTP from network, pushing to rtpbin", len);
 
   // Create GstBuffer
   GstBuffer* buffer = gst_buffer_new_allocate(NULL, len, NULL);
@@ -1385,7 +1397,7 @@ void Session::PushRtpData(const uint8_t* data, size_t len) {
 }
 
 void Session::PushRtcpData(const uint8_t* data, size_t len) {
-  LOG_DEBUG("Pushing {} bytes of RTCP to rtpbin", len);
+  LOG_DEBUG("📥 Received {} bytes of RTCP from network, pushing to rtpbin", len);
 
   // Create GstBuffer
   GstBuffer* buffer = gst_buffer_new_allocate(NULL, len, NULL);

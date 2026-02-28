@@ -5,6 +5,9 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <thread>
+#include <chrono>
+#include <atomic>
 
 #include "call.grpc.pb.h"
 #include "session.h"
@@ -79,9 +82,16 @@ class CallServer final : public call::CallService::Service {
   void RequestShutdown();
   bool IsShutdownRequested() const;
 
+  // Heartbeat monitoring
+  void StartHeartbeatMonitor();
+  void StopHeartbeatMonitor();
+
  private:
   // Get session by ID (thread-safe)
   std::shared_ptr<Session> GetSession(const std::string& session_id);
+
+  // Heartbeat monitor thread function
+  void MonitorHeartbeat();
 
   // Session storage
   std::unordered_map<std::string, std::shared_ptr<Session>> sessions_;
@@ -94,6 +104,13 @@ class CallServer final : public call::CallService::Service {
 
   // Shutdown flag
   std::atomic<bool> shutdown_requested_{false};
+
+  // Heartbeat monitoring (following Go service pattern)
+  // Exits process if no heartbeat for 10s (Python likely crashed)
+  std::chrono::steady_clock::time_point last_heartbeat_;
+  mutable std::mutex heartbeat_mutex_;
+  std::thread heartbeat_monitor_thread_;
+  std::atomic<bool> monitor_running_{false};
 };
 
 }  // namespace drunk_call

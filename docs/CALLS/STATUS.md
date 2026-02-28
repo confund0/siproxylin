@@ -69,29 +69,48 @@
 
 ---
 
-## Next Steps
+## Next Steps (Priority Order)
 
-### Immediate Testing Needed
+### CRITICAL Priority
 
-1. **Audio Flow Verification**
-   - Can you hear audio from Dino?
-   - Can Dino hear audio from you?
-   - Check RTP packet flow in GetStats
+1. **Heartbeat Monitor** ⚠️ URGENT
+   - Copy pattern from Go service (drunk_call_service_go/server.go:515-535)
+   - Terminate C++ if no heartbeat for 10s (Python died)
+   - Prevents orphan processes blocking port 50051
+   - Files: drunk_call_service/src/call_server.cc, main.cc
 
-2. **Long Duration Test**
-   - 5+ minute call
-   - Verify service stability
-   - Check memory usage
+2. **Audio Flow** ⚠️ CRITICAL
+   - No audio on either end (sound devices not wired)
+   - Wire GStreamer audio pipeline to actual devices
+   - Test bidirectional audio with Dino
+   - Files: drunk_call_service/src/session.cc (pipeline setup)
 
-3. **Multiple Sequential Calls**
-   - Test cleanup between calls
-   - Verify no resource leaks
+### HIGH Priority
+
+3. **Call Stats Display**
+   - Call window has stats stub (not working)
+   - Check calls-webrtcbin branch for working implementation
+   - Port stats polling to rtpbin implementation
+   - Files: siproxylin/ui/call_window.py, bridge.py
+
+4. **DSP Parameters**
+   - File→Settings has echo/noise cancel controls
+   - Already wired to gRPC CreateSession
+   - Need to apply to GStreamer pipeline (webrtcprocessingbin)
+   - Files: drunk_call_service/src/session.cc (pipeline)
+
+### MEDIUM Priority
+
+5. **Mute Button**
+   - Check if working in call window
+   - Test with rtpbin implementation
+   - Files: siproxylin/ui/call_window.py
 
 ### Future Work
 
-1. **Video Support** (after audio verified)
-2. **Heartbeat Monitor** (copy from Go service - prevent orphan processes)
-3. **Performance Optimization** (reduce logging verbosity)
+6. **Video Support** (after audio works)
+7. **Long Duration Testing** (5+ minute calls)
+8. **Performance Optimization** (reduce logging verbosity)
 
 ---
 

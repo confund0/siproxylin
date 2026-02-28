@@ -6,12 +6,15 @@
 
 namespace drunk_call {
 
-CallServer::CallServer() {
+CallServer::CallServer()
+    : last_heartbeat_(std::chrono::steady_clock::now()) {
   LOG_INFO("CallServer created");
+  StartHeartbeatMonitor();
 }
 
 CallServer::~CallServer() {
   LOG_INFO("CallServer destroyed");
+  StopHeartbeatMonitor();
 }
 
 std::shared_ptr<Session> CallServer::GetSession(const std::string& session_id) {
@@ -30,6 +33,12 @@ std::shared_ptr<Session> CallServer::GetSession(const std::string& session_id) {
 grpc::Status CallServer::Heartbeat(grpc::ServerContext* context,
                                     const call::Empty* request,
                                     call::Empty* response) {
+  // Update last heartbeat timestamp (following Go service pattern)
+  {
+    std::lock_guard<std::mutex> lock(heartbeat_mutex_);
+    last_heartbeat_ = std::chrono::steady_clock::now();
+  }
+
   LOG_DEBUG("Heartbeat received");
   return grpc::Status::OK;
 }
@@ -48,6 +57,68 @@ void CallServer::RequestShutdown() {
 
 bool CallServer::IsShutdownRequested() const {
   return shutdown_requested_.load();
+}
+
+// ============================================================================
+// Heartbeat Monitoring (following Go service pattern)
+// ============================================================================
+
+void CallServer::StartHeartbeatMonitor() {
+  monitor_running_.store(true);
+  heartbeat_monitor_thread_ = std::thread(&CallServer::MonitorHeartbeat, this);
+  LOG_INFO("Heartbeat monitor started (10s timeout)");
+}
+
+void CallServer::StopHeartbeatMonitor() {
+  monitor_running_.store(false);
+  if (heartbeat_monitor_thread_.joinable()) {
+    heartbeat_monitor_thread_.join();
+  }
+  LOG_INFO("Heartbeat monitor stopped");
+}
+
+void CallServer::MonitorHeartbeat() {
+  // Following Go service pattern: drunk_call_service_go/server.go:515-535
+  // Check every 2 seconds, exit if no heartbeat for 10 seconds
+
+  while (monitor_running_.load()) {
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+
+    if (!monitor_running_.load()) {
+      break;
+    }
+
+    std::chrono::duration<double> elapsed;
+    {
+      std::lock_guard<std::mutex> lock(heartbeat_mutex_);
+      elapsed = std::chrono::steady_clock::now() - last_heartbeat_;
+    }
+
+    if (elapsed > std::chrono::seconds(10)) {
+      LOG_ERROR("No heartbeat for {} seconds, Python likely crashed - exiting",
+                static_cast<int>(elapsed.count()));
+
+      // Close all sessions gracefully
+      {
+        std::lock_guard<std::mutex> lock(sessions_mutex_);
+        for (auto& pair : sessions_) {
+          LOG_INFO("Closing session {} due to heartbeat timeout", pair.first);
+          // Session destructor will clean up
+        }
+        sessions_.clear();
+      }
+
+      // Exit process (Python is dead, we're orphaned)
+      std::exit(1);
+    }
+
+    if (elapsed > std::chrono::seconds(7)) {
+      LOG_WARN("No heartbeat for {} seconds, Python may have crashed",
+               static_cast<int>(elapsed.count()));
+    }
+  }
+
+  LOG_DEBUG("Heartbeat monitor thread exiting");
 }
 
 // ============================================================================
