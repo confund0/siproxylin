@@ -34,7 +34,7 @@ venv/bin/python main.py
 
 ### AppImage builds
 
-**Download:** [Latest AppImage](https://github.com/yourusername/siproxylin/releases/latest) (tested on: Debian 12-13, Arch)
+**Download:** [Latest AppImage](https://github.com/confund0/siproxylin/releases/latest) (tested on: Debian 12-13, Arch)
 
 **Run:**
 ```bash

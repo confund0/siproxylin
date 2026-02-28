@@ -165,8 +165,17 @@ class DialogManager:
                 break
 
         dialog = SettingsDialog(self.main_window, call_bridge=call_bridge)
+
+        # Refresh Tools menu when settings are saved (admin_tools_enabled might have changed)
+        dialog.accepted.connect(self._on_settings_saved)
+
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.show()
+
+    def _on_settings_saved(self):
+        """Handle settings dialog accepted - refresh dynamic menus."""
+        logger.debug("Settings saved, refreshing Tools menu")
+        self.main_window.menu_manager.populate_tools_menu()
 
     def show_about_dialog(self):
         """Show about dialog."""

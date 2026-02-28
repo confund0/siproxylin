@@ -1137,6 +1137,22 @@ class MainWindow(QMainWindow):
         logger.debug(f"Server Disco requested for account {account_id}")
         asyncio.create_task(self._disco_account_async(account_id))
 
+    def _on_disco_tool(self):
+        """Handle Tools -> Disco menu action - show dialog to query any JID."""
+        from .dialogs.disco_query_dialog import DiscoQueryDialog
+
+        logger.debug("Disco tool requested from menu")
+
+        # Create and show the query dialog (modal but non-blocking with .show())
+        dialog = DiscoQueryDialog(parent=self)
+
+        # Connect the dialog's signal to the existing disco handler
+        dialog.disco_query_requested.connect(
+            lambda account_id, jid: asyncio.create_task(self._disco_contact_async(account_id, jid))
+        )
+
+        dialog.show()
+
     async def _disco_contact_async(self, account_id: int, jid: str):
         """Async handler for contact disco query."""
         from .dialogs.disco_info_dialog import DiscoInfoDialog

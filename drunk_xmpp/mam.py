@@ -29,8 +29,9 @@ class MAMMixin:
         jid: str,
         start: Optional[datetime] = None,
         end: Optional[datetime] = None,
-        max_messages: int = 50,
-        with_jid: Optional[str] = None
+        max_messages: Optional[int] = None,
+        with_jid: Optional[str] = None,
+        start_id: Optional[str] = None
     ) -> List[Dict]:
         """
         Retrieve message history from server using MAM (XEP-0313).
@@ -42,8 +43,9 @@ class MAMMixin:
             jid: Room JID (for MUC history) or user JID (for 1-to-1 chat history)
             start: Optional start datetime for history range
             end: Optional end datetime for history range
-            max_messages: Maximum number of messages to retrieve (default: 50)
+            max_messages: Maximum number of messages to retrieve (None = unlimited)
             with_jid: Optional filter - only messages with this JID (for 1-to-1 archive queries)
+            start_id: Optional MAM archive ID to start after (for efficient catchup)
 
         Returns:
             List of dicts with keys:
@@ -60,7 +62,8 @@ class MAMMixin:
         """
         from datetime import datetime as dt_class
 
-        self.logger.info(f"Retrieving MAM history from {jid} (max: {max_messages})")
+        max_str = str(max_messages) if max_messages else "unlimited"
+        self.logger.info(f"Retrieving MAM history from {jid} (max: {max_str})")
 
         # Determine if this is a MUC room or 1-to-1 chat
         is_muc = jid in self.rooms
@@ -70,17 +73,21 @@ class MAMMixin:
         history = []
 
         try:
+            # Build RSM parameters
+            rsm_params = {'max': 300}  # Page size: 300 messages per request (good for desktop)
+            if start_id:
+                rsm_params['after'] = start_id  # Start after this archive ID (efficient catchup)
+
             # Use iterate() for automatic pagination
             # rsm={'max': N} sets page size (server returns up to N messages per page)
-            # total=M sets total message limit across all pages
-            # Using larger page size (300) to reduce round trips to server
+            # total=M sets total message limit across all pages (None = unlimited)
             async for result_msg in xep_0313.iterate(
                 jid=query_jid,
                 start=start,
                 end=end,
                 with_jid=JID(with_jid) if with_jid else None,
-                rsm={'max': 300},  # Page size: 300 messages per request (reduced round trips)
-                total=max_messages  # Total limit across all pages (default: 500 per conversation)
+                rsm=rsm_params,
+                total=max_messages  # Total limit (None = unlimited, no artificial cap)
             ):
                 # Extract the forwarded message from MAM result
                 # Structure: result_msg['mam_result']['forwarded']['stanza']
@@ -190,7 +197,7 @@ class MAMMixin:
                     'message': archived_msg
                 })
 
-                self.logger.debug(f"Retrieved MAM message from {from_jid}: {body[:50]}... (encrypted: {is_encrypted})")
+                self.logger.debug(f"Retrieved MAM message from {from_jid}: {body[:50] if body else '(no body)'}... (encrypted: {is_encrypted})")
 
             self.logger.info(f"Retrieved {len(history)} messages from MAM archive")
             return history

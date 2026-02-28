@@ -425,13 +425,13 @@ class MucBarrel:
                 if self.logger:
                     self.logger.error(f"Failed to retrieve MAM for {room_jid}: {e}")
 
-    async def _retrieve_muc_history(self, room_jid: str, max_messages: int = 500):
+    async def _retrieve_muc_history(self, room_jid: str, max_messages: Optional[int] = None):
         """
         Retrieve MAM history for a MUC room and store in database.
 
         Args:
             room_jid: Room JID
-            max_messages: Maximum number of messages to retrieve
+            max_messages: Maximum number of messages to retrieve (None = unlimited)
         """
         if not self.client:
             return
@@ -448,7 +448,7 @@ class MucBarrel:
                 return
 
             # Get most recent message timestamp from DB to avoid re-downloading old messages
-            # Use 1-hour overlap for safety (handles clock skew, delayed messages with old timestamps, etc.)
+            # Use 5-minute overlap for minimal duplication (handles clock skew without excessive re-fetching)
             start_time = None
             latest_msg = self.db.fetchone("""
                 SELECT MAX(time) as latest_time
@@ -457,14 +457,15 @@ class MucBarrel:
             """, (room_jid,))
 
             if latest_msg and latest_msg['latest_time']:
-                # Start from 1 hour before latest message for safe overlap
+                # Start from 5 minutes before latest message for minimal overlap
                 # IMPORTANT: Must use UTC timezone for MAM compliance (XEP-0313)
-                start_time = datetime.fromtimestamp(latest_msg['latest_time'] - 3600, tz=timezone.utc)
+                start_time = datetime.fromtimestamp(latest_msg['latest_time'] - 300, tz=timezone.utc)  # 5 min (was 1h)
                 if self.logger:
-                    self.logger.debug(f"Querying MAM since {start_time} (1h overlap from latest msg)")
+                    self.logger.debug(f"Querying MAM since {start_time} (5min overlap from latest msg)")
             else:
+                max_str = str(max_messages) if max_messages else "all available"
                 if self.logger:
-                    self.logger.debug(f"No existing messages, querying last {max_messages} from MAM")
+                    self.logger.debug(f"No existing messages, querying {max_str} messages from MAM")
 
             # Retrieve history from MAM (only NEW messages if start_time is set)
             history = await self.client.retrieve_history(
@@ -515,6 +516,11 @@ class MucBarrel:
                 # Combine both sets
                 existing_stanza_ids = {row['stanza_id'] for row in existing_msgs} | {row['stanza_id'] for row in existing_files}
 
+            # Early duplicate detection - stop if we hit 10 consecutive duplicates
+            # This means we've caught up to already-synced range
+            consecutive_duplicates = 0
+            MAX_CONSECUTIVE_DUPLICATES = 10
+
             # Store messages in database
             inserted_count = 0
             for msg_data in history:
@@ -554,9 +560,14 @@ class MucBarrel:
 
                 # Check if message already exists (using pre-loaded set)
                 if archive_id and archive_id in existing_stanza_ids:
-                    if self.logger:
-                        self.logger.debug(f"MAM message already exists (archive_id={archive_id}), skipping duplicate")
+                    consecutive_duplicates += 1
+                    if consecutive_duplicates >= MAX_CONSECUTIVE_DUPLICATES:
+                        if self.logger:
+                            self.logger.info(f"Hit {MAX_CONSECUTIVE_DUPLICATES} consecutive duplicates for {room_jid}, stopping early (already synced)")
+                        break  # Stop early - we've caught up
                     continue
+                else:
+                    consecutive_duplicates = 0  # Reset on new message
 
                 # Fallback: Check by timestamp+body if no archive_id
                 if not archive_id:

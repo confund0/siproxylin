@@ -24,7 +24,7 @@ class Database:
     Handles schema initialization, migrations, and query execution.
     """
 
-    SCHEMA_VERSION = 14  # Current schema version
+    SCHEMA_VERSION = 16  # Current schema version (v16 = MAM catchup tracking)
 
     def __init__(self, db_path: Optional[Path] = None):
         """
@@ -225,6 +225,9 @@ class Database:
             else:
                 logger.info(f"Database schema up to date (v{current_version})")
 
+        # Run maintenance tasks after initialization/migrations
+        self.run_maintenance()
+
     def _tables_exist(self) -> bool:
         """Check if database tables exist."""
         result = self.fetchone(
@@ -303,6 +306,51 @@ class Database:
         self.commit()
 
         logger.info(f"Database migrated to v{to_version}")
+
+    def run_maintenance(self):
+        """
+        Run database maintenance tasks on app startup.
+
+        Tasks:
+        - Clean up old recent_emojis (keep only 10 most recent unique)
+        - Future: VACUUM, cleanup old messages, etc.
+        """
+        try:
+            # Clean up recent_emojis table - keep only 10 most recent unique
+            self._cleanup_recent_emojis()
+
+            logger.debug("Database maintenance completed")
+        except Exception as e:
+            logger.error(f"Database maintenance failed: {e}", exc_info=True)
+
+    def _cleanup_recent_emojis(self):
+        """Delete emojis older than the 10 most recent unique ones."""
+        try:
+            # Check if table exists
+            table_exists = self.fetchone(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='recent_emojis'"
+            )
+            if not table_exists:
+                return
+
+            # Delete all except the 10 most recent (by used_at timestamp)
+            cursor = self.execute("""
+                DELETE FROM recent_emojis
+                WHERE id NOT IN (
+                    SELECT id FROM recent_emojis
+                    ORDER BY used_at DESC
+                    LIMIT 10
+                )
+            """)
+
+            deleted_count = cursor.rowcount
+            if deleted_count > 0:
+                logger.info(f"Cleaned up {deleted_count} old emoji(s) from recent_emojis")
+
+            self.commit()
+
+        except Exception as e:
+            logger.warning(f"Failed to cleanup recent_emojis: {e}")
 
     # =========================================================================
     # Helper Methods

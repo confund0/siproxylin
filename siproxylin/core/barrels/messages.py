@@ -830,7 +830,7 @@ class MessageBarrel:
                 import traceback
                 self.logger.error(traceback.format_exc())
 
-    async def catchup_private_chats(self, max_messages_per_chat: int = 500):
+    async def catchup_private_chats(self, max_messages_per_chat: Optional[int] = None):
         """
         Catch up on missed private chat messages via MAM (XEP-0313).
         Called on session start to retrieve messages sent while offline.
@@ -839,7 +839,7 @@ class MessageBarrel:
         MAM returns raw archived messages, not live messages, so we INSERT directly.
 
         Args:
-            max_messages_per_chat: Maximum messages to retrieve per contact (default: 500)
+            max_messages_per_chat: Maximum messages to retrieve per contact (None = unlimited)
         """
         if not self.client:
             return
@@ -892,7 +892,7 @@ class MessageBarrel:
                 import traceback
                 self.logger.error(traceback.format_exc())
 
-    async def _retrieve_private_chat_history(self, contact_jid: str, jid_id: int, latest_time: int, max_messages: int):
+    async def _retrieve_private_chat_history(self, contact_jid: str, jid_id: int, latest_time: int, max_messages: Optional[int]):
         """
         Retrieve MAM history for a specific private chat and store in database.
         Follows same pattern as MUC._retrieve_muc_history().
@@ -901,15 +901,16 @@ class MessageBarrel:
             contact_jid: Contact's bare JID
             jid_id: JID ID from database
             latest_time: Unix timestamp of latest message in DB
-            max_messages: Maximum number of messages to retrieve
+            max_messages: Maximum number of messages to retrieve (None = unlimited)
         """
         from datetime import datetime, timezone
 
-        # Start from 1 hour before latest message for safe overlap (same as MUC)
-        start_time = datetime.fromtimestamp(latest_time - 3600, tz=timezone.utc)
+        # Start from 5 minutes before latest message for minimal overlap
+        # This handles clock skew and edge cases without excessive duplicate fetching
+        start_time = datetime.fromtimestamp(latest_time - 300, tz=timezone.utc)  # 5 min (was 1h)
 
         if self.logger:
-            self.logger.debug(f"Querying MAM for {contact_jid} since {start_time} (1h overlap)")
+            self.logger.debug(f"Querying MAM for {contact_jid} since {start_time} (5min overlap)")
 
         # Retrieve history from MAM
         history = await self.client.retrieve_history(
@@ -952,6 +953,11 @@ class MessageBarrel:
         # Get our JID for direction detection
         our_jid = self.client.boundjid.bare if self.client else None
 
+        # Early duplicate detection - stop if we hit 10 consecutive duplicates
+        # This means we've caught up to already-synced range
+        consecutive_duplicates = 0
+        MAX_CONSECUTIVE_DUPLICATES = 10
+
         # Store messages
         inserted_count = 0
         for msg_data in history:
@@ -975,9 +981,14 @@ class MessageBarrel:
 
             # Skip duplicates
             if archive_id and archive_id in existing_stanza_ids:
-                if self.logger:
-                    self.logger.debug(f"MAM message already exists (archive_id={archive_id}), skipping duplicate")
+                consecutive_duplicates += 1
+                if consecutive_duplicates >= MAX_CONSECUTIVE_DUPLICATES:
+                    if self.logger:
+                        self.logger.info(f"Hit {MAX_CONSECUTIVE_DUPLICATES} consecutive duplicates for {contact_jid}, stopping early (already synced)")
+                    break  # Stop early - we've caught up
                 continue
+            else:
+                consecutive_duplicates = 0  # Reset on new message
 
             # Determine direction and carbon flag
             # Messages from our JID in MAM are carbons (sent from another device)

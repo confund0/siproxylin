@@ -41,6 +41,7 @@ class MenuManager:
         # Menu references (will be set during creation)
         self.edit_menu = None
         self.view_menu = None
+        self.tools_menu = None
         self.theme_actions = {}  # {theme_name: QAction}
         self.roster_mode_actions = {}  # {mode_name: QAction}
 
@@ -118,6 +119,12 @@ class MenuManager:
         manage_contacts_action.setShortcut("Ctrl+Shift+C")
         manage_contacts_action.triggered.connect(self.main_window._on_manage_contacts)
         contacts_menu.addAction(manage_contacts_action)
+
+        # =====================================================================
+        # Tools Menu (Admin Tools)
+        # =====================================================================
+        self.tools_menu = menubar.addMenu("&Tools")
+        self.populate_tools_menu()
 
         # =====================================================================
         # Help Menu
@@ -311,6 +318,29 @@ class MenuManager:
                 accounts_log_menu.addAction(app_log_action)
 
         logger.debug(f"View menu populated with {len(accounts)} accounts")
+
+    def populate_tools_menu(self):
+        """Populate Tools menu with admin tools."""
+        self.tools_menu.clear()
+
+        # Check if Admin Tools is enabled
+        admin_tools_enabled = self.db.get_setting('admin_tools_enabled', default='false')
+
+        if admin_tools_enabled.lower() in ('true', '1', 'yes'):
+            # Tools -> Disco (Service Discovery)
+            disco_action = QAction("&Disco (Service Discovery)...", self.main_window)
+            disco_action.setToolTip("Query XMPP Service Discovery information for any JID")
+            disco_action.triggered.connect(self.main_window._on_disco_tool)
+            self.tools_menu.addAction(disco_action)
+
+            logger.debug("Tools menu populated with admin tools")
+        else:
+            # Show message when admin tools are disabled
+            no_tools_action = QAction("(Enable Admin Tools in Settings → Advanced)", self.main_window)
+            no_tools_action.setEnabled(False)
+            self.tools_menu.addAction(no_tools_action)
+
+            logger.debug("Tools menu populated (admin tools disabled)")
 
     # =========================================================================
     # Font Size Actions

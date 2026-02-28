@@ -466,6 +466,10 @@ class XMPPAccount(QObject):
             self.app_logger.info("XMPP session resumed (XEP-0198) - reconnected")
         # Room state and OMEMO are preserved, no need to rejoin
 
+        # IMPORTANT: Catch up on messages sent while connection was down
+        # Session resume means stream was temporarily interrupted - we may have missed messages
+        await self.messages.catchup_private_chats()
+
     async def _on_session_start(self, event):
         """Handle successful XMPP session start."""
         self.connected = True

@@ -4,7 +4,31 @@ All notable changes to Siproxylin are documented in this file.
 
 ---
 
+## [0.0.20 - High-Proof-Moonshine] - 2026-02-28
+
+> (795b2bfabc)
+
+    Improvements to emoji picker
+
+> (1986bcb9a3)
+
+    Adding Tools->Disco for admins to query on arbitrary JIDs
+
+> (3a8052fd65)
+
+    Merge pull request #1 from weiss/fix/app-image-url
+    
+    README.md: Fix link to latest AppImage
+
+> (e59baa9209)
+
+    README.md: Fix link to latest AppImage
+
 ## [0.0.19 - High-Proof-Moonshine] - 2026-02-24
+
+> (6855a245ea)
+
+    Added feature to quickly query "disco"
 
 > (d0ea28bb83)
 

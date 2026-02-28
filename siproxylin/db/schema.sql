@@ -1,6 +1,6 @@
 -- DRUNK-XMPP-GUI Database Schema
 -- Inspired by Dino's architecture with adaptations for ROADMAP-v1.txt requirements
--- Schema Version: 14
+-- Schema Version: 16
 
 -- =============================================================================
 -- Meta and Settings
@@ -14,7 +14,7 @@ CREATE TABLE _meta (
 );
 
 -- Initialize schema version
-INSERT INTO _meta (name, int_val) VALUES ('schema_version', 14);
+INSERT INTO _meta (name, int_val) VALUES ('schema_version', 16);
 
 -- Global application settings
 CREATE TABLE settings (
@@ -511,20 +511,24 @@ CREATE INDEX omemo_device_trust_idx ON omemo_device (account_id, trust_level);
 -- =============================================================================
 
 -- MAM synchronization state tracking
+-- MAM (Message Archive Management) catchup state tracking
+-- Tracks continuous ranges of messages that have been successfully retrieved from MAM
+-- Simplified single-range approach: one row per account+server_jid combination
 CREATE TABLE mam_catchup (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
     account_id INTEGER NOT NULL,
-    server_jid TEXT NOT NULL,           -- Archive JID (server or MUC)
-    from_end INTEGER NOT NULL,          -- Sync from end (1) or from point (0)
-    from_id TEXT NOT NULL,
-    from_time INTEGER NOT NULL,
-    to_id TEXT NOT NULL,
-    to_time INTEGER NOT NULL,
-    completed INTEGER NOT NULL DEFAULT 0,
+    server_jid TEXT NOT NULL,           -- Account bare JID for 1-1 chats, room JID for MUCs
+    from_time INTEGER NOT NULL,         -- Oldest message timestamp in synced range (Unix time)
+    from_id TEXT,                       -- Oldest message MAM archive ID
+    to_time INTEGER NOT NULL,           -- Newest message timestamp in synced range (Unix time)
+    to_id TEXT,                         -- Newest message MAM archive ID
+    from_end INTEGER DEFAULT 0,         -- Boolean: 1 if server has no older messages
+    last_updated INTEGER,               -- Timestamp when this range was last extended
+    PRIMARY KEY (account_id, server_jid),
     FOREIGN KEY (account_id) REFERENCES account(id) ON DELETE CASCADE
 );
 
-CREATE INDEX mam_catchup_account_server_idx ON mam_catchup (account_id, server_jid);
+-- Index for efficient queries by account
+CREATE INDEX mam_catchup_account_idx ON mam_catchup(account_id);
 
 -- =============================================================================
 -- Service Discovery Cache
