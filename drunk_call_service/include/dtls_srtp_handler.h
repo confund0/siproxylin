@@ -47,6 +47,10 @@ public:
     using SendDataCallback = std::function<void(const uint8_t*, size_t)>;
     void SetSendDataCallback(SendDataCallback callback) { send_data_callback_ = callback; }
 
+    // Callback when DTLS handshake completes and SRTP is ready
+    using OnReadyCallback = std::function<void()>;
+    void SetOnReadyCallback(OnReadyCallback callback) { on_ready_callback_ = callback; }
+
     // DTLS handshake (async, call after ICE connected)
     bool StartHandshake();
     void StopHandshake();
@@ -85,8 +89,9 @@ private:
     // SRTP session (created after handshake)
     std::unique_ptr<SrtpSession> srtp_session_;
 
-    // Callback
+    // Callbacks
     SendDataCallback send_data_callback_;
+    OnReadyCallback on_ready_callback_;
 
     // Handshake thread
     std::thread handshake_thread_;

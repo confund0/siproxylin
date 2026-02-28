@@ -266,6 +266,11 @@ void DtlsSrtpHandler::HandshakeThread() {
 
     ready_ = true;
     LOG_INFO("DTLS handshake complete, SRTP ready");
+
+    // Notify Session that DTLS is ready (triggers CONNECTION_STATE = connected)
+    if (on_ready_callback_) {
+        on_ready_callback_();
+    }
 }
 
 bool DtlsSrtpHandler::DoHandshake() {

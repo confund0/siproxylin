@@ -137,6 +137,12 @@ bool Session::Initialize() {
     }
   });
 
+  // Wire DTLS ready callback (but DON'T emit connected yet!)
+  // Following Dino pattern: only emit "connected" after we receive first RTP packet
+  dtls_srtp_->SetOnReadyCallback([this]() {
+    LOG_INFO("DTLS handshake complete, waiting for first RTP packet before emitting connected");
+  });
+
   // 10. Create audio pipeline (SAME as before, but link to rtpbin)
   if (!SetupAudioPipeline()) {
     LOG_ERROR("Failed to setup audio pipeline");
@@ -1019,16 +1025,16 @@ bool Session::SetupAppsinkAppsrc() {
 
   // Configure appsrc with RTP caps for Opus
   // CRITICAL: rtpbin needs to know the codec/payload to create depayloader pads
-  // These caps must match what's negotiated in SDP (PT=111 for Opus is standard)
+  // These caps must match what's negotiated in SDP (PT=96 for our Opus config)
   GstCaps* rtp_caps = gst_caps_new_simple("application/x-rtp",
       "media", G_TYPE_STRING, "audio",
       "clock-rate", G_TYPE_INT, 48000,
       "encoding-name", G_TYPE_STRING, "OPUS",
-      "payload", G_TYPE_INT, 111,
+      "payload", G_TYPE_INT, 96,
       NULL);
   g_object_set(recv_rtp_appsrc_, "caps", rtp_caps, "format", GST_FORMAT_TIME, NULL);
   gst_caps_unref(rtp_caps);
-  LOG_INFO("Set RTP caps on recv_rtp_appsrc: application/x-rtp,encoding-name=OPUS,payload=111");
+  LOG_INFO("Set RTP caps on recv_rtp_appsrc: application/x-rtp,encoding-name=OPUS,payload=96");
 
   // Create appsrc for incoming RTCP
   recv_rtcp_appsrc_ = gst_element_factory_make("appsrc", "recv_rtcp_appsrc");
@@ -1091,7 +1097,8 @@ bool Session::SetupAudioPipeline() {
   LOG_INFO("Setting up audio pipeline");
 
   // Create audio source (SAME logic as before)
-  if (!config_.microphone_device.empty()) {
+  // Use autoaudiosrc if device is empty or "default"
+  if (!config_.microphone_device.empty() && config_.microphone_device != "default") {
     audio_src_ = gst_element_factory_make("pulsesrc", "audiosrc");
     g_object_set(audio_src_, "device", config_.microphone_device.c_str(), NULL);
     LOG_INFO("Using selected microphone: {}", config_.microphone_device);
@@ -1105,6 +1112,10 @@ bool Session::SetupAudioPipeline() {
     return false;
   }
 
+  // Set do-timestamp on audio source (critical for rtpbin timing)
+  g_object_set(audio_src_, "do-timestamp", TRUE, NULL);
+  LOG_INFO("Set do-timestamp=true on audio source");
+
   // Create rest of pipeline (SAME)
   GstElement* audioconvert = gst_element_factory_make("audioconvert", "audioconv");
   GstElement* audioresample = gst_element_factory_make("audioresample", "audioresample");
@@ -1115,6 +1126,10 @@ bool Session::SetupAudioPipeline() {
     LOG_ERROR("Failed to create audio pipeline elements");
     return false;
   }
+
+  // Set payload type to 96 (must match what we advertise in SDP)
+  g_object_set(rtpopuspay, "pt", 96, NULL);
+  LOG_INFO("Set rtpopuspay payload type to 96");
 
   // Add to pipeline
   gst_bin_add_many(GST_BIN(pipeline_), audio_src_, audioconvert,
@@ -1278,11 +1293,9 @@ void Session::OnComponentStateChanged(int component_id, const std::string& state
 
   PushEvent(event);
 
-  // Also push CONNECTION_STATE_CHANGE
-  Event conn_event;
-  conn_event.type = Event::CONNECTION_STATE_CHANGE;
-  conn_event.data = event.data;
-  PushEvent(conn_event);
+  // NOTE: Do NOT emit CONNECTION_STATE_CHANGE here!
+  // We only emit CONNECTION_STATE = "connected" AFTER DTLS handshake completes
+  // (see dtls_srtp_->SetOnReadyCallback() in Initialize())
 
   // Start DTLS handshake when Component 1 is ready (Phase 3)
   if (component_id == 1 && (state == "READY" || state == "CONNECTED") &&
@@ -1306,6 +1319,17 @@ void Session::OnIceDataReceived(int component_id, const uint8_t* data, size_t le
   if (decrypted.empty()) {
     // Either DTLS packet (handled internally) or error
     return;
+  }
+
+  // Dino pattern: emit "connected" after receiving first RTP packet
+  // (must have both: DTLS ready AND first data received)
+  if (!connection_state_emitted_ && dtls_srtp_->IsReady()) {
+    LOG_INFO("First data received after DTLS ready, emitting CONNECTION_STATE = connected");
+    Event event;
+    event.type = Event::CONNECTION_STATE_CHANGE;
+    event.data = "connected";
+    PushEvent(event);
+    connection_state_emitted_ = true;
   }
 
   // Push decrypted RTP/RTCP to rtpbin

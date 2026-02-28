@@ -181,6 +181,9 @@ class Session {
   // SDP negotiation state
   std::string local_mid_;  // The mid attribute for our media (set in CreateOffer/CreateAnswer)
 
+  // Connection state tracking (Dino pattern: only connected after receiving first RTP)
+  bool connection_state_emitted_ = false;
+
   // Candidate buffering (like Go Pion and webrtcbin implementations)
   // Buffer candidates until CreateOffer/CreateAnswer completes
   struct BufferedCandidate {
