@@ -100,6 +100,11 @@ class CallServiceStub(object):
                 request_serializer=call__pb2.SetMuteRequest.SerializeToString,
                 response_deserializer=call__pb2.Empty.FromString,
                 _registered_method=True)
+        self.UpdateSdesRemoteKey = channel.unary_unary(
+                '/call.CallService/UpdateSdesRemoteKey',
+                request_serializer=call__pb2.UpdateSdesRemoteKeyRequest.SerializeToString,
+                response_deserializer=call__pb2.Empty.FromString,
+                _registered_method=True)
 
 
 class CallServiceServicer(object):
@@ -197,6 +202,13 @@ class CallServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def UpdateSdesRemoteKey(self, request, context):
+        """Update SDES remote key after receiving session-accept (for initiator)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_CallServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -263,6 +275,11 @@ def add_CallServiceServicer_to_server(servicer, server):
             'SetMute': grpc.unary_unary_rpc_method_handler(
                     servicer.SetMute,
                     request_deserializer=call__pb2.SetMuteRequest.FromString,
+                    response_serializer=call__pb2.Empty.SerializeToString,
+            ),
+            'UpdateSdesRemoteKey': grpc.unary_unary_rpc_method_handler(
+                    servicer.UpdateSdesRemoteKey,
+                    request_deserializer=call__pb2.UpdateSdesRemoteKeyRequest.FromString,
                     response_serializer=call__pb2.Empty.SerializeToString,
             ),
     }
@@ -617,6 +634,33 @@ class CallService(object):
             target,
             '/call.CallService/SetMute',
             call__pb2.SetMuteRequest.SerializeToString,
+            call__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UpdateSdesRemoteKey(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/call.CallService/UpdateSdesRemoteKey',
+            call__pb2.UpdateSdesRemoteKeyRequest.SerializeToString,
             call__pb2.Empty.FromString,
             options,
             channel_credentials,

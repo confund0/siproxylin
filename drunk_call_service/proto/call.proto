@@ -44,6 +44,9 @@ service CallService {
 
   // Set microphone mute state for a session
   rpc SetMute(SetMuteRequest) returns (Empty);
+
+  // Update SDES remote key after receiving session-accept (for initiator)
+  rpc UpdateSdesRemoteKey(UpdateSdesRemoteKeyRequest) returns (Empty);
 }
 
 // Request/Response messages
@@ -84,6 +87,12 @@ message CreateSessionRequest {
 
   // Trickle-only peer detection (Conversations.im sends 0 candidates in SDP)
   bool is_trickle_only_peer = 21;  // If true, enable dual-component ICE (for legacy Jingle compatibility)
+
+  // SDES-SRTP encryption (XEP-0167, used by Dino for immediate encryption before DTLS completes)
+  // These are Base64-encoded key material from <crypto> element in Jingle SDP
+  string sdes_local_key_params = 22;   // Our SDES key (format: "inline:BASE64"), sent in session-accept
+  string sdes_remote_key_params = 23;  // Remote SDES key (format: "inline:BASE64"), received in session-initiate
+  string sdes_crypto_suite = 24;       // Crypto suite (e.g., "AES_CM_128_HMAC_SHA1_80")
 }
 
 message CreateSessionResponse {
@@ -197,6 +206,12 @@ message ListAudioDevicesResponse {
 message SetMuteRequest {
   string session_id = 1;
   bool muted = 2;  // true = mute microphone, false = unmute
+}
+
+message UpdateSdesRemoteKeyRequest {
+  string session_id = 1;
+  string sdes_remote_key_params = 2;  // Remote SDES key (format: "inline:BASE64")
+  string sdes_crypto_suite = 3;       // Crypto suite (e.g., "AES_CM_128_HMAC_SHA1_80")
 }
 
 // Video device enumeration messages

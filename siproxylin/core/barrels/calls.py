@@ -554,6 +554,24 @@ class CallBarrel:
             else:
                 camera_device = ''
 
+            # Generate SDES keys BEFORE creating C++ session (Dino's approach)
+            # We need the keys to pass to create_session
+            from drunk_call_hook.protocol.jingle import JingleAdapter
+            local_sdes = {}
+            for media_type in media:
+                local_crypto = JingleAdapter.generate_sdes_crypto()
+                local_sdes[media_type] = local_crypto
+                if self.logger:
+                    self.logger.info(f"Generated SDES keys for outgoing call, media={media_type}")
+
+            # Extract SDES key params for C++ service
+            sdes_local_key_params = ""
+            sdes_remote_key_params = ""  # Will be filled from session-accept
+            sdes_crypto_suite = ""
+            if 'audio' in local_sdes:
+                sdes_local_key_params = local_sdes['audio']['key-params']
+                sdes_crypto_suite = local_sdes['audio']['crypto-suite']
+
             # Create CallBridge session (WebRTC peer connection)
             await self.call_bridge.create_session(
                 peer_jid, session_id, mic_device, speakers_device, camera_device,
@@ -569,14 +587,18 @@ class CallBarrel:
                 echo_suppression_level=audio_proc['echo_suppression_level'],
                 noise_suppression=audio_proc['noise_suppression'],
                 noise_suppression_level=audio_proc['noise_suppression_level'],
-                gain_control=audio_proc['gain_control']
+                gain_control=audio_proc['gain_control'],
+                sdes_local_key_params=sdes_local_key_params,
+                sdes_remote_key_params=sdes_remote_key_params,
+                sdes_crypto_suite=sdes_crypto_suite
             )
 
             # Generate SDP offer from CallBridge
             sdp_offer = await self.call_bridge.create_offer(session_id)
 
-            # Create outgoing session in JingleAdapter (encapsulated API)
-            self.jingle_adapter.create_outgoing_session(session_id, peer_jid, sdp_offer, media)
+            # Create outgoing session in JingleAdapter, passing the SAME SDES keys we gave to C++
+            # CRITICAL: Must use same keys or Dino will get authentication failures!
+            self.jingle_adapter.create_outgoing_session(session_id, peer_jid, sdp_offer, media, local_sdes=local_sdes)
 
             # Clean up stored media (no longer needed)
             if hasattr(self, 'outgoing_call_media') and session_id in self.outgoing_call_media:
@@ -667,6 +689,21 @@ class CallBarrel:
             offer_details = session_info.get('offer_details', {}) if session_info else {}
             offer_has_bundle = offer_details.get('bundle_group') is not None
 
+            # Get SDES keys (Dino's approach: use SDES for immediate encryption before DTLS)
+            sdes_local_key_params = ""
+            sdes_remote_key_params = ""
+            sdes_crypto_suite = ""
+            if session_info:
+                sdes_local = session_info.get('sdes_local', {})
+                sdes_remote = session_info.get('sdes_remote', {})
+                # For audio-only calls, we just need the 'audio' media type keys
+                if 'audio' in sdes_local and 'audio' in sdes_remote:
+                    sdes_local_key_params = sdes_local['audio']['key-params']
+                    sdes_remote_key_params = sdes_remote['audio']['key-params']
+                    sdes_crypto_suite = sdes_local['audio']['crypto-suite']
+                    if self.logger:
+                        self.logger.info(f"Passing SDES keys to Go service: suite={sdes_crypto_suite}")
+
             # Create CallBridge session (incoming call)
             if self.logger:
                 self.logger.info(f"Creating C++ session for incoming call {session_id} (Dino pattern: immediate)")
@@ -685,7 +722,10 @@ class CallBarrel:
                 noise_suppression=audio_proc['noise_suppression'],
                 noise_suppression_level=audio_proc['noise_suppression_level'],
                 gain_control=audio_proc['gain_control'],
-                offer_has_bundle=offer_has_bundle
+                offer_has_bundle=offer_has_bundle,
+                sdes_local_key_params=sdes_local_key_params,
+                sdes_remote_key_params=sdes_remote_key_params,
+                sdes_crypto_suite=sdes_crypto_suite
             )
             if not success:
                 raise RuntimeError("Failed to create CallBridge session")
@@ -743,6 +783,30 @@ class CallBarrel:
         """
         if self.logger:
             self.logger.debug(f"Call answered, received SDP answer (sid={session_id})")
+
+        # Update SDES remote key if peer sent it in session-accept (Dino pattern)
+        # This is CRITICAL: when we initiate, we create the C++ session with empty remote key
+        # We must update it after receiving session-accept with peer's SDES keys
+        session_info = self.jingle_adapter.sessions.get(session_id)
+        if session_info:
+            sdes_remote = session_info.get('sdes_remote', {})
+            if 'audio' in sdes_remote:
+                sdes_remote_key_params = sdes_remote['audio']['key-params']
+                sdes_crypto_suite = sdes_remote['audio']['crypto-suite']
+                if self.logger:
+                    self.logger.info(f"Updating SDES remote key from session-accept: suite={sdes_crypto_suite}")
+                try:
+                    await self.call_bridge.update_sdes_remote_key(
+                        session_id, sdes_remote_key_params, sdes_crypto_suite
+                    )
+                    if self.logger:
+                        self.logger.info(f"SDES remote key updated - can now decrypt peer audio!")
+                except Exception as e:
+                    if self.logger:
+                        self.logger.error(f"Failed to update SDES remote key: {e}")
+            else:
+                if self.logger:
+                    self.logger.debug("No SDES keys in session-accept (peer using DTLS-SRTP only)")
 
         # Set remote description in Go service (CRITICAL for ICE candidates to work)
         try:

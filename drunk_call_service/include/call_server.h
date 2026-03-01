@@ -78,6 +78,10 @@ class CallServer final : public call::CallService::Service {
                         const call::Empty* request,
                         call::Empty* response) override;
 
+  grpc::Status UpdateSdesRemoteKey(grpc::ServerContext* context,
+                                   const call::UpdateSdesRemoteKeyRequest* request,
+                                   call::Empty* response) override;
+
   // Server control
   void RequestShutdown();
   bool IsShutdownRequested() const;

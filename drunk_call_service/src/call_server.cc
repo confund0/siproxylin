@@ -155,6 +155,9 @@ grpc::Status CallServer::CreateSession(
   config.noise_suppression_level = request->noise_suppression_level();
   config.gain_control = request->gain_control();
   config.offer_has_bundle = request->offer_has_bundle();
+  config.sdes_local_key_params = request->sdes_local_key_params();
+  config.sdes_remote_key_params = request->sdes_remote_key_params();
+  config.sdes_crypto_suite = request->sdes_crypto_suite();
 
   // Create session
   auto session = std::make_shared<Session>(config);
@@ -496,6 +499,29 @@ grpc::Status CallServer::GetStats(grpc::ServerContext* context,
   }
   for (const auto& candidate : stats.remote_candidates) {
     response->add_remote_candidates(candidate);
+  }
+
+  return grpc::Status::OK;
+}
+
+grpc::Status CallServer::UpdateSdesRemoteKey(grpc::ServerContext* context,
+                                             const call::UpdateSdesRemoteKeyRequest* request,
+                                             call::Empty* response) {
+  LOG_DEBUG("UpdateSdesRemoteKey: session_id={}", request->session_id());
+
+  auto session = GetSession(request->session_id());
+  if (!session) {
+    return grpc::Status(grpc::StatusCode::NOT_FOUND, "Session not found");
+  }
+
+  try {
+    // Update the remote SDES key in the session
+    if (!session->UpdateSdesRemoteKey(request->sdes_remote_key_params(), request->sdes_crypto_suite())) {
+      return grpc::Status(grpc::StatusCode::INTERNAL, "Failed to update SDES remote key");
+    }
+  } catch (const std::exception& e) {
+    LOG_ERROR("Exception in UpdateSdesRemoteKey: {}", e.what());
+    return grpc::Status(grpc::StatusCode::INTERNAL, std::string("Exception: ") + e.what());
   }
 
   return grpc::Status::OK;

@@ -16,6 +16,7 @@
 // Internal headers
 #include "ice_agent.h"
 #include "dtls_srtp_handler.h"
+#include "srtp_session.h"
 #include "sdp_parser.h"
 
 namespace drunk_call {
@@ -52,6 +53,11 @@ class Session {
 
     // BUNDLE policy
     bool offer_has_bundle = true;
+
+    // SDES-SRTP encryption (Dino's approach: use SDES for immediate encryption)
+    std::string sdes_local_key_params;   // Our SDES key (format: "inline:BASE64")
+    std::string sdes_remote_key_params;  // Remote SDES key (format: "inline:BASE64")
+    std::string sdes_crypto_suite;       // Crypto suite (e.g., "AES_CM_128_HMAC_SHA1_80")
   };
 
   explicit Session(const Config& config);
@@ -77,6 +83,10 @@ class Session {
 
   // Control (stubbed)
   void SetMute(bool muted);
+
+  // Update SDES remote key (for initiator after receiving session-accept)
+  bool UpdateSdesRemoteKey(const std::string& sdes_remote_key_params,
+                           const std::string& sdes_crypto_suite);
 
   // Stats (stubbed)
   struct Stats {
@@ -125,6 +135,7 @@ class Session {
   void OnComponentStateChanged(int component_id, const std::string& state);
   void OnIceDataReceived(int component_id, const uint8_t* data, size_t len);
   void OnGatheringDone();
+  void OnGatheringTimeout();  // Safety timeout if gathering hangs
 
   // Helper methods
   bool SetupAudioPipeline();  // Create audio source/sink and link to rtpbin
@@ -173,6 +184,15 @@ class Session {
   // DTLS-SRTP handler (Phase 3)
   std::unique_ptr<DtlsSrtpHandler> dtls_srtp_;
 
+  // SDES-SRTP handler (Dino's approach: use SDES for immediate encryption before DTLS)
+  std::unique_ptr<SrtpSession> sdes_srtp_;
+  bool sdes_ready_ = false;
+
+  // Encryption mode selection (Dino's logic: SDES vs DTLS-SRTP)
+  // Rule: use_dtls_srtp_ = (peer_has_fingerprint || is_offerer_)
+  bool use_dtls_srtp_ = false;  // Which encryption mode to use for this session
+  bool is_offerer_ = false;      // Are we the offerer (CreateOffer) or answerer (CreateAnswer)?
+
   // Event queue for streaming
   std::queue<Event> event_queue_;
   std::mutex event_mutex_;
@@ -195,6 +215,16 @@ class Session {
   std::vector<BufferedCandidate> candidate_buffer_;
   bool buffer_candidates_ = true;  // Buffer until session setup completes
   std::mutex candidate_buffer_mutex_;
+
+  // Candidate gathering buffer (NEW - wait for gathering-done OR timeout)
+  // Buffers ALL candidates until gathering completes, then emits as single batch
+  std::vector<BufferedCandidate> gathering_buffer_;
+  bool gathering_done_ = false;
+  bool gathering_timeout_started_ = false;
+  std::atomic<bool> gathering_timeout_cancelled_{false};
+  std::unique_ptr<std::thread> gathering_timeout_thread_;
+  std::mutex gathering_buffer_mutex_;
+  static constexpr int GATHERING_TIMEOUT_MS = 10000;  // 10 seconds safety timeout
 
   // Remote candidate queue (for candidates arriving before ICE stream creation)
   // Separate from local candidate buffer above

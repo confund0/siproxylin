@@ -77,6 +77,7 @@ class GoCallService:
             self.logger.info(f"Starting Go service: {binary_path}")
             self.logger.info(f"Go logs -> {go_log_file}")
             self.logger.info(f"Go stderr (panics/crashes) -> {go_err_file}")
+            self.logger.info(f"Go stdout (libnice debug) -> {go_log_file.parent / 'drunk-call-service-stdout.log'}")
 
             # Redirect stderr for panics/crashes
             # Go writes structured logs to file via -log-path (stdout disabled in Go logger)
@@ -86,12 +87,19 @@ class GoCallService:
             import os
             env = os.environ.copy()
             env['GST_DEBUG'] = 'webrtcbin:5'
-            env['G_MESSAGES_DEBUG'] = 'all'  # Enable all glib debug logging
-            env['NICE_DEBUG'] = '1'  # Enable libnice debug: nice,stun,pseudotcp,all
+            # Enable libnice debug logging - must specify domains explicitly
+            # See: https://libnice.freedesktop.org/libnice/libnice-Debug-messages.html
+            env['G_MESSAGES_DEBUG'] = 'libnice,libnice-stun,libnice-socket,libnice-pseudotcp'
+            env['NICE_DEBUG'] = 'all'  # Enable all libnice debug: nice,stun,pseudotcp,socket
+
+            # CRITICAL: libnice debug messages go to STDOUT (not stderr!)
+            # GLib sends G_LOG_LEVEL_DEBUG and G_LOG_LEVEL_INFO to stdout by default
+            # We need to capture both stdout and stderr for complete debug output
+            stdout_file = open(go_log_file.parent / "drunk-call-service-stdout.log", 'a')
 
             self._process = subprocess.Popen(
                 [binary_path, "-log-level", "DEBUG", "-log-path", str(go_log_file)],
-                stdout=subprocess.DEVNULL,  # Go logger doesn't use stdout
+                stdout=stdout_file,  # Capture libnice debug output!
                 stderr=stderr_file,
                 env=env,
             )
@@ -407,7 +415,10 @@ class CallBridge:
                              echo_cancel: bool = True, echo_suppression_level: int = 1,
                              noise_suppression: bool = True, noise_suppression_level: int = 1,
                              gain_control: bool = True,
-                             offer_has_bundle: bool = True) -> bool:
+                             offer_has_bundle: bool = True,
+                             sdes_local_key_params: str = "",
+                             sdes_remote_key_params: str = "",
+                             sdes_crypto_suite: str = "") -> bool:
         """
         Create new call session.
 
@@ -462,6 +473,9 @@ class CallBridge:
 
         self.logger.info(f"Creating session {session_id} with {peer_jid}, {devices_info}, {proxy_info}, TURN={turn_info}")
 
+        # Log SDES parameters being passed to C++ service
+        self.logger.debug(f"CreateSession gRPC call: sdes_local={sdes_local_key_params[:27] if sdes_local_key_params else 'EMPTY'}..., sdes_remote={sdes_remote_key_params[:27] if sdes_remote_key_params else 'EMPTY'}..., suite={sdes_crypto_suite}")
+
         request = call_pb2.CreateSessionRequest(
             session_id=session_id,
             peer_jid=peer_jid,
@@ -482,7 +496,10 @@ class CallBridge:
             noise_suppression=noise_suppression,
             noise_suppression_level=noise_suppression_level,
             gain_control=gain_control,
-            offer_has_bundle=offer_has_bundle
+            offer_has_bundle=offer_has_bundle,
+            sdes_local_key_params=sdes_local_key_params,
+            sdes_remote_key_params=sdes_remote_key_params,
+            sdes_crypto_suite=sdes_crypto_suite
         )
 
         response = await self._stub.CreateSession(request)
@@ -706,6 +723,29 @@ class CallBridge:
 
         await self._stub.SetMute(request)
         self.logger.info(f"Mute state set for session {session_id}")
+
+    async def update_sdes_remote_key(self, session_id: str, sdes_remote_key_params: str, sdes_crypto_suite: str):
+        """
+        Update SDES remote key after receiving session-accept (for initiator).
+
+        Args:
+            session_id: Session ID
+            sdes_remote_key_params: Remote SDES key params (format: "inline:BASE64")
+            sdes_crypto_suite: Crypto suite (e.g., "AES_CM_128_HMAC_SHA1_80")
+        """
+        if not self._stub:
+            raise RuntimeError("gRPC stub not initialized")
+
+        self.logger.info(f"Updating SDES remote key for session {session_id}")
+
+        request = call_pb2.UpdateSdesRemoteKeyRequest(
+            session_id=session_id,
+            sdes_remote_key_params=sdes_remote_key_params,
+            sdes_crypto_suite=sdes_crypto_suite
+        )
+
+        await self._stub.UpdateSdesRemoteKey(request)
+        self.logger.info(f"SDES remote key updated for session {session_id}")
 
     async def end_session(self, session_id: str):
         """

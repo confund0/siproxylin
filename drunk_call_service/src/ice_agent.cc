@@ -13,9 +13,7 @@ IceAgent::IceAgent(int n_components)
       controlling_mode_set_(false),
       agent_(nullptr),
       stream_id_(0),
-      thread_context_(nullptr),
-      thread_loop_(nullptr),
-      shutdown_requested_(false) {
+      thread_context_(nullptr) {
   LOG_DEBUG("IceAgent created with {} components", n_components_);
 }
 
@@ -36,20 +34,21 @@ bool IceAgent::Initialize() {
   nice_debug_enable(TRUE);  // TRUE = include STUN debug messages too
   LOG_INFO("libnice debug enabled (check stderr for libnice output)");
 
-  // Create dedicated GMainContext for ICE thread (like Dino)
-  thread_context_ = g_main_context_new();
-  if (!thread_context_) {
-    LOG_ERROR("Failed to create GMainContext");
+  // CRITICAL FIX: Create NiceAgent with DEFAULT MainContext (like Dino)
+  // Dino pattern (module.vala:18): agent = new Nice.Agent(MainContext.@default(), ...)
+  // This allows agent's state machine to run on the main event loop
+  // We'll create a dedicated context for recv callbacks later
+  agent_ = nice_agent_new(g_main_context_default(), NICE_COMPATIBILITY_RFC5245);
+  if (!agent_) {
+    LOG_ERROR("Failed to create NiceAgent");
     return false;
   }
 
-  // Create NiceAgent with RFC5245 compatibility
-  agent_ = nice_agent_new(thread_context_, NICE_COMPATIBILITY_RFC5245);
-  if (!agent_) {
-    LOG_ERROR("Failed to create NiceAgent");
-    g_main_context_unref(thread_context_);
-    return false;
-  }
+  // SIMPLIFIED: Use default context for EVERYTHING (like Dino does)
+  // Dino only creates a separate thread context for recv callbacks (transport_parameters.vala:99)
+  // BUT for debugging, let's use default context for all operations
+  // This makes libnice debug output work properly
+  thread_context_ = g_main_context_default();
 
   // Configure agent (following Dino's pattern - see module.vala:23-24)
   g_object_set(agent_, "ice-tcp", FALSE, NULL);  // UDP only
@@ -67,12 +66,14 @@ bool IceAgent::Initialize() {
   g_signal_connect(agent_, "new-selected-pair-full",
                    G_CALLBACK(OnNewSelectedPairFull), this);
 
-  LOG_INFO("NiceAgent created successfully");
+  LOG_INFO("NiceAgent created successfully (using default context for all operations)");
 
-  // Start ICE thread
-  ice_thread_ = std::thread(&IceAgent::IceThreadFunc, this);
+  // NO separate thread needed - main.cc already runs g_main_loop on default context
+  // All libnice operations (agent signals + recv callbacks) use the same context
+  // This simplifies threading and makes debug output work properly
 
   initialized_ = true;
+  LOG_INFO("IceAgent initialization complete - using default context (running in main.cc glib_thread)");
   return true;
 }
 
@@ -83,34 +84,14 @@ void IceAgent::Shutdown() {
 
   LOG_INFO("Shutting down IceAgent");
 
-  // Signal shutdown
-  shutdown_requested_ = true;
-
-  // Quit the main loop
-  if (thread_loop_) {
-    g_main_loop_quit(thread_loop_);
-  }
-
-  // Wait for thread to finish
-  if (ice_thread_.joinable()) {
-    ice_thread_.join();
-  }
-
   // Cleanup
   if (agent_) {
     g_object_unref(agent_);
     agent_ = nullptr;
   }
 
-  if (thread_loop_) {
-    g_main_loop_unref(thread_loop_);
-    thread_loop_ = nullptr;
-  }
-
-  if (thread_context_) {
-    g_main_context_unref(thread_context_);
-    thread_context_ = nullptr;
-  }
+  // No need to unref thread_context_ - it's the default context (not owned by us)
+  thread_context_ = nullptr;
 
   initialized_ = false;
   LOG_INFO("IceAgent shutdown complete");
@@ -141,9 +122,10 @@ bool IceAgent::AddStream() {
   LOG_INFO("ICE stream created: stream_id={}, n_components={}", stream_id_, n_components_);
 
   // Attach receive callbacks for ALL components
+  // Using default context (already running in main.cc glib_thread)
   for (int i = 1; i <= n_components_; i++) {
     if (!nice_agent_attach_recv(agent_, stream_id_, i,
-                                 g_main_context_ref(thread_context_),
+                                 thread_context_,  // No need to ref - default context
                                  OnRecv, this)) {
       LOG_ERROR("Failed to attach recv callback for component {}", i);
       return false;
@@ -529,34 +511,8 @@ void IceAgent::OnRecv(NiceAgent* agent, guint stream_id, guint component_id,
 
 // Thread function
 
-void IceAgent::IceThreadFunc() {
-  try {
-    LOG_INFO("ICE thread started");
-
-    // Push thread context as default
-    g_main_context_push_thread_default(thread_context_);
-
-    // Create main loop
-    thread_loop_ = g_main_loop_new(thread_context_, FALSE);
-
-    // Run loop until quit
-    g_main_loop_run(thread_loop_);
-
-    // Cleanup
-    g_main_context_pop_thread_default(thread_context_);
-
-    LOG_INFO("ICE thread stopped");
-  } catch (const std::exception& e) {
-    LOG_ERROR("FATAL: Exception in ICE thread: {}", e.what());
-    LOG_ERROR("ICE thread crashed - this will terminate the service!");
-    // Let exception propagate to terminate cleanly with error message
-    throw;
-  } catch (...) {
-    LOG_ERROR("FATAL: Unknown exception in ICE thread!");
-    LOG_ERROR("ICE thread crashed - this will terminate the service!");
-    throw;
-  }
-}
+// REMOVED: IceThreadFunc() - no longer needed with simplified single-context design
+// All libnice operations now use g_main_context_default() which runs in main.cc's glib_thread
 
 // Helper methods
 

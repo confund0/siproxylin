@@ -1,6 +1,8 @@
 # Call Service Architecture
 
-**Last Updated:** 2026-02-27
+**Last Updated:** 2026-03-01
+
+**Note:** Sections marked 🔮 are aspirational (planned but not yet implemented)
 
 ---
 
@@ -27,14 +29,15 @@
   - No video support (webrtcbin hardcodes rtcp-mux)
 
 ### 3. C++ GStreamer rtpbin (Branch: `calls-rtpbin`)
-- **Status:** ⚠️ Work in Progress
+- **Status:** ⚠️ Debugging (ICE/DTLS working, audio flow pending)
 - **Technology:** C++ + GStreamer rtpbin + libnice + manual DTLS-SRTP
 - **Goal:** Full compatibility (video + trickle-only peers)
-- **Implementation:** Following Dino's architecture
+- **Implementation:** Following Dino's implementation
+- **Current:** Outgoing calls connect with Dino, mode selection fixed, needs rebuild
 
 ---
 
-## Final Target Architecture
+## 🔮 Final Target Architecture (NOT YET IMPLEMENTED)
 
 ### Factory Pattern with Dual Implementations
 
@@ -88,9 +91,11 @@ public:
 
 **Key Principle:** No shared code between implementations (completely independent).
 
+**Current Reality:** Working on single rtpbin implementation first. Factory pattern deferred until rtpbin is stable and audio working.
+
 ---
 
-## Video Streaming Architecture
+## 🔮 Video Streaming Architecture (NOT YET IMPLEMENTED)
 
 Both implementations stream decoded video via UDP to Python/Qt.
 
@@ -225,7 +230,7 @@ make -j$(nproc)
 
 **Why Dino?** It successfully handles video + trickle-only peers using rtpbin.
 
-### Dino's Components (What We Copy)
+### Dino's Components (What We Follow)
 
 | Dino Component | Our Equivalent | Purpose |
 |----------------|----------------|---------|
@@ -234,7 +239,7 @@ make -j$(nproc)
 | `plugins/rtp/stream.vala` | `session_rtpbin.cc` | rtpbin pipeline management |
 | `crypto-vala/src/srtp.vala` | `srtp_session.cc` | libsrtp2 wrapper |
 
-**Strategy:** "Blind copy" Dino's logic (Vala → C++) to ensure compatibility.
+**Strategy:** Strictly refer to Dino's logic (Vala → C++) to ensure compatibility.
 
 ---
 
@@ -256,4 +261,3 @@ make -j$(nproc)
 
 ---
 
-**Next Steps:** See `ROADMAP.md`

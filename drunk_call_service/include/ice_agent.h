@@ -107,11 +107,8 @@ class IceAgent {
   NiceAgent* agent_;
   guint stream_id_;
 
-  // Threading (libnice requires dedicated GMainContext)
-  GMainContext* thread_context_;
-  GMainLoop* thread_loop_;
-  std::thread ice_thread_;
-  bool shutdown_requested_;
+  // Context (simplified - using default context only)
+  GMainContext* thread_context_;  // Points to default context (not owned)
 
   // Callbacks
   std::mutex callback_mutex_;

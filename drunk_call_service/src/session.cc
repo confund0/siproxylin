@@ -143,6 +143,71 @@ bool Session::Initialize() {
     LOG_INFO("DTLS handshake complete, waiting for first RTP packet before emitting connected");
   });
 
+  // Initialize SDES-SRTP if keys provided (Dino's approach: encrypt from first packet)
+  LOG_DEBUG("SDES params received: local='{}', remote='{}', suite='{}'",
+            config_.sdes_local_key_params, config_.sdes_remote_key_params, config_.sdes_crypto_suite);
+
+  // Create SDES session if we have at least local key (initiator scenario)
+  // Remote key will be set later via UpdateSdesRemoteKey() when we receive session-accept
+  if (!config_.sdes_local_key_params.empty()) {
+    LOG_INFO("Initializing SDES-SRTP with local key: suite={}", config_.sdes_crypto_suite);
+
+    // Parse local key (format: "inline:BASE64")
+    if (config_.sdes_local_key_params.substr(0, 7) != "inline:") {
+      LOG_ERROR("Invalid SDES local key format: {}", config_.sdes_local_key_params);
+    } else {
+      std::string local_b64 = config_.sdes_local_key_params.substr(7);
+
+      // Decode Base64 (using GLib's base64 decoder, already available via GStreamer)
+      gsize local_len = 0;
+      guchar* local_decoded = g_base64_decode(local_b64.c_str(), &local_len);
+
+      if (local_len == 30) {
+        // AES_CM_128_HMAC_SHA1_80: 16 bytes key + 14 bytes salt
+        uint8_t* local_key = local_decoded;
+        uint8_t* local_salt = local_decoded + 16;
+
+        try {
+          // Create SDES SRTP session
+          sdes_srtp_ = std::make_unique<SrtpSession>();
+          sdes_srtp_->SetEncryptionKey(local_key, 16, local_salt, 14);
+          LOG_INFO("SDES encryption key set: {}...", config_.sdes_local_key_params.substr(0, 27));
+
+          // If we also have remote key, set it now (responder scenario)
+          if (!config_.sdes_remote_key_params.empty()) {
+            std::string remote_b64 = config_.sdes_remote_key_params.substr(7);
+            gsize remote_len = 0;
+            guchar* remote_decoded = g_base64_decode(remote_b64.c_str(), &remote_len);
+
+            if (remote_len == 30) {
+              uint8_t* remote_key = remote_decoded;
+              uint8_t* remote_salt = remote_decoded + 16;
+              sdes_srtp_->SetDecryptionKey(remote_key, 16, remote_salt, 14);
+              LOG_INFO("SDES-SRTP ready with both keys (responder pattern)");
+            } else {
+              LOG_ERROR("Invalid SDES remote key material length: {} (expected 30)", remote_len);
+            }
+            g_free(remote_decoded);
+          } else {
+            LOG_INFO("SDES encryption ready, decryption will be set after session-accept (initiator pattern)");
+          }
+
+          sdes_ready_ = true;
+        } catch (const std::exception& e) {
+          LOG_ERROR("Failed to initialize SDES-SRTP: {}", e.what());
+          sdes_srtp_.reset();
+          sdes_ready_ = false;
+        }
+      } else {
+        LOG_ERROR("Invalid SDES local key material length: {} (expected 30)", local_len);
+      }
+
+      g_free(local_decoded);
+    }
+  } else {
+    LOG_DEBUG("No SDES keys provided, will use DTLS-SRTP only (packets dropped until handshake)");
+  }
+
   // 10. Create audio pipeline (SAME as before, but link to rtpbin)
   if (!SetupAudioPipeline()) {
     LOG_ERROR("Failed to setup audio pipeline");
@@ -218,8 +283,14 @@ std::string Session::CreateOffer() {
 
   // 2. Set ICE controlling mode (OFFER = controlling)
   // CRITICAL (Dino pattern): This MUST be BEFORE AddStream()
+  is_offerer_ = true;  // We are creating the offer
   ice_agent_->SetControllingMode(true);
   LOG_INFO("ICE controlling mode: TRUE (offerer)");
+
+  // Determine encryption mode (Dino's logic)
+  // Rule: offerer always uses DTLS-SRTP (we advertise fingerprint)
+  use_dtls_srtp_ = true;
+  LOG_INFO("📱 Encryption mode: DTLS-SRTP (we are offerer)");
 
   // 3. Add ICE stream (Dino pattern: AFTER SetControllingMode)
   if (!ice_agent_->AddStream()) {
@@ -294,6 +365,11 @@ std::string Session::CreateOffer() {
   // Set mode to SERVER (we'll be passive, waiting for peer to connect)
   dtls_srtp_->SetMode(DtlsMode::SERVER);
 
+  // Start DTLS handshake now (Dino pattern - transport_parameters.vala:82)
+  // The handshake will block on pull_function until ICE data arrives
+  LOG_INFO("Starting DTLS handshake (initiator, mode=SERVER)");
+  dtls_srtp_->StartHandshake();
+
   LOG_INFO("Generated stub SDP offer ({} bytes)", sdp.size());
   LOG_DEBUG("SDP Offer:\n{}", sdp);
 
@@ -357,6 +433,7 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
 
   // 3. Set ICE controlling mode (ANSWER = NOT controlling)
   // CRITICAL (Dino pattern): This MUST be BEFORE AddStream()
+  is_offerer_ = false;  // We are creating the answer (peer is offerer)
   ice_agent_->SetControllingMode(false);
   LOG_INFO("ICE controlling mode: FALSE (answerer)");
 
@@ -406,14 +483,25 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
     LOG_WARN("No ICE credentials in remote offer");
   }
 
-  // 7. Set DTLS fingerprint from remote offer
-  if (fingerprint && dtls_srtp_) {
-    LOG_INFO("Setting peer DTLS fingerprint from offer: algorithm={}, size={} bytes",
-             fingerprint->algorithm, fingerprint->value.size());
-    dtls_srtp_->SetPeerFingerprint(fingerprint->value);
-    dtls_srtp_->SetPeerFingerprintAlgo(fingerprint->algorithm);
+  // 7. Determine encryption mode (Dino's logic)
+  // Rule: use DTLS-SRTP if (peer has fingerprint OR we are offerer)
+  // For answerer: peer sent fingerprint → use DTLS, peer NO fingerprint → use SDES
+  bool peer_has_fingerprint = (fingerprint && dtls_srtp_);
+  use_dtls_srtp_ = (peer_has_fingerprint || is_offerer_);
+
+  if (use_dtls_srtp_) {
+    LOG_INFO("📱 Encryption mode: DTLS-SRTP (peer_has_fingerprint={}, is_offerer={})",
+             peer_has_fingerprint, is_offerer_);
+
+    // Set DTLS fingerprint from remote offer
+    if (peer_has_fingerprint) {
+      LOG_INFO("Setting peer DTLS fingerprint from offer: algorithm={}, size={} bytes",
+               fingerprint->algorithm, fingerprint->value.size());
+      dtls_srtp_->SetPeerFingerprint(fingerprint->value);
+      dtls_srtp_->SetPeerFingerprintAlgo(fingerprint->algorithm);
+    }
   } else {
-    LOG_WARN("No DTLS fingerprint in remote offer");
+    LOG_INFO("📱 Encryption mode: SDES-SRTP (peer has no fingerprint, we are answerer)");
   }
 
   // 8. Extract and add candidates from remote offer SDP if present
@@ -535,15 +623,29 @@ bool Session::SetRemoteDescription(const std::string& remote_sdp, const std::str
     LOG_WARN("No ICE credentials found in remote SDP");
   }
 
-  // 2. Extract and set DTLS fingerprint
+  // 2. Extract and check DTLS fingerprint
   auto fingerprint = parser.GetDtlsFingerprint(0);
-  if (fingerprint && dtls_srtp_) {
+  bool peer_has_fingerprint = (fingerprint && dtls_srtp_);
+
+  // For outgoing calls: Adjust mode based on peer's actual response
+  // (We sent DTLS offer, but peer might respond with SDES-only)
+  if (is_offerer_) {
+    if (!peer_has_fingerprint) {
+      LOG_WARN("📱 Peer answered without DTLS fingerprint - switching to SDES-SRTP mode");
+      use_dtls_srtp_ = false;
+    } else {
+      LOG_INFO("📱 Peer answered with DTLS fingerprint - confirmed DTLS-SRTP mode");
+    }
+  }
+
+  // Set DTLS fingerprint if available
+  if (peer_has_fingerprint) {
     LOG_INFO("Setting peer DTLS fingerprint: algorithm={}, size={} bytes",
              fingerprint->algorithm, fingerprint->value.size());
     dtls_srtp_->SetPeerFingerprint(fingerprint->value);
     dtls_srtp_->SetPeerFingerprintAlgo(fingerprint->algorithm);
-  } else {
-    LOG_WARN("No DTLS fingerprint found in remote SDP");
+  } else if (use_dtls_srtp_) {
+    LOG_WARN("No DTLS fingerprint found in remote SDP (but DTLS mode active)");
   }
 
   // 3. Extract setup attribute to determine DTLS role
@@ -561,16 +663,22 @@ bool Session::SetRemoteDescription(const std::string& remote_sdp, const std::str
       // Peer is passive, we are active (CLIENT)
       LOG_INFO("Peer is passive, setting DTLS mode to CLIENT");
       dtls_srtp_->SetMode(DtlsMode::CLIENT);
+      // Start DTLS handshake now (Dino pattern - transport_parameters.vala:185)
+      LOG_INFO("Starting DTLS handshake (responder, mode=CLIENT)");
+      dtls_srtp_->StartHandshake();
     } else if (setup->role == SdpParser::SetupAttribute::Role::ACTPASS) {
       // Peer can do either, we choose based on SDP type
       if (sdp_type == "offer") {
         // We're answering, become active (CLIENT)
         LOG_INFO("Peer is actpass (offer), setting DTLS mode to CLIENT");
         dtls_srtp_->SetMode(DtlsMode::CLIENT);
+        LOG_INFO("Starting DTLS handshake (answerer, mode=CLIENT)");
+        dtls_srtp_->StartHandshake();
       } else {
         // We're offering, become passive (SERVER)
         LOG_INFO("Peer is actpass (answer), setting DTLS mode to SERVER");
         dtls_srtp_->SetMode(DtlsMode::SERVER);
+        // DTLS already started in CreateOffer, no need to start again
       }
     }
   } else {
@@ -649,6 +757,57 @@ void Session::SetMute(bool muted) {
   LOG_INFO("Session {} mute state: {}", config_.session_id, muted);
 
   // TODO: Enable/disable audio track
+}
+
+bool Session::UpdateSdesRemoteKey(const std::string& sdes_remote_key_params,
+                                  const std::string& sdes_crypto_suite) {
+  LOG_INFO("Updating SDES remote key for session {} (initiator received session-accept)", config_.session_id);
+
+  if (sdes_remote_key_params.empty()) {
+    LOG_ERROR("Cannot update SDES remote key: empty key params");
+    return false;
+  }
+
+  // Parse remote key (format: "inline:BASE64")
+  if (sdes_remote_key_params.substr(0, 7) != "inline:") {
+    LOG_ERROR("Invalid SDES remote key format: {}", sdes_remote_key_params);
+    return false;
+  }
+
+  std::string remote_b64 = sdes_remote_key_params.substr(7);
+
+  // Decode Base64
+  gsize remote_len = 0;
+  guchar* remote_decoded = g_base64_decode(remote_b64.c_str(), &remote_len);
+
+  if (remote_len != 30) {
+    LOG_ERROR("Invalid SDES remote key material length: {} (expected 30)", remote_len);
+    g_free(remote_decoded);
+    return false;
+  }
+
+  // AES_CM_128_HMAC_SHA1_80: 16 bytes key + 14 bytes salt
+  uint8_t* remote_key = remote_decoded;
+  uint8_t* remote_salt = remote_decoded + 16;
+
+  // Update decryption key in existing SDES SRTP session
+  if (!sdes_srtp_) {
+    LOG_ERROR("Cannot update SDES remote key: SDES session not initialized");
+    g_free(remote_decoded);
+    return false;
+  }
+
+  try {
+    sdes_srtp_->SetDecryptionKey(remote_key, 16, remote_salt, 14);
+    LOG_INFO("SDES decryption key updated successfully (can now decrypt remote audio!)");
+  } catch (const std::exception& e) {
+    LOG_ERROR("Failed to set SDES decryption key: {}", e.what());
+    g_free(remote_decoded);
+    return false;
+  }
+
+  g_free(remote_decoded);
+  return true;
 }
 
 Session::Stats Session::GetStats() {
@@ -939,16 +1098,21 @@ GstFlowReturn Session::OnAppsinkNewSample(GstAppSink* appsink, gpointer user_dat
   GstElement* element = GST_ELEMENT(appsink);
   const gchar* name = gst_element_get_name(element);
 
-  if (g_str_has_prefix(name, "send_rtp_appsink")) {
-    // This is outgoing RTP data from rtpbin → send via ICE Component 1
-    LOG_DEBUG("📤 Sending {} bytes of RTP from rtpbin to network", map.size);
-    session->SendRtpData(map.data, map.size);
-  } else if (g_str_has_prefix(name, "send_rtcp_appsink")) {
-    // This is outgoing RTCP data from rtpbin → send via ICE Component 1 or 2
-    LOG_DEBUG("📤 Sending {} bytes of RTCP from rtpbin to network", map.size);
-    session->SendRtcpData(map.data, map.size);
-  } else {
-    LOG_WARN("Unknown appsink: {}", name);
+  try {
+    if (g_str_has_prefix(name, "send_rtp_appsink")) {
+      // This is outgoing RTP data from rtpbin → send via ICE Component 1
+      LOG_DEBUG("📤 Sending {} bytes of RTP from rtpbin to network", map.size);
+      session->SendRtpData(map.data, map.size);
+    } else if (g_str_has_prefix(name, "send_rtcp_appsink")) {
+      // This is outgoing RTCP data from rtpbin → send via ICE Component 1 or 2
+      LOG_DEBUG("📤 Sending {} bytes of RTCP from rtpbin to network", map.size);
+      session->SendRtcpData(map.data, map.size);
+    } else {
+      LOG_WARN("Unknown appsink: {}", name);
+    }
+  } catch (const std::exception& e) {
+    LOG_ERROR("Exception in OnAppsinkNewSample: {}", e.what());
+    // Don't rethrow - this is called from C code (GStreamer)
   }
 
   // Cleanup
@@ -1000,8 +1164,15 @@ bool Session::SetupAppsinkAppsrc() {
     return false;
   }
 
-  // Configure appsink
-  g_object_set(send_rtp_appsink_, "emit-signals", TRUE, "sync", FALSE, NULL);
+  // Configure appsink (matching Dino's configuration)
+  // CRITICAL: sync=TRUE required for rtpbin to calculate running time and generate RTP timestamps
+  g_object_set(send_rtp_appsink_,
+               "emit-signals", TRUE,
+               "sync", TRUE,        // Sync to pipeline clock (CRITICAL!)
+               "async", FALSE,      // Synchronous state changes
+               "drop", TRUE,        // Drop old buffers if slow
+               "wait-on-eos", FALSE, // Don't wait on EOS
+               NULL);
   g_signal_connect(send_rtp_appsink_, "new-sample",
                    G_CALLBACK(OnAppsinkNewSample), this);
 
@@ -1012,7 +1183,14 @@ bool Session::SetupAppsinkAppsrc() {
     return false;
   }
 
-  g_object_set(send_rtcp_appsink_, "emit-signals", TRUE, "sync", FALSE, NULL);
+  // Configure RTCP appsink (same properties as RTP appsink)
+  g_object_set(send_rtcp_appsink_,
+               "emit-signals", TRUE,
+               "sync", TRUE,        // Sync to pipeline clock
+               "async", FALSE,      // Synchronous state changes
+               "drop", TRUE,        // Drop old buffers if slow
+               "wait-on-eos", FALSE, // Don't wait on EOS
+               NULL);
   g_signal_connect(send_rtcp_appsink_, "new-sample",
                    G_CALLBACK(OnAppsinkNewSample), this);
 
@@ -1032,7 +1210,13 @@ bool Session::SetupAppsinkAppsrc() {
       "encoding-name", G_TYPE_STRING, "OPUS",
       "payload", G_TYPE_INT, 96,
       NULL);
-  g_object_set(recv_rtp_appsrc_, "caps", rtp_caps, "format", GST_FORMAT_TIME, NULL);
+  // Configure appsrc for live RTP stream (matching Dino's configuration)
+  g_object_set(recv_rtp_appsrc_,
+               "caps", rtp_caps,
+               "format", GST_FORMAT_TIME,
+               "do-timestamp", TRUE,  // Timestamp incoming buffers
+               "is-live", TRUE,       // Treat as live source (affects latency)
+               NULL);
   gst_caps_unref(rtp_caps);
   LOG_INFO("Set RTP caps on recv_rtp_appsrc: application/x-rtp,encoding-name=OPUS,payload=96");
 
@@ -1043,7 +1227,12 @@ bool Session::SetupAppsinkAppsrc() {
     return false;
   }
 
-  g_object_set(recv_rtcp_appsrc_, "format", GST_FORMAT_TIME, NULL);
+  // Configure RTCP appsrc for live stream
+  g_object_set(recv_rtcp_appsrc_,
+               "format", GST_FORMAT_TIME,
+               "do-timestamp", TRUE,  // Timestamp incoming buffers
+               "is-live", TRUE,       // Treat as live source
+               NULL);
 
   // Add all to pipeline
   gst_bin_add_many(GST_BIN(pipeline_),
@@ -1190,30 +1379,55 @@ void Session::OnIceCandidate(int component_id, const std::string& candidate,
   LOG_DEBUG("ICE candidate: component={}, mid={}, mline={}, cand={}",
             component_id, sdp_mid, sdp_mline_index, candidate);
 
-  std::lock_guard<std::mutex> lock(candidate_buffer_mutex_);
+  // NEW: Buffer ALL candidates until gathering completes (or timeout expires)
+  // This ensures we emit all candidates together, preventing race conditions
+  // where component 1 relay arrives after session-accept is sent
+  {
+    std::lock_guard<std::mutex> lock(gathering_buffer_mutex_);
 
-  // Buffer candidates until CreateOffer/CreateAnswer completes
-  // (Like Go Pion and webrtcbin implementations)
-  if (buffer_candidates_) {
+    if (gathering_done_) {
+      LOG_WARN("Received candidate after gathering done - this shouldn't happen!");
+      // Still emit it individually as fallback
+      Event event;
+      event.type = Event::ICE_CANDIDATE;
+      event.sdp_mid = sdp_mid;
+      event.sdp_mline_index = sdp_mline_index;
+      event.data = candidate;
+      PushEvent(event);
+      return;
+    }
+
     BufferedCandidate buffered;
     buffered.component_id = component_id;
     buffered.candidate = candidate;
     buffered.sdp_mid = sdp_mid;
     buffered.sdp_mline_index = sdp_mline_index;
-    candidate_buffer_.push_back(buffered);
+    gathering_buffer_.push_back(buffered);
 
-    LOG_DEBUG("Buffered ICE candidate (buffer_size={})", candidate_buffer_.size());
-    return;
+    LOG_DEBUG("Buffered candidate in gathering buffer (size={}, component={}, type={})",
+              gathering_buffer_.size(), component_id,
+              candidate.find("typ relay") != std::string::npos ? "relay" :
+              candidate.find("typ srflx") != std::string::npos ? "srflx" : "host");
+
+    // Start timeout timer on FIRST candidate
+    if (gathering_buffer_.size() == 1 && !gathering_timeout_started_) {
+      gathering_timeout_started_ = true;
+      gathering_timeout_cancelled_ = false;
+
+      // Launch timeout thread
+      gathering_timeout_thread_ = std::make_unique<std::thread>([this]() {
+        LOG_DEBUG("Gathering timeout timer started ({} seconds)", GATHERING_TIMEOUT_MS / 1000);
+        std::this_thread::sleep_for(std::chrono::milliseconds(GATHERING_TIMEOUT_MS));
+
+        if (!gathering_timeout_cancelled_.load()) {
+          LOG_WARN("Gathering timeout expired! Emitting {} candidates we have so far",
+                   gathering_buffer_.size());
+          OnGatheringTimeout();
+        }
+      });
+      gathering_timeout_thread_->detach();  // Fire and forget
+    }
   }
-
-  // Normal path: send immediately
-  Event event;
-  event.type = Event::ICE_CANDIDATE;
-  event.sdp_mid = sdp_mid;
-  event.sdp_mline_index = sdp_mline_index;
-  event.data = candidate;
-
-  PushEvent(event);
 }
 
 void Session::FlushCandidateBuffer() {
@@ -1297,44 +1511,78 @@ void Session::OnComponentStateChanged(int component_id, const std::string& state
   // We only emit CONNECTION_STATE = "connected" AFTER DTLS handshake completes
   // (see dtls_srtp_->SetOnReadyCallback() in Initialize())
 
-  // Start DTLS handshake when Component 1 is ready (Phase 3)
-  if (component_id == 1 && (state == "READY" || state == "CONNECTED") &&
-      dtls_srtp_ && !dtls_srtp_->IsReady()) {
-    LOG_INFO("Component 1 ready, starting DTLS handshake");
-    dtls_srtp_->StartHandshake();
-  }
+  // DTLS handshake is started earlier (in CreateOffer/CreateAnswer), not here
+  // Dino pattern: DTLS starts immediately, blocks on pull_function until ICE data flows
 }
 
 void Session::OnIceDataReceived(int component_id, const uint8_t* data, size_t len) {
   LOG_DEBUG("Received {} bytes on component {}", len, component_id);
 
-  if (!dtls_srtp_) {
-    LOG_ERROR("DTLS-SRTP handler not initialized");
-    return;
-  }
+  std::vector<uint8_t> decrypted;
 
-  // Process incoming data (handles DTLS and SRTP decryption)
-  auto decrypted = dtls_srtp_->ProcessIncomingData(component_id, data, len);
+  // Mode-based dispatch (Dino's pattern): Use ONLY the selected encryption mode
+  // No mixing, no fallback between modes
+  if (use_dtls_srtp_) {
+    // DTLS-SRTP mode
+    if (!dtls_srtp_) {
+      LOG_ERROR("DTLS-SRTP mode active but handler not initialized");
+      return;
+    }
 
-  if (decrypted.empty()) {
-    // Either DTLS packet (handled internally) or error
-    return;
-  }
+    LOG_DEBUG("📥 Using DTLS-SRTP decryption");
+    decrypted = dtls_srtp_->ProcessIncomingData(component_id, data, len);
 
-  // Dino pattern: emit "connected" after receiving first RTP packet
-  // (must have both: DTLS ready AND first data received)
-  if (!connection_state_emitted_ && dtls_srtp_->IsReady()) {
-    LOG_INFO("First data received after DTLS ready, emitting CONNECTION_STATE = connected");
-    Event event;
-    event.type = Event::CONNECTION_STATE_CHANGE;
-    event.data = "connected";
-    PushEvent(event);
-    connection_state_emitted_ = true;
+    if (decrypted.empty()) {
+      // Either DTLS handshake packet (handled internally) or decryption error
+      return;
+    }
+
+    // Dino pattern: emit "connected" after receiving first RTP packet
+    // (must have both: DTLS ready AND first data received)
+    if (!connection_state_emitted_ && dtls_srtp_->IsReady()) {
+      LOG_INFO("First RTP data received (DTLS-SRTP), emitting CONNECTION_STATE = connected");
+      Event event;
+      event.type = Event::CONNECTION_STATE_CHANGE;
+      event.data = "connected";
+      PushEvent(event);
+      connection_state_emitted_ = true;
+    }
+
+  } else {
+    // SDES-SRTP mode
+    if (!sdes_srtp_ || !sdes_ready_) {
+      LOG_ERROR("SDES-SRTP mode active but session not ready (ready={})", sdes_ready_);
+      return;
+    }
+
+    LOG_DEBUG("📥 Using SDES-SRTP decryption");
+    try {
+      decrypted = sdes_srtp_->DecryptRtp(data, len);
+    } catch (const std::exception& e) {
+      LOG_ERROR("SDES decryption failed: {}", e.what());
+      return;
+    }
+
+    if (decrypted.empty()) {
+      LOG_ERROR("SDES decryption returned empty packet");
+      return;
+    }
+
+    // Dino pattern: emit "connected" after receiving first RTP packet with SDES
+    if (!connection_state_emitted_) {
+      LOG_INFO("First RTP data received (SDES-SRTP), emitting CONNECTION_STATE = connected");
+      Event event;
+      event.type = Event::CONNECTION_STATE_CHANGE;
+      event.data = "connected";
+      PushEvent(event);
+      connection_state_emitted_ = true;
+    }
   }
 
   // Push decrypted RTP/RTCP to rtpbin
   if (component_id == 1) {
     // Component 1: Could be RTP or RTCP (check packet type)
+    // Note: We check the ENCRYPTED data's PT byte to determine type
     if (len >= 2 && data[1] >= 192 && data[1] < 224) {
       PushRtcpData(decrypted.data(), decrypted.size());
     } else {
@@ -1347,13 +1595,79 @@ void Session::OnIceDataReceived(int component_id, const uint8_t* data, size_t le
 }
 
 void Session::OnGatheringDone() {
-  LOG_INFO("ICE candidate gathering done");
+  LOG_INFO("ICE candidate gathering done - emitting buffered candidates");
 
-  Event event;
-  event.type = Event::ICE_GATHERING_STATE_CHANGE;
-  event.data = "complete";
+  std::lock_guard<std::mutex> lock(gathering_buffer_mutex_);
 
-  PushEvent(event);
+  if (gathering_done_) {
+    LOG_WARN("OnGatheringDone() called multiple times - ignoring");
+    return;
+  }
+
+  // Cancel timeout timer
+  gathering_timeout_cancelled_ = true;
+
+  // Emit all buffered candidates
+  LOG_INFO("Emitting {} candidates after gathering complete", gathering_buffer_.size());
+
+  for (const auto& buffered : gathering_buffer_) {
+    Event event;
+    event.type = Event::ICE_CANDIDATE;
+    event.sdp_mid = buffered.sdp_mid;
+    event.sdp_mline_index = buffered.sdp_mline_index;
+    event.data = buffered.candidate;
+
+    PushEvent(event);
+
+    LOG_DEBUG("Emitted candidate: component={}, type={}",
+              buffered.component_id,
+              buffered.candidate.find("typ relay") != std::string::npos ? "relay" :
+              buffered.candidate.find("typ srflx") != std::string::npos ? "srflx" : "host");
+  }
+
+  gathering_done_ = true;
+
+  // Also emit gathering state change
+  Event state_event;
+  state_event.type = Event::ICE_GATHERING_STATE_CHANGE;
+  state_event.data = "complete";
+  PushEvent(state_event);
+
+  LOG_INFO("All {} candidates emitted successfully", gathering_buffer_.size());
+}
+
+void Session::OnGatheringTimeout() {
+  LOG_WARN("Gathering timeout - emitting candidates we have");
+
+  std::lock_guard<std::mutex> lock(gathering_buffer_mutex_);
+
+  if (gathering_done_) {
+    LOG_DEBUG("Gathering already done, timeout is a no-op");
+    return;
+  }
+
+  // Emit all buffered candidates we have so far
+  LOG_WARN("Timeout: Emitting {} candidates (may be incomplete!)", gathering_buffer_.size());
+
+  for (const auto& buffered : gathering_buffer_) {
+    Event event;
+    event.type = Event::ICE_CANDIDATE;
+    event.sdp_mid = buffered.sdp_mid;
+    event.sdp_mline_index = buffered.sdp_mline_index;
+    event.data = buffered.candidate;
+
+    PushEvent(event);
+  }
+
+  gathering_done_ = true;
+
+  // Also emit gathering state change
+  Event state_event;
+  state_event.type = Event::ICE_GATHERING_STATE_CHANGE;
+  state_event.data = "complete";
+  PushEvent(state_event);
+
+  LOG_WARN("Timeout: Emitted {} candidates", gathering_buffer_.size());
 }
 
 // ============================================================================
@@ -1363,16 +1677,36 @@ void Session::OnGatheringDone() {
 void Session::SendRtpData(const uint8_t* data, size_t len) {
   LOG_DEBUG("Sending {} bytes of RTP", len);
 
-  if (!dtls_srtp_ || !dtls_srtp_->IsReady()) {
-    LOG_DEBUG("DTLS-SRTP not ready, cannot send RTP");
-    return;
-  }
+  std::vector<uint8_t> encrypted;
 
-  // Encrypt RTP via DTLS-SRTP
-  auto encrypted = dtls_srtp_->ProcessOutgoingData(1, data, len);
-  if (encrypted.empty()) {
-    LOG_ERROR("Failed to encrypt RTP");
-    return;
+  // Mode-based dispatch (Dino's pattern): Use ONLY the selected encryption mode
+  if (use_dtls_srtp_) {
+    // DTLS-SRTP mode
+    if (!dtls_srtp_ || !dtls_srtp_->IsReady()) {
+      LOG_DEBUG("DTLS-SRTP not ready, cannot send RTP");
+      return;
+    }
+
+    LOG_DEBUG("📤 Encrypting RTP with DTLS-SRTP");
+    encrypted = dtls_srtp_->ProcessOutgoingData(1, data, len);
+    if (encrypted.empty()) {
+      LOG_ERROR("Failed to encrypt RTP with DTLS-SRTP");
+      return;
+    }
+
+  } else {
+    // SDES-SRTP mode
+    if (!sdes_srtp_ || !sdes_ready_) {
+      LOG_DEBUG("SDES-SRTP not ready, cannot send RTP");
+      return;
+    }
+
+    LOG_DEBUG("📤 Encrypting RTP with SDES-SRTP");
+    encrypted = sdes_srtp_->EncryptRtp(data, len);
+    if (encrypted.empty()) {
+      LOG_ERROR("Failed to encrypt RTP with SDES-SRTP");
+      return;
+    }
   }
 
   // Send encrypted RTP via Component 1
@@ -1385,16 +1719,36 @@ void Session::SendRtcpData(const uint8_t* data, size_t len) {
   int component_id = rtcp_mux_ ? 1 : 2;
   LOG_DEBUG("Sending {} bytes of RTCP via Component {}", len, component_id);
 
-  if (!dtls_srtp_ || !dtls_srtp_->IsReady()) {
-    LOG_DEBUG("DTLS-SRTP not ready, cannot send RTCP");
-    return;
-  }
+  std::vector<uint8_t> encrypted;
 
-  // Encrypt RTCP via DTLS-SRTP
-  auto encrypted = dtls_srtp_->ProcessOutgoingData(component_id, data, len);
-  if (encrypted.empty()) {
-    LOG_ERROR("Failed to encrypt RTCP");
-    return;
+  // Mode-based dispatch (Dino's pattern): Use ONLY the selected encryption mode
+  if (use_dtls_srtp_) {
+    // DTLS-SRTP mode
+    if (!dtls_srtp_ || !dtls_srtp_->IsReady()) {
+      LOG_DEBUG("DTLS-SRTP not ready, cannot send RTCP");
+      return;
+    }
+
+    LOG_DEBUG("📤 Encrypting RTCP with DTLS-SRTP");
+    encrypted = dtls_srtp_->ProcessOutgoingData(component_id, data, len);
+    if (encrypted.empty()) {
+      LOG_ERROR("Failed to encrypt RTCP with DTLS-SRTP");
+      return;
+    }
+
+  } else {
+    // SDES-SRTP mode
+    if (!sdes_srtp_ || !sdes_ready_) {
+      LOG_DEBUG("SDES-SRTP not ready, cannot send RTCP");
+      return;
+    }
+
+    LOG_DEBUG("📤 Encrypting RTCP with SDES-SRTP");
+    encrypted = sdes_srtp_->EncryptRtcp(data, len);
+    if (encrypted.empty()) {
+      LOG_ERROR("Failed to encrypt RTCP with SDES-SRTP");
+      return;
+    }
   }
 
   // Send encrypted RTCP

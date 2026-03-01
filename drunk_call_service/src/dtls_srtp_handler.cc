@@ -176,6 +176,12 @@ bool DtlsSrtpHandler::StartHandshake() {
         return true;
     }
 
+    // Check if handshake thread is already running
+    if (handshake_thread_.joinable()) {
+        LOG_WARN("DTLS handshake already in progress");
+        return true;
+    }
+
     LOG_INFO("Starting DTLS handshake (mode: {})", mode_ == DtlsMode::SERVER ? "SERVER" : "CLIENT");
 
     stop_ = false;

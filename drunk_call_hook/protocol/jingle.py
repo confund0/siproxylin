@@ -13,6 +13,8 @@ XEPs implemented:
 import logging
 import uuid
 import asyncio
+import os
+import base64
 from typing import Optional, Dict, Any, List, Callable
 from slixmpp.stanza import Iq
 from slixmpp.xmlstream import ET
@@ -86,10 +88,64 @@ class JingleAdapter:
         self.logger.info("JingleAdapter initialized (CallBridge mode)")
 
     # ============================================================================
+    # SDES-SRTP Helper Functions
+    # ============================================================================
+
+    @staticmethod
+    def generate_sdes_crypto(crypto_suite: str = "AES_CM_128_HMAC_SHA1_80") -> Dict[str, str]:
+        """
+        Generate SDES crypto parameters (XEP-0167, RFC 4568).
+
+        This is what Dino does - generate random key material for SDES-SRTP
+        so we can encrypt RTP immediately (before DTLS handshake completes).
+
+        Args:
+            crypto_suite: Crypto suite to use (default: AES_CM_128_HMAC_SHA1_80)
+
+        Returns:
+            Dict with keys: 'crypto-suite', 'key-params', 'tag'
+        """
+        # AES_CM_128_HMAC_SHA1_80 requires 30 bytes: 16-byte key + 14-byte salt
+        key_material = os.urandom(30)
+        key_params = "inline:" + base64.b64encode(key_material).decode('ascii')
+
+        return {
+            'crypto-suite': crypto_suite,
+            'key-params': key_params,
+            'tag': '1'  # Tag is always 1 for single crypto suite
+        }
+
+    @staticmethod
+    def parse_sdes_key_params(key_params: str) -> tuple:
+        """
+        Parse SDES key-params into key and salt bytes.
+
+        Args:
+            key_params: Base64 key params (format: "inline:BASE64")
+
+        Returns:
+            Tuple of (key_bytes, salt_bytes)
+        """
+        if not key_params.startswith("inline:"):
+            raise ValueError(f"Invalid SDES key-params format: {key_params}")
+
+        base64_data = key_params[7:]  # Remove "inline:" prefix
+        key_material = base64.b64decode(base64_data)
+
+        # AES_CM_128_HMAC_SHA1_80: first 16 bytes = key, next 14 bytes = salt
+        if len(key_material) != 30:
+            raise ValueError(f"Invalid SDES key material length: {len(key_material)} (expected 30)")
+
+        key = key_material[:16]
+        salt = key_material[16:30]
+
+        return (key, salt)
+
+    # ============================================================================
     # Public API - Used by AccountManager
     # ============================================================================
 
-    def create_outgoing_session(self, session_id: str, peer_jid: str, sdp_offer: str, media: List[str]):
+    def create_outgoing_session(self, session_id: str, peer_jid: str, sdp_offer: str, media: List[str], local_sdes: Optional[Dict] = None):
         """
         Create outgoing session metadata.
 
@@ -100,12 +156,29 @@ class JingleAdapter:
             peer_jid: Full JID of peer (with resource)
             sdp_offer: SDP offer from CallBridge
             media: List of media types (e.g., ['audio'])
+            local_sdes: Pre-generated SDES keys (if None, will generate new ones)
         """
+        # Use pre-generated SDES keys if provided, otherwise generate new ones
+        # CRITICAL: We must use the SAME keys that were passed to C++ service!
+        if local_sdes is None:
+            # Generate our own SDES keys for outgoing calls (Dino's approach)
+            # This allows us to encrypt from the first packet (no drops!)
+            local_sdes = {}
+            for media_type in media:
+                local_crypto = self.generate_sdes_crypto()
+                local_sdes[media_type] = local_crypto
+                self.logger.info(f"Generated SDES keys for outgoing call, media={media_type}")
+        else:
+            self.logger.debug(f"Using pre-generated SDES keys for outgoing call (already passed to C++)")
+
         self.sessions[session_id] = {
             'peer_jid': peer_jid,
             'media': media,
             'sdp_offer': sdp_offer,
-            'state': 'proposing'  # Will be updated to 'pending' after session-initiate sent
+            'state': 'proposing',  # Will be updated to 'pending' after session-initiate sent
+            'direction': 'outgoing',  # We initiated this call
+            'sdes_local': local_sdes  # Our SDES keys (will be sent in session-initiate)
+            # 'sdes_remote' will be populated when we receive session-accept (if they send SDES)
         }
         self.logger.debug(f"Created outgoing session {session_id} for {peer_jid}")
 
@@ -245,6 +318,7 @@ class JingleAdapter:
             'media': media_types,
             'content_names': content_names,  # Store content names for transport-info mapping
             'state': 'incoming',
+            'direction': 'incoming',  # They initiated this call
             'remote_ice_ufrag': remote_ufrag,
             'remote_ice_pwd': remote_pwd
         }
@@ -252,6 +326,24 @@ class JingleAdapter:
         # Extract and store offer details for echoing in answer (WebRTC standard behavior)
         offer_details = self._extract_offer_details(jingle)
         self.sessions[sid]['offer_details'] = offer_details
+
+        # Generate our own SDES keys if remote peer sent SDES encryption
+        # (Dino's approach: use SDES for immediate encryption before DTLS completes)
+        encryption_data = offer_details.get('encryption', {})
+        if encryption_data:
+            self.logger.info(f"Remote peer sent SDES encryption, generating our own keys")
+            local_sdes = {}
+            for media_type, remote_crypto in encryption_data.items():
+                # Generate our own SDES keys for this media type
+                local_crypto = self.generate_sdes_crypto(remote_crypto['crypto-suite'])
+                local_sdes[media_type] = local_crypto
+                self.logger.debug(f"Generated SDES keys for {media_type}: {local_crypto['crypto-suite']}")
+
+            # Store both remote and local SDES keys in session
+            self.sessions[sid]['sdes_remote'] = encryption_data  # Remote keys (from initiator)
+            self.sessions[sid]['sdes_local'] = local_sdes        # Our keys (for responder)
+        else:
+            self.logger.debug(f"No SDES encryption in offer, will use DTLS-SRTP only")
 
         # Count candidates in the offer SDP
         candidate_count = sdp_offer.count('a=candidate:')
@@ -304,6 +396,17 @@ class JingleAdapter:
         from xml.etree import ElementTree as ET_format
         jingle_xml = ET_format.tostring(jingle, encoding='unicode')
         self.logger.debug(f"Received session-accept Jingle XML:\n{jingle_xml}")
+
+        # Parse SDES encryption from session-accept (if Dino sends it as responder)
+        # Note: Dino might NOT send SDES in session-accept (only in session-initiate)
+        answer_details = self._extract_offer_details(jingle)
+        encryption_data = answer_details.get('encryption', {})
+        if encryption_data:
+            self.logger.info(f"Remote peer sent SDES encryption in session-accept!")
+            # Store remote SDES keys (they're the responder, we're the initiator)
+            self.sessions[sid]['sdes_remote'] = encryption_data
+        else:
+            self.logger.debug(f"No SDES encryption in session-accept (Dino as responder doesn't send SDES)")
 
         # Convert Jingle XML to SDP answer
         try:
@@ -599,7 +702,8 @@ class JingleAdapter:
         self.sessions[sid] = {
             'peer_jid': peer_jid,
             'media': media_types,
-            'state': 'proposed'
+            'state': 'proposed',
+            'direction': 'incoming'  # They initiated this call
         }
 
         # This handler is DISABLED - XEP-0353 now handled by DrunkXMPP.CallsMixin
@@ -701,7 +805,8 @@ class JingleAdapter:
             'peer_jid': peer_id,
             'media': media,
             'sdp_offer': sdp,  # Store for later session-initiate
-            'state': 'proposing'
+            'state': 'proposing',
+            'direction': 'outgoing'  # We initiated this call
         }
 
         self.logger.info(f"Sending call propose to {peer_id}: {media}, sid={sid}")
@@ -1571,18 +1676,18 @@ class JingleAdapter:
                         skipped = [name for name in attrs.keys() if name not in allowed_ssrc_params]
                         self.logger.debug(f"Skipped SSRC params not in offer: {skipped}")
 
-            # Add SDES encryption BEFORE rtcp-mux (echo from offer if present)
+            # Add SDES encryption BEFORE rtcp-mux (use OUR generated keys, NOT echo theirs!)
+            # Dino's approach: Send our own SDES keys in session-accept for immediate encryption
             if session_id and session_id in self.sessions:
-                offer_details = self.sessions[session_id].get('offer_details', {})
-                encryption_data = offer_details.get('encryption', {})
-                if media_type in encryption_data:
-                    enc = encryption_data[media_type]
+                local_sdes = self.sessions[session_id].get('sdes_local', {})
+                if media_type in local_sdes:
+                    enc = local_sdes[media_type]
                     encryption_el = ET.SubElement(description, '{urn:xmpp:jingle:apps:rtp:1}encryption')
                     crypto_el = ET.SubElement(encryption_el, '{urn:xmpp:jingle:apps:rtp:1}crypto')
                     crypto_el.set('crypto-suite', enc['crypto-suite'])
                     crypto_el.set('key-params', enc['key-params'])
                     crypto_el.set('tag', enc['tag'])
-                    self.logger.debug(f"Echoed SDES encryption for {media_type}")
+                    self.logger.info(f"Added our SDES encryption keys for {media_type}: {enc['key-params'][:20]}... (NOT echoing remote keys)")
 
             # Add rtcp-mux AFTER encryption (matches Dino's element ordering)
             # Only if Pion negotiated it in the SDP answer (RTCPMuxPolicyNegotiate)
@@ -1800,9 +1905,9 @@ class JingleAdapter:
 
         # Check session state - queue candidates until session-accept sent/received
         # Per XEP-0176: can send transport-info after session stanza exchange
-        if state in ('proposing', 'proceeding', 'pending', 'incoming', 'accepted'):
+        # NOTE: 'accepted' removed - once we have session-accept, send candidates via transport-info (trickle ICE)
+        if state in ('proposing', 'proceeding', 'pending', 'incoming'):
             # Session-initiate not sent yet OR waiting for session-accept
-            # For incoming calls: 'incoming' = just received session-initiate, 'accepted' = we accepted but haven't sent session-accept yet
             # Queue candidate to send later (avoids "No module is handling this query" from peer)
             if session_id not in self.pending_ice_candidates:
                 self.pending_ice_candidates[session_id] = []
@@ -1875,11 +1980,28 @@ class JingleAdapter:
 
         Forwards state to AccountManager for GUI updates.
 
+        For outgoing calls: Sends XEP-0353 <accept/> when connection completes.
+
         Args:
             session_id: Jingle session ID
             state: Connection state ('new', 'checking', 'connected', 'completed', 'failed', 'disconnected', 'closed')
         """
         self.logger.info(f"Connection state for {session_id}: {state}")
+
+        # Send XEP-0353 <accept/> for outgoing calls when connection established
+        # This tells Dino/Conversations.im that the call is fully connected (DTLS done)
+        if session_id in self.sessions:
+            session = self.sessions[session_id]
+            session_state = session.get('state', '')
+            is_outgoing = session.get('direction') == 'outgoing'
+
+            if state == 'connected' and is_outgoing and session_state == 'accepted':
+                # We're the initiator, peer accepted, and DTLS/ICE now connected
+                # Send <accept/> to notify peer the call is fully established
+                self.logger.info(f"Sending XEP-0353 <accept/> for fully connected outgoing call {session_id}")
+                self.send_propose_accept(session_id)
+                # Update session state to 'active' so we don't send again
+                session['state'] = 'active'
 
         # Forward to on_call_state_changed callback if set (AccountManager uses this for GUI updates)
         if self.on_call_state_changed:

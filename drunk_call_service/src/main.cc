@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <glib.h>  // For GMainLoop on default context (NiceAgent needs this!)
 
 #include "call_server.h"
 #include "logger.h"
@@ -161,6 +162,17 @@ int main(int argc, char** argv) {
 
   LOG_INFO("gRPC server listening on {}", server_address);
 
+  // CRITICAL: Start GLib main loop on default context for NiceAgent
+  // NiceAgent was created with g_main_context_default() (like Dino),
+  // but we're not a GTK app, so we need to explicitly run the loop
+  GMainLoop* glib_main_loop = g_main_loop_new(g_main_context_default(), FALSE);
+  std::thread glib_thread([glib_main_loop]() {
+    LOG_INFO("GLib main loop thread started (for NiceAgent state machine on default context)");
+    g_main_loop_run(glib_main_loop);
+    LOG_INFO("GLib main loop thread stopped");
+  });
+  LOG_INFO("GLib main loop running on default context (required for libnice agent)");
+
   // Block signals in main thread (will be handled by signal thread)
   sigset_t sigset;
   sigemptyset(&sigset);
@@ -173,6 +185,13 @@ int main(int argc, char** argv) {
 
   // Wait for shutdown (blocks until Shutdown() called by signal thread)
   server->Wait();
+
+  // Shutdown GLib main loop
+  LOG_INFO("Shutting down GLib main loop...");
+  g_main_loop_quit(glib_main_loop);
+  glib_thread.join();
+  g_main_loop_unref(glib_main_loop);
+  LOG_INFO("GLib main loop shutdown complete");
 
   // Join signal thread
   signal_thread.join();

@@ -121,16 +121,20 @@ Receipt handlers auto-update (XEP-0198/0184/0333). Insert with `marked=0`, let h
 
 ## Calls Architecture
 
-### Encryption Layers
+### CRITICAL: if in doubt check with Dino. 
 
-1. **DTLS-SRTP** (Base - Always On) - Standard WebRTC encryption, universal
-2. **OMEMO Fingerprint** (Verification - Optional) - Conversations.im requirement, not universal
-3. **SDES-SRTP** (Legacy) - Deprecated, ignore if DTLS-SRTP present
+**See**: `docs/CALLS-IMPLEMENTATION-RULES.md` for complete rules
 
-**Key**: Calls are always encrypted (DTLS). OMEMO adds verification, not encryption.
+### Encryption Layers (Dino's Implementation)
+
+1. **SDES-SRTP** (Primary) - Keys in `<crypto>` element, available immediately, encrypt from first packet
+2. **DTLS-SRTP** (Transport) - Standard WebRTC, runs in parallel, both advertised for compatibility
+3. **OMEMO Fingerprint** (Verification - Optional) - Conversations.im requirement, not universal
+
+**Key**: Dino uses SDES for SRTP (keys from SDP), DTLS for transport. We MUST do the same.
 
 ### Components
-
+** Should be updated to match C++ call service **
 ```
 main_window.py
     ├─ GoCallService (Go process, app lifetime)
