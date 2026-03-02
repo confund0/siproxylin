@@ -964,11 +964,20 @@ class JingleAdapter:
         # Don't include SSRC in session-accept (not standard for answers, even though offer has it)
         self._sdp_to_jingle(sdp, jingle, session['media'], session_id=session_id, include_ssrc=False)
 
-        # Candidates are already in the SDP (we wait for gathering to complete in Go)
-        # _sdp_to_jingle() has already parsed and added them to the Jingle XML
-        # NOTE: We DON'T delete pending candidates here because new ones may arrive
-        # after CreateAnswer() but before send_answer() is called. We'll flush them
-        # after session-accept is sent (similar to outgoing calls).
+        # HYBRID TRICKLE ICE: Include initial candidates in session-accept
+        # (Dino and other implementations expect at least host candidates inline, not pure trickle)
+        # Python calls.py waits for candidates after CreateAnswer and buffers them here
+        if session_id in self.pending_ice_candidates:
+            pending = self.pending_ice_candidates[session_id]
+            if pending:
+                self.logger.info(f"[HYBRID-ICE] Including {len(pending)} initial candidates in session-accept")
+                self._inject_candidates_into_jingle(jingle, pending)
+                # Clear the queue - candidates are now in the stanza
+                del self.pending_ice_candidates[session_id]
+            else:
+                self.logger.debug(f"[HYBRID-ICE] No pending candidates to include in session-accept")
+        else:
+            self.logger.warning(f"[HYBRID-ICE] No pending candidates buffer for {session_id} - session-accept will have ZERO candidates!")
 
         self.logger.info(f"Sending session-accept for {session_id}")
 
@@ -1287,7 +1296,8 @@ class JingleAdapter:
             'has_ssrc': False,           # Whether offer includes SSRC
             'ssrc_params': [],           # List of SSRC parameter names in offer (e.g., ['cname', 'msid'])
             'extmap_allow_mixed': False, # Whether offer has extmap-allow-mixed
-            'encryption': {}             # {media: {crypto-suite, key-params, tag}} - SDES encryption per media
+            'encryption': {},            # {media: {crypto-suite, key-params, tag}} - SDES encryption per media
+            'rtcp_mux': False            # Whether offer includes <rtcp-mux /> (Dino pattern)
         }
 
         # Extract BUNDLE group (RFC 9143)
@@ -1318,6 +1328,12 @@ class JingleAdapter:
                         'tag': crypto_el.get('tag')
                     }
                     self.logger.debug(f"Extracted SDES encryption for {media}")
+
+            # RTCP multiplexing (XEP-0167, Dino pattern)
+            rtcp_mux_el = description.find('{urn:xmpp:jingle:apps:rtp:1}rtcp-mux')
+            if rtcp_mux_el is not None:
+                details['rtcp_mux'] = True
+                self.logger.debug(f"Offer includes <rtcp-mux /> - peer wants component 1 only")
 
             # RTP header extensions (RFC 8285)
             for ext in description.findall('{urn:xmpp:jingle:apps:rtp:rtp-hdrext:0}rtp-hdrext'):
@@ -1568,8 +1584,18 @@ class JingleAdapter:
             description = ET.SubElement(content, '{urn:xmpp:jingle:apps:rtp:1}description')
             description.set('media', media_type)
 
-            # Check if SDP has rtcp-mux (from Pion's negotiation)
-            has_rtcp_mux = any(line.strip() == 'a=rtcp-mux' for line in media_lines)
+            # Check if offer had rtcp-mux (echo in answer if peer supports it)
+            # For incoming calls: check offer_details, for outgoing: we always advertise rtcp-mux=true
+            has_rtcp_mux = False
+            if session_id and session_id in self.sessions:
+                offer_details = self.sessions[session_id].get('offer_details', {})
+                has_rtcp_mux = offer_details.get('rtcp_mux', False)
+                if has_rtcp_mux:
+                    self.logger.debug(f"Offer had rtcp-mux, will echo in answer")
+            # For outgoing calls where we initiate, always advertise rtcp-mux support
+            if session_id and session_id in self.sessions and self.sessions[session_id].get('direction') == 'outgoing':
+                has_rtcp_mux = True
+                self.logger.debug(f"Outgoing call: advertising rtcp-mux support")
 
             # Parse fmtp parameters (codec-specific parameters from SDP)
             # Format: a=fmtp:111 minptime=10;useinbandfec=1

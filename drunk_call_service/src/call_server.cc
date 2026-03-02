@@ -158,6 +158,7 @@ grpc::Status CallServer::CreateSession(
   config.sdes_local_key_params = request->sdes_local_key_params();
   config.sdes_remote_key_params = request->sdes_remote_key_params();
   config.sdes_crypto_suite = request->sdes_crypto_suite();
+  config.rtcp_mux = request->rtcp_mux();
 
   // Create session
   auto session = std::make_shared<Session>(config);

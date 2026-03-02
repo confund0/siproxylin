@@ -57,6 +57,14 @@ Session::~Session() {
 bool Session::Initialize() {
   LOG_INFO("Initializing session: {}", config_.session_id);
 
+  // Set rtcp-mux flag from config (Dino pattern: negotiate based on peer capabilities)
+  rtcp_mux_ = config_.rtcp_mux;
+  LOG_INFO("RTCP mux mode: {} (component {}: RTP{}, component 2: {})",
+           rtcp_mux_ ? "ENABLED" : "DISABLED",
+           1,
+           rtcp_mux_ ? "+RTCP" : " only",
+           rtcp_mux_ ? "unused" : "RTCP only");
+
   // 1. Create pipeline
   pipeline_ = gst_pipeline_new(("pipeline-" + config_.session_id).c_str());
   if (!pipeline_) {
@@ -268,6 +276,7 @@ std::string Session::CreateOffer() {
     return "";
   }
 
+  try {
   // 1. Set pipeline to PLAYING (Dino pattern: non-blocking!)
   // Reference: Dino plugin.vala:122 and pause/unpause:29-43
   // GStreamer webrtcbin: Doesn't manage state at all (application's job)
@@ -377,6 +386,11 @@ std::string Session::CreateOffer() {
   FlushCandidateBuffer();
 
   return sdp;
+
+  } catch (const std::exception& e) {
+    LOG_ERROR("Exception in CreateOffer: {}", e.what());
+    return "";
+  }
 }
 
 std::string Session::CreateAnswer(const std::string& remote_sdp,
@@ -392,6 +406,7 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
     return "";
   }
 
+  try {
   // 1. Set pipeline to PLAYING FIRST (Dino pattern: non-blocking!)
   // Reference: Dino plugin.vala:122 and pause/unpause:29-43
   // GStreamer webrtcbin: Doesn't manage state at all (application's job)
@@ -593,6 +608,11 @@ std::string Session::CreateAnswer(const std::string& remote_sdp,
   FlushCandidateBuffer();
 
   return sdp;
+
+  } catch (const std::exception& e) {
+    LOG_ERROR("Exception in CreateAnswer: {}", e.what());
+    return "";
+  }
 }
 
 bool Session::SetRemoteDescription(const std::string& remote_sdp, const std::string& sdp_type) {
@@ -841,8 +861,11 @@ Session::Stats Session::GetStats() {
     stats.connection_state = "new";
   }
 
-  // Gathering state (stub - will track in IceAgent)
-  stats.ice_gathering_state = "complete";  // STUB
+  // Gathering state - get from gathering_done_ flag
+  {
+    std::lock_guard<std::mutex> lock(gathering_buffer_mutex_);
+    stats.ice_gathering_state = gathering_done_ ? "complete" : "gathering";
+  }
 
   // Bytes and bandwidth (stub - Phase 4 will get from rtpbin stats)
   stats.bytes_sent = 0;
@@ -931,19 +954,8 @@ void Session::OnPadAdded(GstElement* rtpbin, GstPad* pad, gpointer user_data) {
   gchar* pad_name = gst_pad_get_name(pad);
   LOG_INFO("rtpbin pad added: {}", pad_name);
 
-  // Handle send_rtcp_src_0 pad (dynamically created by rtpbin)
-  if (g_str_has_prefix(pad_name, "send_rtcp_src_")) {
-    LOG_INFO("Linking {} to RTCP appsink", pad_name);
-    GstPad* rtcp_sink = gst_element_get_static_pad(session->send_rtcp_appsink_, "sink");
-    if (gst_pad_link(pad, rtcp_sink) != GST_PAD_LINK_OK) {
-      LOG_ERROR("Failed to link {} to RTCP appsink", pad_name);
-    } else {
-      LOG_INFO("RTCP appsink linked successfully");
-    }
-    gst_object_unref(rtcp_sink);
-    g_free(pad_name);
-    return;
-  }
+  // NOTE: send_rtcp_src_0 is now linked explicitly during setup (Dino pattern)
+  // We only handle dynamic recv_rtp_src pads here (created when rtpbin detects incoming SSRC)
 
   // Handle recv_rtp_src pads (incoming RTP for playback)
   if (g_str_has_prefix(pad_name, "recv_rtp_src_")) {
@@ -1166,13 +1178,22 @@ bool Session::SetupAppsinkAppsrc() {
 
   // Configure appsink (matching Dino's configuration)
   // CRITICAL: sync=TRUE required for rtpbin to calculate running time and generate RTP timestamps
+  // Set caps for RTP with Opus payload type 96
+  GstCaps* send_rtp_caps = gst_caps_new_simple("application/x-rtp",
+      "media", G_TYPE_STRING, "audio",
+      "payload", G_TYPE_INT, 96,
+      "clock-rate", G_TYPE_INT, 48000,
+      "encoding-name", G_TYPE_STRING, "OPUS",
+      NULL);
   g_object_set(send_rtp_appsink_,
+               "caps", send_rtp_caps,
                "emit-signals", TRUE,
                "sync", TRUE,        // Sync to pipeline clock (CRITICAL!)
                "async", FALSE,      // Synchronous state changes
                "drop", TRUE,        // Drop old buffers if slow
                "wait-on-eos", FALSE, // Don't wait on EOS
                NULL);
+  gst_caps_unref(send_rtp_caps);
   g_signal_connect(send_rtp_appsink_, "new-sample",
                    G_CALLBACK(OnAppsinkNewSample), this);
 
@@ -1184,13 +1205,17 @@ bool Session::SetupAppsinkAppsrc() {
   }
 
   // Configure RTCP appsink (same properties as RTP appsink)
+  // Set caps for RTCP
+  GstCaps* send_rtcp_caps = gst_caps_new_empty_simple("application/x-rtcp");
   g_object_set(send_rtcp_appsink_,
+               "caps", send_rtcp_caps,
                "emit-signals", TRUE,
                "sync", TRUE,        // Sync to pipeline clock
                "async", FALSE,      // Synchronous state changes
                "drop", TRUE,        // Drop old buffers if slow
                "wait-on-eos", FALSE, // Don't wait on EOS
                NULL);
+  gst_caps_unref(send_rtcp_caps);
   g_signal_connect(send_rtcp_appsink_, "new-sample",
                    G_CALLBACK(OnAppsinkNewSample), this);
 
@@ -1218,7 +1243,7 @@ bool Session::SetupAppsinkAppsrc() {
                "is-live", TRUE,       // Treat as live source (affects latency)
                NULL);
   gst_caps_unref(rtp_caps);
-  LOG_INFO("Set RTP caps on recv_rtp_appsrc: application/x-rtp,encoding-name=OPUS,payload=96");
+  LOG_INFO("Set RTP caps on recv_rtp_appsrc: application/x-rtp,media=audio,clock-rate=48000,encoding-name=OPUS,payload=96");
 
   // Create appsrc for incoming RTCP
   recv_rtcp_appsrc_ = gst_element_factory_make("appsrc", "recv_rtcp_appsrc");
@@ -1301,9 +1326,9 @@ bool Session::SetupAudioPipeline() {
     return false;
   }
 
-  // Set do-timestamp on audio source (critical for rtpbin timing)
-  g_object_set(audio_src_, "do-timestamp", TRUE, NULL);
-  LOG_INFO("Set do-timestamp=true on audio source");
+  // NOTE: do-timestamp is NOT a valid property for autoaudiosrc/pulsesrc
+  // It's only valid for appsrc elements (we set it on recv_rtp_appsrc already)
+  // The audio source will automatically timestamp its buffers based on the capture time
 
   // Create rest of pipeline (SAME)
   GstElement* audioconvert = gst_element_factory_make("audioconvert", "audioconv");
@@ -1363,9 +1388,23 @@ bool Session::SetupAudioPipeline() {
   gst_object_unref(rtp_sink);
   LOG_INFO("RTP appsink linked to rtpbin send_rtp_src_0");
 
-  // NOTE: send_rtcp_src_0 is created dynamically by rtpbin when RTCP is generated
-  // We handle it in the OnPadAdded callback (already connected in SetupRtpbin)
-  LOG_INFO("RTCP appsink will be linked dynamically when rtpbin creates send_rtcp_src_0");
+  // Request and link RTCP output pad (Dino pattern: must be explicitly requested!)
+  // rtpbin doesn't create this pad automatically - we must request it
+  GstPad* rtcp_src = gst_element_request_pad_simple(rtpbin_, "send_rtcp_src_0");
+  if (!rtcp_src) {
+    LOG_ERROR("Failed to request send_rtcp_src_0 pad from rtpbin");
+    return false;
+  }
+  GstPad* rtcp_sink = gst_element_get_static_pad(send_rtcp_appsink_, "sink");
+  if (gst_pad_link(rtcp_src, rtcp_sink) != GST_PAD_LINK_OK) {
+    LOG_ERROR("Failed to link rtpbin send_rtcp_src_0 to RTCP appsink");
+    gst_object_unref(rtcp_src);
+    gst_object_unref(rtcp_sink);
+    return false;
+  }
+  gst_object_unref(rtcp_src);
+  gst_object_unref(rtcp_sink);
+  LOG_INFO("RTCP appsink linked to rtpbin send_rtcp_src_0");
 
   return true;
 }

@@ -590,7 +590,8 @@ class CallBarrel:
                 gain_control=audio_proc['gain_control'],
                 sdes_local_key_params=sdes_local_key_params,
                 sdes_remote_key_params=sdes_remote_key_params,
-                sdes_crypto_suite=sdes_crypto_suite
+                sdes_crypto_suite=sdes_crypto_suite,
+                rtcp_mux=True  # Advertise rtcp-mux support (Dino pattern)
             )
 
             # Generate SDP offer from CallBridge
@@ -704,6 +705,11 @@ class CallBarrel:
                     if self.logger:
                         self.logger.info(f"Passing SDES keys to Go service: suite={sdes_crypto_suite}")
 
+            # Get rtcp-mux from offer details (Dino pattern: peer advertises rtcp-mux capability)
+            rtcp_mux = offer_details.get('rtcp_mux', False)
+            if self.logger and rtcp_mux:
+                self.logger.info(f"Peer advertises rtcp-mux - will use component 1 for RTP+RTCP")
+
             # Create CallBridge session (incoming call)
             if self.logger:
                 self.logger.info(f"Creating C++ session for incoming call {session_id} (Dino pattern: immediate)")
@@ -725,7 +731,8 @@ class CallBarrel:
                 offer_has_bundle=offer_has_bundle,
                 sdes_local_key_params=sdes_local_key_params,
                 sdes_remote_key_params=sdes_remote_key_params,
-                sdes_crypto_suite=sdes_crypto_suite
+                sdes_crypto_suite=sdes_crypto_suite,
+                rtcp_mux=rtcp_mux  # Use peer's rtcp-mux preference (Dino pattern)
             )
             if not success:
                 raise RuntimeError("Failed to create CallBridge session")
@@ -735,7 +742,21 @@ class CallBarrel:
                 self.logger.info(f"Generating answer SDP for {session_id} (Dino pattern: immediate)")
             sdp_answer = await self.call_bridge.create_answer(session_id, sdp_offer, offer_has_bundle)
 
-            # Store answer for later (when user accepts, we'll send it)
+            # CRITICAL: Wait for initial candidates before sending session-accept
+            # (Dino expects at least host candidates inline, not pure trickle ICE)
+            if self.logger:
+                self.logger.info(f"Waiting for initial candidates for {session_id} before sending session-accept...")
+
+            candidates = await self.call_bridge.wait_for_candidates(
+                session_id,
+                min_candidates=2,  # At least one for each component
+                timeout=5.0  # 5 seconds max wait
+            )
+
+            if self.logger:
+                self.logger.info(f"Collected {len(candidates)} candidates for {session_id}, ready to send session-accept")
+
+            # Store answer and candidates for later (when user accepts, we'll send it)
             self.pending_answers[session_id] = sdp_answer
 
             if self.logger:

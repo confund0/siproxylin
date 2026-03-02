@@ -17,7 +17,7 @@ import os
 import platform
 import threading
 from pathlib import Path
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Callable, List
 
 import grpc
 from .proto import call_pb2, call_pb2_grpc
@@ -83,10 +83,10 @@ class GoCallService:
             # Go writes structured logs to file via -log-path (stdout disabled in Go logger)
             stderr_file = open(go_err_file, 'a')
 
-            # Enable GStreamer debug logging for webrtcbin
+            # Enable GStreamer debug logging for rtpbin pipeline debugging
             import os
             env = os.environ.copy()
-            env['GST_DEBUG'] = 'webrtcbin:5'
+            env['GST_DEBUG'] = 'rtpbin:5,appsrc:5,rtpopusdepay:5,opusdec:5,basesrc:4'
             # Enable libnice debug logging - must specify domains explicitly
             # See: https://libnice.freedesktop.org/libnice/libnice-Debug-messages.html
             env['G_MESSAGES_DEBUG'] = 'libnice,libnice-stun,libnice-socket,libnice-pseudotcp'
@@ -346,6 +346,10 @@ class CallBridge:
         self._event_streams: Dict[str, asyncio.Task] = {}
         self._stream_lock = asyncio.Lock()
 
+        # Candidate collection for waiting (session_id -> list of candidates)
+        self._collected_candidates: Dict[str, List[Dict[str, Any]]] = {}
+        self._candidate_lock = asyncio.Lock()
+
     async def connect(self) -> bool:
         """
         Connect to Go service via gRPC.
@@ -418,7 +422,8 @@ class CallBridge:
                              offer_has_bundle: bool = True,
                              sdes_local_key_params: str = "",
                              sdes_remote_key_params: str = "",
-                             sdes_crypto_suite: str = "") -> bool:
+                             sdes_crypto_suite: str = "",
+                             rtcp_mux: bool = False) -> bool:
         """
         Create new call session.
 
@@ -499,7 +504,8 @@ class CallBridge:
             offer_has_bundle=offer_has_bundle,
             sdes_local_key_params=sdes_local_key_params,
             sdes_remote_key_params=sdes_remote_key_params,
-            sdes_crypto_suite=sdes_crypto_suite
+            sdes_crypto_suite=sdes_crypto_suite,
+            rtcp_mux=rtcp_mux  # XEP-0167: Use component 1 for both RTP+RTCP (Dino pattern)
         )
 
         response = await self._stub.CreateSession(request)
@@ -643,6 +649,85 @@ class CallBridge:
             'remote_candidates': list(response.remote_candidates),
             'connection_type': response.connection_type,
         }
+
+    async def wait_for_candidates(self, session_id: str,
+                                   min_candidates: int = 2,
+                                   timeout: float = 5.0) -> List[Dict[str, Any]]:
+        """
+        Wait for ICE candidates to be collected from the C++ service.
+
+        This method waits until either:
+        - We have at least min_candidates candidates collected
+        - ICE gathering is complete (checked via GetStats)
+        - Timeout expires
+
+        Args:
+            session_id: Session ID to wait for
+            min_candidates: Minimum number of candidates to wait for (default: 2 - one per component)
+            timeout: Maximum time to wait in seconds (default: 5.0)
+
+        Returns:
+            List of collected candidates
+        """
+        self.logger.info(f"Waiting for candidates for {session_id} (min={min_candidates}, timeout={timeout}s)")
+
+        # Initialize collection for this session
+        async with self._candidate_lock:
+            if session_id not in self._collected_candidates:
+                self._collected_candidates[session_id] = []
+
+        start_time = asyncio.get_event_loop().time()
+        poll_interval = 0.2  # Poll every 200ms
+
+        while True:
+            elapsed = asyncio.get_event_loop().time() - start_time
+
+            # Check timeout
+            if elapsed >= timeout:
+                async with self._candidate_lock:
+                    candidates = self._collected_candidates.get(session_id, [])
+                self.logger.warning(
+                    f"Timeout waiting for candidates for {session_id} "
+                    f"(got {len(candidates)}/{min_candidates} after {elapsed:.1f}s)"
+                )
+                return candidates
+
+            # Check if we have enough candidates
+            async with self._candidate_lock:
+                candidates = self._collected_candidates.get(session_id, []).copy()
+
+            if len(candidates) >= min_candidates:
+                self.logger.info(
+                    f"Collected {len(candidates)} candidates for {session_id} (>= {min_candidates})"
+                )
+
+                # Also check if gathering is complete
+                try:
+                    stats = await self.get_stats(session_id)
+                    gathering_state = stats.get('ice_gathering_state', '')
+                    if gathering_state == 'complete':
+                        self.logger.info(f"ICE gathering complete for {session_id}")
+                        return candidates
+                except Exception as e:
+                    self.logger.debug(f"Failed to get stats: {e}")
+
+                # We have enough candidates, return them
+                return candidates
+
+            # Check if gathering is complete (even if we don't have enough candidates)
+            try:
+                stats = await self.get_stats(session_id)
+                gathering_state = stats.get('ice_gathering_state', '')
+                if gathering_state == 'complete':
+                    self.logger.info(
+                        f"ICE gathering complete for {session_id} with {len(candidates)} candidates"
+                    )
+                    return candidates
+            except Exception as e:
+                self.logger.debug(f"Failed to get stats: {e}")
+
+            # Wait before next check
+            await asyncio.sleep(poll_interval)
 
     async def list_audio_devices(self) -> list:
         """
@@ -894,6 +979,12 @@ class CallBridge:
             self.logger.debug(
                 f"ICE candidate event for {session_id}: {ice_event.candidate[:50]}..."
             )
+
+            # Collect candidate for wait_for_candidates()
+            async with self._candidate_lock:
+                if session_id not in self._collected_candidates:
+                    self._collected_candidates[session_id] = []
+                self._collected_candidates[session_id].append(candidate)
 
             if self.on_ice_candidate:
                 try:

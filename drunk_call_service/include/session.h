@@ -58,6 +58,9 @@ class Session {
     std::string sdes_local_key_params;   // Our SDES key (format: "inline:BASE64")
     std::string sdes_remote_key_params;  // Remote SDES key (format: "inline:BASE64")
     std::string sdes_crypto_suite;       // Crypto suite (e.g., "AES_CM_128_HMAC_SHA1_80")
+
+    // RTCP multiplexing (XEP-0167, Dino pattern)
+    bool rtcp_mux = false;               // If true, use component 1 for both RTP+RTCP
   };
 
   explicit Session(const Config& config);

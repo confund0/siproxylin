@@ -93,6 +93,9 @@ message CreateSessionRequest {
   string sdes_local_key_params = 22;   // Our SDES key (format: "inline:BASE64"), sent in session-accept
   string sdes_remote_key_params = 23;  // Remote SDES key (format: "inline:BASE64"), received in session-initiate
   string sdes_crypto_suite = 24;       // Crypto suite (e.g., "AES_CM_128_HMAC_SHA1_80")
+
+  // RTCP multiplexing (XEP-0167)
+  bool rtcp_mux = 25;                  // If true, use component 1 for both RTP+RTCP (Dino pattern), default: false
 }
 
 message CreateSessionResponse {
