@@ -321,11 +321,13 @@ class CallManager:
         """
         logger.debug(f"Opening call window: {peer_jid} ({direction}, {media})")
 
+        # Get account
+        account = self.account_manager.get_account(account_id)
+
         # Create call window
-        call_window = CallWindow(self.main_window, account_id, session_id, peer_jid, media, direction)
+        call_window = CallWindow(self.main_window, account_id, session_id, peer_jid, media, direction, account=account)
 
         # Connect signals
-        account = self.account_manager.get_account(account_id)
         if account:
             # Update call window when state changes
             account.call_state_changed.connect(

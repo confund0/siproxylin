@@ -75,7 +75,8 @@ class CallsMixin:
         # Extract media types from description elements
         propose = msg['jingle_propose']
         descriptions = propose.get_descriptions()
-        media_types = [desc['media'] for desc in descriptions if 'media' in desc]
+        # get_descriptions() returns list of (namespace, media) tuples
+        media_types = [media for (namespace, media) in descriptions]
 
         if not media_types:
             media_types = ['audio']  # Default to audio if no description

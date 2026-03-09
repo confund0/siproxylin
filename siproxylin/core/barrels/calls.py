@@ -133,6 +133,7 @@ class CallBarrel:
         self.call_bridge = None  # CallBridge instance (Go service)
         self.jingle_adapter = None  # JingleAdapter for Jingle signaling
         self.pending_call_offers: Dict[str, str] = {}  # session_id → sdp_offer (temp storage)
+        self.pending_call_media: Dict[str, list] = {}  # session_id → media types (for outgoing calls)
         self.accepted_calls: set = set()  # Track calls user accepted (sent proceed, waiting for session-initiate)
         self.incoming_call_timers: Dict[str, Any] = {}  # session_id → QTimer (60s timeout for unanswered calls)
         self.outgoing_call_timers: Dict[str, Any] = {}  # session_id → QTimer (60s timeout for unanswered calls)
@@ -491,6 +492,13 @@ class CallBarrel:
             return
 
         try:
+            # Get media types from pending call (stored in start_call)
+            media_types = self.pending_call_media.get(session_id, ['audio'])
+            enable_video = 'video' in media_types
+
+            if self.logger:
+                self.logger.debug(f"Outgoing call media types: {media_types}, video enabled: {enable_video}")
+
             # Query XEP-0215 for TURN servers
             turn_server, turn_username, turn_password = '', '', ''
             try:
@@ -512,7 +520,7 @@ class CallBarrel:
             mic_device, mic_display, speakers_device, speakers_display, audio_proc = self._load_audio_settings()
 
             # Create CallBridge session (WebRTC peer connection)
-            await self.call_bridge.create_session(
+            result = await self.call_bridge.create_session(
                 peer_jid, session_id, mic_device, speakers_device,
                 microphone_display_name=mic_display,
                 speakers_display_name=speakers_display,
@@ -528,20 +536,40 @@ class CallBarrel:
                 echo_suppression_level=audio_proc['echo_suppression_level'],
                 noise_suppression=audio_proc['noise_suppression'],
                 noise_suppression_level=audio_proc['noise_suppression_level'],
-                gain_control=audio_proc['gain_control']
+                gain_control=audio_proc['gain_control'],
+                enable_video=enable_video
             )
+
+            # Handle return value - can be bool (legacy) or tuple (success, video_port)
+            if isinstance(result, tuple):
+                success, video_port = result
+            else:
+                success = result
+                video_port = None
+
+            if not success:
+                raise RuntimeError("Failed to create CallBridge session")
 
             # Generate SDP offer from CallBridge
             sdp_offer = await self.call_bridge.create_offer(session_id)
 
             # Create outgoing session in JingleAdapter (encapsulated API)
-            self.jingle_adapter.create_outgoing_session(session_id, peer_jid, sdp_offer, ['audio'])
+            self.jingle_adapter.create_outgoing_session(session_id, peer_jid, sdp_offer, media_types)
+
+            # Store video port for RTP streaming
+            if video_port:
+                self.jingle_adapter.sessions[session_id]['video_port'] = video_port
+                if self.logger:
+                    self.logger.info(f"Video enabled for outgoing call {session_id}, RTP port: {video_port}")
 
             # Send ONLY session-initiate (skip propose - already sent by mixin)
             await self.jingle_adapter._send_session_initiate(session_id)
 
             if self.logger:
                 self.logger.debug(f"Sent Jingle session-initiate to {peer_jid}")
+
+            # Clean up pending media types
+            self.pending_call_media.pop(session_id, None)
 
         except Exception as e:
             if self.logger:
@@ -725,6 +753,13 @@ class CallBarrel:
             return False
 
         try:
+            # Get media types from session
+            media_types = self.jingle_adapter.sessions[session_id].get('media', ['audio'])
+            enable_video = 'video' in media_types
+
+            if self.logger:
+                self.logger.debug(f"Session {session_id} media types: {media_types}, video enabled: {enable_video}")
+
             # Query XEP-0215 for TURN servers
             turn_server, turn_username, turn_password = '', '', ''
             try:
@@ -750,7 +785,7 @@ class CallBarrel:
 
             # Create CallBridge session (incoming call)
             # GStreamer webrtcbin will queue any ICE candidates that arrive before set-remote-description
-            success = await self.call_bridge.create_session(
+            result = await self.call_bridge.create_session(
                 self.jingle_adapter.sessions[session_id]['peer_jid'],
                 session_id,
                 mic_device,
@@ -769,11 +804,25 @@ class CallBarrel:
                 echo_suppression_level=audio_proc['echo_suppression_level'],
                 noise_suppression=audio_proc['noise_suppression'],
                 noise_suppression_level=audio_proc['noise_suppression_level'],
-                gain_control=audio_proc['gain_control']
+                gain_control=audio_proc['gain_control'],
+                enable_video=enable_video
             )
+
+            # Handle return value - can be bool (legacy) or tuple (success, video_port)
+            if isinstance(result, tuple):
+                success, video_port = result
+            else:
+                success = result
+                video_port = None
 
             if not success:
                 raise RuntimeError("Failed to create CallBridge session")
+
+            # Store video port for RTP streaming
+            if video_port:
+                self.jingle_adapter.sessions[session_id]['video_port'] = video_port
+                if self.logger:
+                    self.logger.info(f"Video enabled for session {session_id}, RTP port: {video_port}")
 
             if self.logger:
                 self.logger.info(f"C++ session created for incoming call {session_id}")
@@ -1122,6 +1171,9 @@ class CallBarrel:
         # The mixin generates its own session_id for the XEP-0353 flow
         try:
             actual_sid = self.client.send_call_propose(peer_jid, media)
+
+            # Store media types for later use in _on_xmpp_call_accepted
+            self.pending_call_media[actual_sid] = media
 
             if self.logger:
                 self.logger.debug(f"Call propose sent (session {actual_sid})")
@@ -1510,6 +1562,7 @@ class CallBarrel:
 
         # Layer 4: AccountManager state cleanup
         self.pending_call_offers.pop(session_id, None)
+        self.pending_call_media.pop(session_id, None)
         self.accepted_calls.discard(session_id)
 
         # Phase 4: Call logging state cleanup

@@ -370,13 +370,19 @@ class JingleSDPConverter:
                 for pt in payload_types:
                     pt_id = pt.get('id')
                     pt_name = pt.get('name')
-                    pt_clockrate = pt.get('clockrate', '48000')
-                    pt_channels = pt.get('channels', '1')
+
+                    # Media-aware defaults
+                    if media == 'video':
+                        pt_clockrate = pt.get('clockrate', '90000')
+                        pt_channels = None  # Video doesn't use channels
+                    else:  # audio
+                        pt_clockrate = pt.get('clockrate', '48000')
+                        pt_channels = pt.get('channels', '1')
 
                     pt_ids.append(pt_id)
 
                     # Build rtpmap
-                    if int(pt_channels) > 1:
+                    if pt_channels and int(pt_channels) > 1:
                         rtpmap_lines.append(f"a=rtpmap:{pt_id} {pt_name}/{pt_clockrate}/{pt_channels}")
                     else:
                         rtpmap_lines.append(f"a=rtpmap:{pt_id} {pt_name}/{pt_clockrate}")

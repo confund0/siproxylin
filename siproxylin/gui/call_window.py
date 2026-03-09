@@ -37,7 +37,7 @@ class CallWindow(QWidget):
     hangup_requested = Signal()
 
     def __init__(self, parent, account_id: int, session_id: str,
-                 peer_jid: str, media_types: list, direction: str):
+                 peer_jid: str, media_types: list, direction: str, account=None):
         """
         Initialize call window.
 
@@ -48,6 +48,7 @@ class CallWindow(QWidget):
             peer_jid: JID of peer
             media_types: List of media types (['audio'] or ['audio', 'video'])
             direction: 'outgoing' or 'incoming'
+            account: Account instance (for accessing video port)
         """
         super().__init__(parent)
 
@@ -56,10 +57,12 @@ class CallWindow(QWidget):
         self.peer_jid = peer_jid
         self.media_types = media_types
         self.direction = direction
+        self.account = account
 
         # Call timing
         self.call_start_time: Optional[float] = None
         self.call_connected = False
+        self.video_started = False  # Track if video playback has started
 
         # Size management for collapsible tech details
         self._expanded_size = None
@@ -131,6 +134,26 @@ class CallWindow(QWidget):
         duration_font.setBold(True)
         self.duration_label.setFont(duration_font)
         layout.addWidget(self.duration_label)
+
+        # =====================================================================
+        # Video Display (if video call)
+        # =====================================================================
+        self.video_widget = None
+        if 'video' in self.media_types:
+            try:
+                from .widgets.video_widget import VLCVideoWidget
+                self.video_widget = VLCVideoWidget(self)
+                self.video_widget.setMinimumSize(640, 480)
+                layout.addWidget(self.video_widget)
+                logger.debug("Video widget added to call window")
+            except Exception as e:
+                logger.error(f"Failed to create video widget: {e}")
+                # Add placeholder label
+                error_label = QLabel("Video unavailable")
+                error_label.setAlignment(Qt.AlignCenter)
+                error_label.setStyleSheet("color: red; background-color: black;")
+                error_label.setMinimumSize(640, 480)
+                layout.addWidget(error_label)
 
         layout.addStretch()
 
@@ -392,6 +415,10 @@ class CallWindow(QWidget):
                 self.call_connected = True
                 logger.info(f"Call connected at {self.call_start_time}")
 
+                # Start video playback if available
+                if self.video_widget and not self.video_started and self.account:
+                    self._start_video_if_available()
+
         elif state == 'connecting':
             self.status_label.setText("Status: Connecting...")
             self.status_label.setStyleSheet("color: orange;")
@@ -494,8 +521,75 @@ class CallWindow(QWidget):
         else:
             return f"{bytes_count / (1024 * 1024):.1f} MB"
 
+    def _start_video_if_available(self):
+        """
+        Start video playback if video port is available in session.
+
+        Retrieves video port from account's jingle_adapter session and starts playback.
+        """
+        try:
+            # Get video port from jingle_adapter session
+            if not hasattr(self.account, 'jingle_adapter') or not self.account.jingle_adapter:
+                logger.warning("Cannot start video: jingle_adapter not available")
+                return
+
+            session = self.account.jingle_adapter.sessions.get(self.session_id)
+            if not session:
+                logger.warning(f"Cannot start video: session {self.session_id} not found")
+                return
+
+            video_port = session.get('video_port')
+            if not video_port:
+                logger.debug(f"No video port available for session {self.session_id}")
+                return
+
+            # Start video playback
+            self.start_video_playback(video_port)
+            self.video_started = True
+
+        except Exception as e:
+            logger.error(f"Error starting video playback: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    def start_video_playback(self, video_port: int):
+        """
+        Start video playback from RTP stream.
+
+        Args:
+            video_port: UDP port where RTP stream is being sent
+        """
+        if not self.video_widget:
+            logger.warning("Cannot start video playback: no video widget")
+            return
+
+        try:
+            # Generate SDP content for VLC (VP8 default, most common)
+            # VLC requires SDP for dynamic RTP payload types (96-127)
+            sdp_content = f"""v=0
+o=- 0 0 IN IP4 127.0.0.1
+s=Siproxylin Video Call
+c=IN IP4 127.0.0.1
+t=0 0
+m=video {video_port} RTP/AVP 96
+a=rtpmap:96 VP8/90000
+"""
+            logger.info(f"Starting RTP video playback on port {video_port}")
+            self.video_widget.play_stream(sdp_content, video_port)
+        except Exception as e:
+            logger.error(f"Failed to start video playback: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
     def closeEvent(self, event):
         """Handle window close event."""
+        # Stop video playback
+        if self.video_widget:
+            try:
+                self.video_widget.stop()
+            except Exception as e:
+                logger.error(f"Error stopping video widget: {e}")
+
         # Stop timers when closing
         if hasattr(self, 'duration_timer'):
             self.duration_timer.stop()

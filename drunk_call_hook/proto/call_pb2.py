@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\ncall.proto\x12\x04\x63\x61ll\"\xba\x03\n\x14\x43reateSessionRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x10\n\x08peer_jid\x18\x02 \x01(\t\x12\x19\n\x11microphone_device\x18\x03 \x01(\t\x12\x17\n\x0fspeakers_device\x18\x04 \x01(\t\x12\x12\n\nproxy_host\x18\x05 \x01(\t\x12\x12\n\nproxy_port\x18\x06 \x01(\x05\x12\x16\n\x0eproxy_username\x18\x07 \x01(\t\x12\x16\n\x0eproxy_password\x18\x08 \x01(\t\x12\x12\n\nproxy_type\x18\t \x01(\t\x12\x13\n\x0bturn_server\x18\n \x01(\t\x12\x15\n\rturn_username\x18\x0b \x01(\t\x12\x15\n\rturn_password\x18\x0c \x01(\t\x12\x12\n\nrelay_only\x18\r \x01(\x08\x12\x13\n\x0b\x65\x63ho_cancel\x18\x0e \x01(\x08\x12\x1e\n\x16\x65\x63ho_suppression_level\x18\x0f \x01(\x05\x12\x19\n\x11noise_suppression\x18\x10 \x01(\x08\x12\x1f\n\x17noise_suppression_level\x18\x11 \x01(\x05\x12\x14\n\x0cgain_control\x18\x12 \x01(\x08\"7\n\x15\x43reateSessionResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"(\n\x12\x43reateOfferRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\"=\n\x13\x43reateAnswerRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x12\n\nremote_sdp\x18\x02 \x01(\t\")\n\x0bSDPResponse\x12\x0b\n\x03sdp\x18\x01 \x01(\t\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"W\n\x1bSetRemoteDescriptionRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x12\n\nremote_sdp\x18\x02 \x01(\t\x12\x10\n\x08sdp_type\x18\x03 \x01(\t\"i\n\x16\x41\x64\x64ICECandidateRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x11\n\tcandidate\x18\x02 \x01(\t\x12\x0f\n\x07sdp_mid\x18\x03 \x01(\t\x12\x17\n\x0fsdp_mline_index\x18\x04 \x01(\x05\"\'\n\x11\x45ndSessionRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\")\n\x13StreamEventsRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\"\x07\n\x05\x45mpty\"\xb5\x01\n\tCallEvent\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x30\n\rice_candidate\x18\x02 \x01(\x0b\x32\x17.call.ICECandidateEventH\x00\x12\x36\n\x10\x63onnection_state\x18\x03 \x01(\x0b\x32\x1a.call.ConnectionStateEventH\x00\x12!\n\x05\x65rror\x18\x04 \x01(\x0b\x32\x10.call.ErrorEventH\x00\x42\x07\n\x05\x65vent\"P\n\x11ICECandidateEvent\x12\x11\n\tcandidate\x18\x01 \x01(\t\x12\x0f\n\x07sdp_mid\x18\x02 \x01(\t\x12\x17\n\x0fsdp_mline_index\x18\x03 \x01(\x05\"\xaf\x01\n\x14\x43onnectionStateEvent\x12/\n\x05state\x18\x01 \x01(\x0e\x32 .call.ConnectionStateEvent.State\"f\n\x05State\x12\x07\n\x03NEW\x10\x00\x12\x0c\n\x08\x43HECKING\x10\x01\x12\r\n\tCONNECTED\x10\x02\x12\r\n\tCOMPLETED\x10\x03\x12\n\n\x06\x46\x41ILED\x10\x04\x12\x10\n\x0c\x44ISCONNECTED\x10\x05\x12\n\n\x06\x43LOSED\x10\x06\"\x1d\n\nErrorEvent\x12\x0f\n\x07message\x18\x01 \x01(\t\"%\n\x0fGetStatsRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\"\xf9\x01\n\x10GetStatsResponse\x12\x18\n\x10\x63onnection_state\x18\x01 \x01(\t\x12\x1c\n\x14ice_connection_state\x18\x02 \x01(\t\x12\x1b\n\x13ice_gathering_state\x18\x03 \x01(\t\x12\x12\n\nbytes_sent\x18\x04 \x01(\x03\x12\x16\n\x0e\x62ytes_received\x18\x05 \x01(\x03\x12\x16\n\x0e\x62\x61ndwidth_kbps\x18\x06 \x01(\x03\x12\x18\n\x10local_candidates\x18\x07 \x03(\t\x12\x19\n\x11remote_candidates\x18\x08 \x03(\t\x12\x17\n\x0f\x63onnection_type\x18\t \x01(\t\"F\n\x0b\x41udioDevice\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x14\n\x0c\x64\x65vice_class\x18\x03 \x01(\t\">\n\x18ListAudioDevicesResponse\x12\"\n\x07\x64\x65vices\x18\x01 \x03(\x0b\x32\x11.call.AudioDevice\"3\n\x0eSetMuteRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\r\n\x05muted\x18\x02 \x01(\x08\x32\xc0\x05\n\x0b\x43\x61llService\x12H\n\rCreateSession\x12\x1a.call.CreateSessionRequest\x1a\x1b.call.CreateSessionResponse\x12:\n\x0b\x43reateOffer\x12\x18.call.CreateOfferRequest\x1a\x11.call.SDPResponse\x12<\n\x0c\x43reateAnswer\x12\x19.call.CreateAnswerRequest\x1a\x11.call.SDPResponse\x12\x46\n\x14SetRemoteDescription\x12!.call.SetRemoteDescriptionRequest\x1a\x0b.call.Empty\x12<\n\x0f\x41\x64\x64ICECandidate\x12\x1c.call.AddICECandidateRequest\x1a\x0b.call.Empty\x12\x32\n\nEndSession\x12\x17.call.EndSessionRequest\x1a\x0b.call.Empty\x12<\n\x0cStreamEvents\x12\x19.call.StreamEventsRequest\x1a\x0f.call.CallEvent0\x01\x12%\n\tHeartbeat\x12\x0b.call.Empty\x1a\x0b.call.Empty\x12$\n\x08Shutdown\x12\x0b.call.Empty\x1a\x0b.call.Empty\x12\x39\n\x08GetStats\x12\x15.call.GetStatsRequest\x1a\x16.call.GetStatsResponse\x12?\n\x10ListAudioDevices\x12\x0b.call.Empty\x1a\x1e.call.ListAudioDevicesResponse\x12,\n\x07SetMute\x12\x14.call.SetMuteRequest\x1a\x0b.call.EmptyB2Z0github.com/yourusername/drunk-call-service/protob\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\ncall.proto\x12\x04\x63\x61ll\"\x88\x04\n\x14\x43reateSessionRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x10\n\x08peer_jid\x18\x02 \x01(\t\x12\x19\n\x11microphone_device\x18\x03 \x01(\t\x12\x17\n\x0fspeakers_device\x18\x04 \x01(\t\x12\x12\n\nproxy_host\x18\x05 \x01(\t\x12\x12\n\nproxy_port\x18\x06 \x01(\x05\x12\x16\n\x0eproxy_username\x18\x07 \x01(\t\x12\x16\n\x0eproxy_password\x18\x08 \x01(\t\x12\x12\n\nproxy_type\x18\t \x01(\t\x12\x13\n\x0bturn_server\x18\n \x01(\t\x12\x15\n\rturn_username\x18\x0b \x01(\t\x12\x15\n\rturn_password\x18\x0c \x01(\t\x12\x12\n\nrelay_only\x18\r \x01(\x08\x12\x13\n\x0b\x65\x63ho_cancel\x18\x0e \x01(\x08\x12\x1e\n\x16\x65\x63ho_suppression_level\x18\x0f \x01(\x05\x12\x19\n\x11noise_suppression\x18\x10 \x01(\x08\x12\x1f\n\x17noise_suppression_level\x18\x11 \x01(\x05\x12\x14\n\x0cgain_control\x18\x12 \x01(\x08\x12\x1c\n\x14\x65nable_video_receive\x18\x13 \x01(\x08\x12\x16\n\x0evideo_udp_host\x18\x14 \x01(\t\x12\x16\n\x0evideo_udp_port\x18\x15 \x01(\x05\"7\n\x15\x43reateSessionResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"(\n\x12\x43reateOfferRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\"=\n\x13\x43reateAnswerRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x12\n\nremote_sdp\x18\x02 \x01(\t\")\n\x0bSDPResponse\x12\x0b\n\x03sdp\x18\x01 \x01(\t\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"W\n\x1bSetRemoteDescriptionRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x12\n\nremote_sdp\x18\x02 \x01(\t\x12\x10\n\x08sdp_type\x18\x03 \x01(\t\"i\n\x16\x41\x64\x64ICECandidateRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x11\n\tcandidate\x18\x02 \x01(\t\x12\x0f\n\x07sdp_mid\x18\x03 \x01(\t\x12\x17\n\x0fsdp_mline_index\x18\x04 \x01(\x05\"\'\n\x11\x45ndSessionRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\")\n\x13StreamEventsRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\"\x07\n\x05\x45mpty\"\xb5\x01\n\tCallEvent\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x30\n\rice_candidate\x18\x02 \x01(\x0b\x32\x17.call.ICECandidateEventH\x00\x12\x36\n\x10\x63onnection_state\x18\x03 \x01(\x0b\x32\x1a.call.ConnectionStateEventH\x00\x12!\n\x05\x65rror\x18\x04 \x01(\x0b\x32\x10.call.ErrorEventH\x00\x42\x07\n\x05\x65vent\"P\n\x11ICECandidateEvent\x12\x11\n\tcandidate\x18\x01 \x01(\t\x12\x0f\n\x07sdp_mid\x18\x02 \x01(\t\x12\x17\n\x0fsdp_mline_index\x18\x03 \x01(\x05\"\xaf\x01\n\x14\x43onnectionStateEvent\x12/\n\x05state\x18\x01 \x01(\x0e\x32 .call.ConnectionStateEvent.State\"f\n\x05State\x12\x07\n\x03NEW\x10\x00\x12\x0c\n\x08\x43HECKING\x10\x01\x12\r\n\tCONNECTED\x10\x02\x12\r\n\tCOMPLETED\x10\x03\x12\n\n\x06\x46\x41ILED\x10\x04\x12\x10\n\x0c\x44ISCONNECTED\x10\x05\x12\n\n\x06\x43LOSED\x10\x06\"\x1d\n\nErrorEvent\x12\x0f\n\x07message\x18\x01 \x01(\t\"%\n\x0fGetStatsRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\"\xf9\x01\n\x10GetStatsResponse\x12\x18\n\x10\x63onnection_state\x18\x01 \x01(\t\x12\x1c\n\x14ice_connection_state\x18\x02 \x01(\t\x12\x1b\n\x13ice_gathering_state\x18\x03 \x01(\t\x12\x12\n\nbytes_sent\x18\x04 \x01(\x03\x12\x16\n\x0e\x62ytes_received\x18\x05 \x01(\x03\x12\x16\n\x0e\x62\x61ndwidth_kbps\x18\x06 \x01(\x03\x12\x18\n\x10local_candidates\x18\x07 \x03(\t\x12\x19\n\x11remote_candidates\x18\x08 \x03(\t\x12\x17\n\x0f\x63onnection_type\x18\t \x01(\t\"F\n\x0b\x41udioDevice\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x14\n\x0c\x64\x65vice_class\x18\x03 \x01(\t\">\n\x18ListAudioDevicesResponse\x12\"\n\x07\x64\x65vices\x18\x01 \x03(\x0b\x32\x11.call.AudioDevice\"3\n\x0eSetMuteRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\r\n\x05muted\x18\x02 \x01(\x08\x32\xc0\x05\n\x0b\x43\x61llService\x12H\n\rCreateSession\x12\x1a.call.CreateSessionRequest\x1a\x1b.call.CreateSessionResponse\x12:\n\x0b\x43reateOffer\x12\x18.call.CreateOfferRequest\x1a\x11.call.SDPResponse\x12<\n\x0c\x43reateAnswer\x12\x19.call.CreateAnswerRequest\x1a\x11.call.SDPResponse\x12\x46\n\x14SetRemoteDescription\x12!.call.SetRemoteDescriptionRequest\x1a\x0b.call.Empty\x12<\n\x0f\x41\x64\x64ICECandidate\x12\x1c.call.AddICECandidateRequest\x1a\x0b.call.Empty\x12\x32\n\nEndSession\x12\x17.call.EndSessionRequest\x1a\x0b.call.Empty\x12<\n\x0cStreamEvents\x12\x19.call.StreamEventsRequest\x1a\x0f.call.CallEvent0\x01\x12%\n\tHeartbeat\x12\x0b.call.Empty\x1a\x0b.call.Empty\x12$\n\x08Shutdown\x12\x0b.call.Empty\x1a\x0b.call.Empty\x12\x39\n\x08GetStats\x12\x15.call.GetStatsRequest\x1a\x16.call.GetStatsResponse\x12?\n\x10ListAudioDevices\x12\x0b.call.Empty\x1a\x1e.call.ListAudioDevicesResponse\x12,\n\x07SetMute\x12\x14.call.SetMuteRequest\x1a\x0b.call.EmptyB2Z0github.com/yourusername/drunk-call-service/protob\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,45 +33,45 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
   _globals['DESCRIPTOR']._serialized_options = b'Z0github.com/yourusername/drunk-call-service/proto'
   _globals['_CREATESESSIONREQUEST']._serialized_start=21
-  _globals['_CREATESESSIONREQUEST']._serialized_end=463
-  _globals['_CREATESESSIONRESPONSE']._serialized_start=465
-  _globals['_CREATESESSIONRESPONSE']._serialized_end=520
-  _globals['_CREATEOFFERREQUEST']._serialized_start=522
-  _globals['_CREATEOFFERREQUEST']._serialized_end=562
-  _globals['_CREATEANSWERREQUEST']._serialized_start=564
-  _globals['_CREATEANSWERREQUEST']._serialized_end=625
-  _globals['_SDPRESPONSE']._serialized_start=627
-  _globals['_SDPRESPONSE']._serialized_end=668
-  _globals['_SETREMOTEDESCRIPTIONREQUEST']._serialized_start=670
-  _globals['_SETREMOTEDESCRIPTIONREQUEST']._serialized_end=757
-  _globals['_ADDICECANDIDATEREQUEST']._serialized_start=759
-  _globals['_ADDICECANDIDATEREQUEST']._serialized_end=864
-  _globals['_ENDSESSIONREQUEST']._serialized_start=866
-  _globals['_ENDSESSIONREQUEST']._serialized_end=905
-  _globals['_STREAMEVENTSREQUEST']._serialized_start=907
-  _globals['_STREAMEVENTSREQUEST']._serialized_end=948
-  _globals['_EMPTY']._serialized_start=950
-  _globals['_EMPTY']._serialized_end=957
-  _globals['_CALLEVENT']._serialized_start=960
-  _globals['_CALLEVENT']._serialized_end=1141
-  _globals['_ICECANDIDATEEVENT']._serialized_start=1143
-  _globals['_ICECANDIDATEEVENT']._serialized_end=1223
-  _globals['_CONNECTIONSTATEEVENT']._serialized_start=1226
-  _globals['_CONNECTIONSTATEEVENT']._serialized_end=1401
-  _globals['_CONNECTIONSTATEEVENT_STATE']._serialized_start=1299
-  _globals['_CONNECTIONSTATEEVENT_STATE']._serialized_end=1401
-  _globals['_ERROREVENT']._serialized_start=1403
-  _globals['_ERROREVENT']._serialized_end=1432
-  _globals['_GETSTATSREQUEST']._serialized_start=1434
-  _globals['_GETSTATSREQUEST']._serialized_end=1471
-  _globals['_GETSTATSRESPONSE']._serialized_start=1474
-  _globals['_GETSTATSRESPONSE']._serialized_end=1723
-  _globals['_AUDIODEVICE']._serialized_start=1725
-  _globals['_AUDIODEVICE']._serialized_end=1795
-  _globals['_LISTAUDIODEVICESRESPONSE']._serialized_start=1797
-  _globals['_LISTAUDIODEVICESRESPONSE']._serialized_end=1859
-  _globals['_SETMUTEREQUEST']._serialized_start=1861
-  _globals['_SETMUTEREQUEST']._serialized_end=1912
-  _globals['_CALLSERVICE']._serialized_start=1915
-  _globals['_CALLSERVICE']._serialized_end=2619
+  _globals['_CREATESESSIONREQUEST']._serialized_end=541
+  _globals['_CREATESESSIONRESPONSE']._serialized_start=543
+  _globals['_CREATESESSIONRESPONSE']._serialized_end=598
+  _globals['_CREATEOFFERREQUEST']._serialized_start=600
+  _globals['_CREATEOFFERREQUEST']._serialized_end=640
+  _globals['_CREATEANSWERREQUEST']._serialized_start=642
+  _globals['_CREATEANSWERREQUEST']._serialized_end=703
+  _globals['_SDPRESPONSE']._serialized_start=705
+  _globals['_SDPRESPONSE']._serialized_end=746
+  _globals['_SETREMOTEDESCRIPTIONREQUEST']._serialized_start=748
+  _globals['_SETREMOTEDESCRIPTIONREQUEST']._serialized_end=835
+  _globals['_ADDICECANDIDATEREQUEST']._serialized_start=837
+  _globals['_ADDICECANDIDATEREQUEST']._serialized_end=942
+  _globals['_ENDSESSIONREQUEST']._serialized_start=944
+  _globals['_ENDSESSIONREQUEST']._serialized_end=983
+  _globals['_STREAMEVENTSREQUEST']._serialized_start=985
+  _globals['_STREAMEVENTSREQUEST']._serialized_end=1026
+  _globals['_EMPTY']._serialized_start=1028
+  _globals['_EMPTY']._serialized_end=1035
+  _globals['_CALLEVENT']._serialized_start=1038
+  _globals['_CALLEVENT']._serialized_end=1219
+  _globals['_ICECANDIDATEEVENT']._serialized_start=1221
+  _globals['_ICECANDIDATEEVENT']._serialized_end=1301
+  _globals['_CONNECTIONSTATEEVENT']._serialized_start=1304
+  _globals['_CONNECTIONSTATEEVENT']._serialized_end=1479
+  _globals['_CONNECTIONSTATEEVENT_STATE']._serialized_start=1377
+  _globals['_CONNECTIONSTATEEVENT_STATE']._serialized_end=1479
+  _globals['_ERROREVENT']._serialized_start=1481
+  _globals['_ERROREVENT']._serialized_end=1510
+  _globals['_GETSTATSREQUEST']._serialized_start=1512
+  _globals['_GETSTATSREQUEST']._serialized_end=1549
+  _globals['_GETSTATSRESPONSE']._serialized_start=1552
+  _globals['_GETSTATSRESPONSE']._serialized_end=1801
+  _globals['_AUDIODEVICE']._serialized_start=1803
+  _globals['_AUDIODEVICE']._serialized_end=1873
+  _globals['_LISTAUDIODEVICESRESPONSE']._serialized_start=1875
+  _globals['_LISTAUDIODEVICESRESPONSE']._serialized_end=1937
+  _globals['_SETMUTEREQUEST']._serialized_start=1939
+  _globals['_SETMUTEREQUEST']._serialized_end=1990
+  _globals['_CALLSERVICE']._serialized_start=1993
+  _globals['_CALLSERVICE']._serialized_end=2697
 # @@protoc_insertion_point(module_scope)

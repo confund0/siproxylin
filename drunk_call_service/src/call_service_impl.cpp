@@ -92,6 +92,13 @@ grpc::Status CallServiceImpl::CreateSession(
         config.noise_suppression = request->noise_suppression();
         config.gain_control = request->gain_control();
 
+        // Video configuration
+        if (request->enable_video_receive()) {
+            config.video_udp_host = request->video_udp_host();
+            config.video_udp_port = request->video_udp_port();
+            LOG_INFO("Session {}: Video enabled - UDP {}:{}", session_id, config.video_udp_host, config.video_udp_port);
+        }
+
         // Set callbacks (BEFORE initialize to avoid race)
         // CRITICAL: Use weak_ptr to avoid circular reference leak!
         // session owns webrtc (unique_ptr), webrtc stores callback (std::function),
