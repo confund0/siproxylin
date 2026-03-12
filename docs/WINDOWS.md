@@ -54,3 +54,7 @@ What you need to do is:
   - Set env vars:
   GSTREAMER_1_0_ROOT_MSVC_X86_64=C:\gstreamer\1.0\msvc_x86_64
 
+Should fix PATH: 
+
+export PATH="/c/Program Files/gstreamer/1.0/msvc_x86_64/bin:$HOME/Desktop/vcpkg/installed/x64-windows/bin:$PATH"
+
