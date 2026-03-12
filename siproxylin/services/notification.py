@@ -14,9 +14,9 @@ from ..db.database import get_db
 # Windows notifications (import only on Windows)
 if platform.system() == 'Windows':
     try:
-        from win10toast import ToastNotifier
+        from win11toast import notify as win_notify
     except ImportError:
-        ToastNotifier = None
+        win_notify = None
 
 
 logger = logging.getLogger('siproxylin.notification')
@@ -29,7 +29,7 @@ class NotificationService:
     Supports:
     - Linux: notify-send (mako, dunst, etc.) - full support with dismissal
     - macOS: osascript - basic support (no dismissal)
-    - Windows: Windows 10+ toast notifications via win10toast-ng - full support (auto-dismiss)
+    - Windows: Windows 10/11 toast notifications via win11toast - full support (auto-dismiss)
     """
 
     def __init__(self):
@@ -42,15 +42,6 @@ class NotificationService:
         # Call notifications are short-lived (dismissed when call ends)
         self.chat_notification_ids: Dict[Tuple[int, str], int] = {}
         self.call_notification_ids: Dict[Tuple[int, str], int] = {}
-
-        # Windows toast notifier (initialized only on Windows)
-        self.toast_notifier = None
-        if self.system == 'Windows' and ToastNotifier is not None:
-            try:
-                self.toast_notifier = ToastNotifier()
-                logger.debug("Windows ToastNotifier initialized")
-            except Exception as e:
-                logger.warning(f"Failed to initialize Windows ToastNotifier: {e}")
 
         logger.debug(f"Notification service initialized for {self.system}")
 
@@ -279,7 +270,7 @@ class NotificationService:
 
     def _send_windows(self, account_id: int, jid: str, title: str, body: str, is_call: bool = False):
         """
-        Send notification via Windows 10+ toast notification.
+        Send notification via Windows 10/11 toast notification.
 
         Args:
             account_id: Account ID
@@ -290,13 +281,13 @@ class NotificationService:
 
         Note:
             For future click handling to jump to message in chat view:
-            - Store message_id in notification metadata
-            - Use callback_on_click parameter to handle notification click
+            - Store message_id and pass to on_click callback
             - Callback should emit signal to focus conversation and scroll to message
+            - Example: on_click=lambda: self._handle_notification_click(account_id, jid, message_id)
             - See notification_manager.py for signal connection to GUI
         """
-        if self.toast_notifier is None:
-            logger.warning("Windows ToastNotifier not available (win10toast-ng not installed)")
+        if win_notify is None:
+            logger.warning("Windows notification not available (win11toast not installed)")
             return
 
         key = (account_id, jid)
@@ -307,18 +298,18 @@ class NotificationService:
         tag = f"{'call' if is_call else 'chat'}_{account_id}_{hash(jid)}"
 
         try:
-            # Show toast notification (threaded=True to not block)
-            # Duration: 5 seconds (default) for calls, 10 seconds for messages
-            duration = 5 if is_call else 10
+            # Duration: 'short' for calls (7 seconds), 'long' for messages (25 seconds)
+            duration = 'short' if is_call else 'long'
 
-            # Note: callback_on_click can be used for future message click handling
-            # callback_on_click=lambda: self._handle_notification_click(account_id, jid, message_id)
-            self.toast_notifier.show_toast(
+            # Show toast notification (non-blocking by default)
+            # Note: on_click parameter can be used for future message click handling:
+            #   on_click=lambda: self._handle_notification_click(account_id, jid, message_id)
+            win_notify(
                 title=title,
-                msg=body,
+                body=body,
                 duration=duration,
-                threaded=True,
-                icon_path=None  # Future: use app icon or contact avatar
+                # icon=icon_path,  # Future: use app icon or contact avatar
+                # on_click=callback  # Future: click to focus conversation
             )
 
             # Store tag for tracking (even though dismissal is not fully supported yet)
@@ -416,11 +407,11 @@ class NotificationService:
             notification_id: Notification ID to close
 
         Note:
-            win10toast-ng doesn't provide built-in dismissal API.
+            win11toast doesn't provide built-in dismissal API.
             For programmatic dismissal, would need to:
             1. Use Windows.UI.Notifications API directly via winsdk or ctypes
             2. Track notification tags and call ToastNotificationManager.History.Remove(tag)
-            3. Alternative: notifications auto-dismiss after duration expires
+            3. Alternative: notifications auto-dismiss after duration (7s for short, 25s for long)
         """
         logger.debug(f"Windows notification dismissal not fully implemented (ID: {notification_id})")
         # Notifications will auto-dismiss after their duration expires
