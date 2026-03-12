@@ -9,29 +9,33 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ============================================================================
 
 if(WIN32)
-    # Windows: Use CMake find_package() with config files
-    # vcpkg and GStreamer Windows installer provide CMake config files
+    # Windows: Manual path setup (GStreamer doesn't provide FindGStreamer.cmake)
 
-    # Set GStreamer prefix path from environment variable
-    if(DEFINED ENV{GSTREAMER_1_0_ROOT_MSVC_X86_64})
-        list(APPEND CMAKE_PREFIX_PATH "$ENV{GSTREAMER_1_0_ROOT_MSVC_X86_64}")
-    endif()
+    # GStreamer paths
+    set(GSTREAMER_ROOT "$ENV{GSTREAMER_1_0_ROOT_MSVC_X86_64}")
+    set(GST_INCLUDE_DIRS "${GSTREAMER_ROOT}/include/gstreamer-1.0" "${GSTREAMER_ROOT}/include/glib-2.0" "${GSTREAMER_ROOT}/lib/glib-2.0/include")
+    set(GST_LIBRARIES
+        "${GSTREAMER_ROOT}/lib/gstreamer-1.0.lib"
+        "${GSTREAMER_ROOT}/lib/gstwebrtc-1.0.lib"
+        "${GSTREAMER_ROOT}/lib/gstsdp-1.0.lib"
+        "${GSTREAMER_ROOT}/lib/gobject-2.0.lib"
+        "${GSTREAMER_ROOT}/lib/glib-2.0.lib"
+    )
 
-    # Find packages
-    find_package(GStreamer REQUIRED COMPONENTS gstreamer-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0)
+    # vcpkg packages (these work fine)
     find_package(Protobuf REQUIRED)
     find_package(gRPC CONFIG REQUIRED)
     find_package(spdlog REQUIRED)
     find_package(Threads REQUIRED)
-    find_package(glib REQUIRED)
 
-    # Set variables to match pkg-config format (for compatibility with rest of CMakeLists.txt)
-    set(GST_LIBRARIES ${GStreamer_LIBRARIES})
-    set(GST_INCLUDE_DIRS ${GStreamer_INCLUDE_DIRS})
+    # GLib from vcpkg
+    find_package(unofficial-glib CONFIG REQUIRED)
+    set(GLIB_LIBRARIES unofficial::glib::glib unofficial::glib::gobject)
+    set(GLIB_INCLUDE_DIRS "")  # Handled by target
+
+    # spdlog
     set(SPDLOG_LIBRARIES spdlog::spdlog)
     set(SPDLOG_INCLUDE_DIRS "")  # Handled by target
-    set(GLIB_LIBRARIES ${glib_LIBRARIES})
-    set(GLIB_INCLUDE_DIRS ${glib_INCLUDE_DIRS})
 
 else()
     # macOS and Linux: Use pkg-config (standard on Unix)
