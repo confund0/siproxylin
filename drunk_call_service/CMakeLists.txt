@@ -41,7 +41,8 @@ if(WIN32)
     set(GLIB_INCLUDE_DIRS "${GSTREAMER_ROOT}/include/glib-2.0" "${GSTREAMER_ROOT}/lib/glib-2.0/include")
     set(GLIB_LIBRARIES "${GSTREAMER_ROOT}/lib/glib-2.0.lib" "${GSTREAMER_ROOT}/lib/gobject-2.0.lib")
 
-    # spdlog
+    # spdlog - use bundled fmt to avoid version conflicts
+    add_compile_definitions(SPDLOG_FMT_EXTERNAL=0)
     set(SPDLOG_LIBRARIES spdlog::spdlog)
     set(SPDLOG_INCLUDE_DIRS "")  # Handled by target
 
