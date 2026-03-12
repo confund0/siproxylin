@@ -1,7 +1,8 @@
 # Platform Compatibility Guide for drunk_call_service
 
 **Generated:** 2026-03-12
-**Status:** Planning/Pre-Implementation
+**Updated:** 2026-03-12 (commit a5e59b6)
+**Status:** ✅ **All Critical & High Priority Fixes Implemented** - Ready for Windows/macOS Testing
 **Platforms:** Linux (primary) | Windows 10/11 | macOS 10.15+
 
 ---
@@ -198,36 +199,39 @@ gst-inspect-1.0 webrtcbin      # Should show WebRTC bin element
 
 ## Code Issues Summary
 
+**Last Updated:** 2026-03-12 (commit a5e59b6)
+
 | Issue | File | Lines | Platforms Affected | Severity | Status |
 |-------|------|-------|-------------------|----------|--------|
-| `/proc/self/exe` usage | main.cpp | 245 | Windows, macOS | **CRITICAL** | ❌ Must Fix |
-| GCC/Clang compiler flags | CMakeLists.txt | 105-114 | Windows (MSVC) | **CRITICAL** | ❌ Must Fix |
-| pkg-config dependency | CMakeLists.txt | 11, 14-31 | Windows | **CRITICAL** | ❌ Must Fix |
-| SIGTERM signal handling | main.cpp | 287-289 | Windows | **HIGH** | ⚠️ Needs Fix |
-| PulseAudio hardcoded device handling | webrtc_session.cpp | 872-906, 1100-1134, 2042 | Windows, macOS | **HIGH** | ⚠️ Needs Fix |
+| `/proc/self/exe` usage | main.cpp | 269-295 | Windows, macOS | **CRITICAL** | ✅ **FIXED** (a5e59b6) |
+| GCC/Clang compiler flags | CMakeLists.txt | 133-164 | Windows (MSVC) | **CRITICAL** | ✅ **FIXED** (a5e59b6) |
+| pkg-config dependency | CMakeLists.txt | 11-58 | Windows | **CRITICAL** | ✅ **FIXED** (a5e59b6) |
+| SIGTERM signal handling | main.cpp | 336-347 | Windows | **HIGH** | ✅ **FIXED** (a5e59b6) |
+| PulseAudio hardcoded device handling | webrtc_session.cpp | 872-923, 1118-1169, 2077-2107 | Windows, macOS | **HIGH** | ✅ **FIXED** (a5e59b6) |
 | Device enumerator platform paths | device_enumerator.cpp | 121-146 | Windows, macOS | **MEDIUM** | ⚠️ Needs Testing |
 | std::filesystem paths | main.cpp, logger.cpp | Various | None | LOW | ✅ OK (cross-platform) |
 | GStreamer elements | webrtc_session.cpp | Various | None | LOW | ✅ OK (cross-platform) |
 | Install paths | CMakeLists.txt | 120-122 | All | LOW | ℹ️ Consider improving |
 
 **Total:** 9 issues
-**Blocking:** 5 issues (3 Critical + 2 High)
+**Fixed:** 5 issues (All critical and high priority)
+**Remaining:** 4 issues (1 Medium, 3 Low priority)
 
 ---
 
-## Critical Fixes
+## Critical Fixes ✅ ALL IMPLEMENTED
 
-### 1. Fix Executable Path Detection (main.cpp:245)
+### 1. ✅ Fix Executable Path Detection (main.cpp:269-295) - IMPLEMENTED
 
 **Problem:**
 Linux-specific `/proc/self/exe` doesn't exist on Windows or macOS. Will crash on startup when determining log path.
 
-**Current Code:**
+**Original Code:**
 ```cpp
 fs::path exe_path = fs::canonical("/proc/self/exe").parent_path();
 ```
 
-**Fix (All 3 Platforms):**
+**Implemented Fix (All 3 Platforms):**
 ```cpp
 #ifdef _WIN32
     #include <windows.h>
@@ -260,12 +264,12 @@ fs::path exe_path = fs::canonical("/proc/self/exe").parent_path();
 
 ---
 
-### 2. Fix Compiler Flags (CMakeLists.txt:105-114)
+### 2. ✅ Fix Compiler Flags (CMakeLists.txt:133-164) - IMPLEMENTED
 
 **Problem:**
 GCC/Clang-specific flags fail with MSVC. macOS Clang may not support all sanitizers.
 
-**Current Code:**
+**Original Code:**
 ```cmake
 target_compile_options(${BINARY_NAME} PRIVATE
     -Wall
@@ -279,7 +283,7 @@ target_link_options(${BINARY_NAME} PRIVATE
 )
 ```
 
-**Fix (Platform-Specific Flags):**
+**Implemented Fix (Platform-Specific Flags):**
 ```cmake
 if(MSVC)
     # Windows: MSVC compiler flags
@@ -321,12 +325,12 @@ endif()
 
 ---
 
-### 3. Fix pkg-config Dependency (CMakeLists.txt:11-31)
+### 3. ✅ Fix pkg-config Dependency (CMakeLists.txt:11-58) - IMPLEMENTED
 
 **Problem:**
 `pkg-config` is Unix/Linux tool, not standard on Windows. macOS has it via Homebrew, Windows doesn't.
 
-**Current Code:**
+**Original Code:**
 ```cmake
 find_package(PkgConfig REQUIRED)
 
@@ -340,7 +344,7 @@ pkg_check_modules(SPDLOG REQUIRED spdlog)
 pkg_check_modules(GLIB REQUIRED glib-2.0)
 ```
 
-**Fix (Windows uses find_package, Unix uses pkg-config):**
+**Implemented Fix (Windows uses find_package, Unix uses pkg-config):**
 ```cmake
 if(WIN32)
     # Windows: Use CMake find_package() with config files
@@ -386,15 +390,15 @@ endif()
 
 ---
 
-## High Priority Fixes
+## High Priority Fixes ✅ ALL IMPLEMENTED
 
-### 4. Fix Signal Handling (main.cpp:287-289)
+### 4. ✅ Fix Signal Handling (main.cpp:336-347) - IMPLEMENTED
 
 **Problem:**
 `SIGTERM` is not raised by Windows OS. Windows needs `SetConsoleCtrlHandler()`.
 macOS supports POSIX signals (same as Linux).
 
-**Current Code:**
+**Original Code:**
 ```cpp
 #include <csignal>
 
@@ -408,7 +412,7 @@ std::signal(SIGTERM, signal_handler);
 LOG_INFO("Signal handlers registered (SIGINT, SIGTERM)");
 ```
 
-**Fix (Windows vs POSIX):**
+**Implemented Fix (Windows vs POSIX):**
 ```cpp
 // At top of file, add platform-specific includes:
 #ifdef _WIN32
@@ -459,14 +463,14 @@ void signal_handler(int signum) {
 
 ---
 
-### 5. Fix Audio Plugin Selection (webrtc_session.cpp)
+### 5. ✅ Fix Audio Plugin Selection (webrtc_session.cpp) - IMPLEMENTED
 
 **Problem:**
 Code hardcodes `pulsesrc`/`pulsesink` when device is specified.
 **macOS doesn't have PulseAudio** - uses CoreAudio.
 **Windows uses WASAPI**.
 
-**Current Code (Answerer Audio Source, lines 872-906):**
+**Original Code (Answerer Audio Source, lines 872-906):**
 ```cpp
 const char *src_name = config_.microphone_device.empty() ?
     "autoaudiosrc" : "pulsesrc";
@@ -477,7 +481,7 @@ if (!config_.microphone_device.empty() && src_name == std::string("pulsesrc")) {
 }
 ```
 
-**Fix (3-Platform Audio Source):**
+**Implemented Fix (3-Platform Audio Source):**
 ```cpp
 // Platform-specific audio source selection
 const char *src_name;
@@ -829,21 +833,23 @@ Verify:
 
 ---
 
-## Summary: Implementation Priority
+## Summary: Implementation Status
 
-### Phase 1: Critical (Blocking Builds)
-1. main.cpp: Executable path (Windows, macOS)
-2. CMakeLists.txt: Compiler flags (Windows)
-3. CMakeLists.txt: pkg-config → find_package (Windows)
+### ✅ Phase 1: Critical (Blocking Builds) - COMPLETE
+1. ✅ main.cpp: Executable path (Windows, macOS) - **commit a5e59b6**
+2. ✅ CMakeLists.txt: Compiler flags (Windows) - **commit a5e59b6**
+3. ✅ CMakeLists.txt: pkg-config → find_package (Windows) - **commit a5e59b6**
 
-### Phase 2: High (Blocking Functionality)
-4. main.cpp: Signal handling (Windows)
-5. webrtc_session.cpp: Audio plugin selection (Windows, macOS)
+### ✅ Phase 2: High (Blocking Functionality) - COMPLETE
+4. ✅ main.cpp: Signal handling (Windows) - **commit a5e59b6**
+5. ✅ webrtc_session.cpp: Audio plugin selection (Windows, macOS) - **commit a5e59b6**
 
-### Phase 3: Testing & Verification
-6. device_enumerator.cpp: Test on Windows, macOS
-7. Build and test on each platform
-8. Iterate on platform-specific issues
+### 🔄 Phase 3: Testing & Verification - IN PROGRESS
+6. ⚠️ device_enumerator.cpp: Test on Windows, macOS
+7. 🔄 Build and test on each platform
+8. 🔄 Iterate on platform-specific issues
+
+**Status:** Code compiles on Linux. Test calls with Conversations successful in both directions. Windows build pending.
 
 ---
 
