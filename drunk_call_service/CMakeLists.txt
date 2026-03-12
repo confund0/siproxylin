@@ -28,19 +28,10 @@ if(WIN32)
     find_package(spdlog REQUIRED)
     find_package(Threads REQUIRED)
 
-    # GLib from vcpkg
-    # Try both possible config names (vcpkg naming is inconsistent)
-    find_package(glib CONFIG QUIET)
-    if(NOT glib_FOUND)
-        find_package(unofficial-glib CONFIG REQUIRED)
-        # Create aliases with cleaner names
-        if(TARGET unofficial::glib::glib)
-            add_library(glib::glib ALIAS unofficial::glib::glib)
-            add_library(glib::gobject ALIAS unofficial::glib::gobject)
-        endif()
-    endif()
-    set(GLIB_LIBRARIES glib::glib glib::gobject)
-    set(GLIB_INCLUDE_DIRS "")  # Handled by target
+    # GLib from GStreamer installation (already includes it)
+    # GStreamer ships with its own glib, so we don't need vcpkg's version
+    set(GLIB_INCLUDE_DIRS "${GSTREAMER_ROOT}/include/glib-2.0" "${GSTREAMER_ROOT}/lib/glib-2.0/include")
+    set(GLIB_LIBRARIES "${GSTREAMER_ROOT}/lib/glib-2.0.lib" "${GSTREAMER_ROOT}/lib/gobject-2.0.lib")
 
     # spdlog
     set(SPDLOG_LIBRARIES spdlog::spdlog)
