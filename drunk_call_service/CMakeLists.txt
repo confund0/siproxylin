@@ -28,11 +28,17 @@ if(WIN32)
     find_package(spdlog REQUIRED)
     find_package(Threads REQUIRED)
 
-    # GLib from vcpkg (sets import prefix for shorter names)
-    set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
-    find_package(unofficial-glib CONFIG REQUIRED)
-    add_library(glib::glib ALIAS unofficial::glib::glib)
-    add_library(glib::gobject ALIAS unofficial::glib::gobject)
+    # GLib from vcpkg
+    # Try both possible config names (vcpkg naming is inconsistent)
+    find_package(glib CONFIG QUIET)
+    if(NOT glib_FOUND)
+        find_package(unofficial-glib CONFIG REQUIRED)
+        # Create aliases with cleaner names
+        if(TARGET unofficial::glib::glib)
+            add_library(glib::glib ALIAS unofficial::glib::glib)
+            add_library(glib::gobject ALIAS unofficial::glib::gobject)
+        endif()
+    endif()
     set(GLIB_LIBRARIES glib::glib glib::gobject)
     set(GLIB_INCLUDE_DIRS "")  # Handled by target
 
