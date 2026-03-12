@@ -28,9 +28,12 @@ if(WIN32)
     find_package(spdlog REQUIRED)
     find_package(Threads REQUIRED)
 
-    # GLib from vcpkg
+    # GLib from vcpkg (sets import prefix for shorter names)
+    set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
     find_package(unofficial-glib CONFIG REQUIRED)
-    set(GLIB_LIBRARIES unofficial::glib::glib unofficial::glib::gobject)
+    add_library(glib::glib ALIAS unofficial::glib::glib)
+    add_library(glib::gobject ALIAS unofficial::glib::gobject)
+    set(GLIB_LIBRARIES glib::glib glib::gobject)
     set(GLIB_INCLUDE_DIRS "")  # Handled by target
 
     # spdlog
