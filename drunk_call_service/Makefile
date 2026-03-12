@@ -2,22 +2,35 @@
 
 BUILD_DIR := build
 BIN_DIR := bin
+VCPKG_ROOT ?= C:/vcpkg
 
-.PHONY: all clean debug release test install help
+.PHONY: all clean debug release test install help windbg winrel
 
 all: release
 
-# Release build
+# Release build (Linux/macOS)
 release:
 	@mkdir -p $(BUILD_DIR)
 	@cd $(BUILD_DIR) && cmake -DCMAKE_BUILD_TYPE=Release .. && $(MAKE)
 	@cmake --install $(BUILD_DIR)
 
-# Debug build (with sanitizers)
+# Debug build (Linux/macOS with sanitizers)
 debug:
 	@mkdir -p $(BUILD_DIR)
 	@cd $(BUILD_DIR) && cmake -DCMAKE_BUILD_TYPE=Debug .. && $(MAKE)
 	@cmake --install $(BUILD_DIR)
+
+# Windows Debug build (MSVC)
+windbg:
+	@mkdir -p $(BUILD_DIR)
+	@cd $(BUILD_DIR) && cmake -DCMAKE_TOOLCHAIN_FILE=$(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake -A x64 .. && cmake --build . --config Debug
+	@cmake --install $(BUILD_DIR) --config Debug
+
+# Windows Release build (MSVC)
+winrel:
+	@mkdir -p $(BUILD_DIR)
+	@cd $(BUILD_DIR) && cmake -DCMAKE_TOOLCHAIN_FILE=$(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake -A x64 .. && cmake --build . --config Release
+	@cmake --install $(BUILD_DIR) --config Release
 
 # Run tests
 test: release
@@ -70,9 +83,11 @@ help:
 	@echo "Drunk Call Service C++ Build System"
 	@echo ""
 	@echo "Targets:"
-	@echo "  make           - Build release version"
-	@echo "  make release   - Build optimized release binary"
-	@echo "  make debug     - Build with debug symbols and sanitizers"
+	@echo "  make           - Build release version (Linux/macOS)"
+	@echo "  make release   - Build optimized release binary (Linux/macOS)"
+	@echo "  make debug     - Build with debug symbols and sanitizers (Linux/macOS)"
+	@echo "  make winrel    - Build optimized release binary (Windows/MSVC)"
+	@echo "  make windbg    - Build debug binary (Windows/MSVC)"
 	@echo "  make test      - Run unit tests"
 	@echo "  make clean     - Remove build artifacts"
 	@echo "  make deps      - Download LibWebRTC prebuilt binaries"
@@ -82,3 +97,6 @@ help:
 	@echo "Build outputs:"
 	@echo "  Binary: bin/drunk-call-service-{linux|windows|darwin}"
 	@echo "  Build dir: build/"
+	@echo ""
+	@echo "Windows builds:"
+	@echo "  Set VCPKG_ROOT if not in C:/vcpkg: make winrel VCPKG_ROOT=D:/vcpkg"
