@@ -11,6 +11,13 @@ from typing import Optional, Dict, Tuple
 
 from ..db.database import get_db
 
+# Windows notifications (import only on Windows)
+if platform.system() == 'Windows':
+    try:
+        from win10toast import ToastNotifier
+    except ImportError:
+        ToastNotifier = None
+
 
 logger = logging.getLogger('siproxylin.notification')
 
@@ -20,9 +27,9 @@ class NotificationService:
     Platform-agnostic OS notification service.
 
     Supports:
-    - Linux: notify-send (mako, dunst, etc.)
-    - macOS: osascript (placeholder)
-    - Windows: powershell (placeholder)
+    - Linux: notify-send (mako, dunst, etc.) - full support with dismissal
+    - macOS: osascript - basic support (no dismissal)
+    - Windows: Windows 10+ toast notifications via win10toast-ng - full support (auto-dismiss)
     """
 
     def __init__(self):
@@ -35,6 +42,15 @@ class NotificationService:
         # Call notifications are short-lived (dismissed when call ends)
         self.chat_notification_ids: Dict[Tuple[int, str], int] = {}
         self.call_notification_ids: Dict[Tuple[int, str], int] = {}
+
+        # Windows toast notifier (initialized only on Windows)
+        self.toast_notifier = None
+        if self.system == 'Windows' and ToastNotifier is not None:
+            try:
+                self.toast_notifier = ToastNotifier()
+                logger.debug("Windows ToastNotifier initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Windows ToastNotifier: {e}")
 
         logger.debug(f"Notification service initialized for {self.system}")
 
@@ -263,21 +279,56 @@ class NotificationService:
 
     def _send_windows(self, account_id: int, jid: str, title: str, body: str, is_call: bool = False):
         """
-        Send notification via PowerShell (Windows).
+        Send notification via Windows 10+ toast notification.
 
         Args:
             account_id: Account ID
             jid: Contact JID
             title: Notification title
             body: Notification body
-        """
-        # Placeholder for Windows implementation
-        # Use PowerShell to display toast notification
-        # This is a simple implementation; Windows 10+ supports richer notifications
-        logger.warning("Windows notifications not fully implemented yet")
+            is_call: True for call notifications, False for chat
 
-        # Simple PowerShell balloon tip (legacy)
-        # For proper Windows 10+ notifications, would need to use Windows.UI.Notifications API
+        Note:
+            For future click handling to jump to message in chat view:
+            - Store message_id in notification metadata
+            - Use callback_on_click parameter to handle notification click
+            - Callback should emit signal to focus conversation and scroll to message
+            - See notification_manager.py for signal connection to GUI
+        """
+        if self.toast_notifier is None:
+            logger.warning("Windows ToastNotifier not available (win10toast-ng not installed)")
+            return
+
+        key = (account_id, jid)
+        notification_ids = self.call_notification_ids if is_call else self.chat_notification_ids
+
+        # Generate unique tag for this notification (for future dismissal tracking)
+        # Tag format: "chat_<account_id>_<jid_hash>" or "call_<account_id>_<jid_hash>"
+        tag = f"{'call' if is_call else 'chat'}_{account_id}_{hash(jid)}"
+
+        try:
+            # Show toast notification (threaded=True to not block)
+            # Duration: 5 seconds (default) for calls, 10 seconds for messages
+            duration = 5 if is_call else 10
+
+            # Note: callback_on_click can be used for future message click handling
+            # callback_on_click=lambda: self._handle_notification_click(account_id, jid, message_id)
+            self.toast_notifier.show_toast(
+                title=title,
+                msg=body,
+                duration=duration,
+                threaded=True,
+                icon_path=None  # Future: use app icon or contact avatar
+            )
+
+            # Store tag for tracking (even though dismissal is not fully supported yet)
+            notification_ids[key] = hash(tag)  # Store hash as placeholder ID
+            logger.debug(f"Windows {'call' if is_call else 'chat'} notification sent successfully (tag: {tag})")
+
+        except Exception as e:
+            logger.error(f"Failed to show Windows toast notification: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
     def dismiss_notification(self, account_id: int, jid: str, is_call: bool = False):
         """
@@ -363,9 +414,17 @@ class NotificationService:
 
         Args:
             notification_id: Notification ID to close
+
+        Note:
+            win10toast-ng doesn't provide built-in dismissal API.
+            For programmatic dismissal, would need to:
+            1. Use Windows.UI.Notifications API directly via winsdk or ctypes
+            2. Track notification tags and call ToastNotificationManager.History.Remove(tag)
+            3. Alternative: notifications auto-dismiss after duration expires
         """
-        # Windows toast notification dismissal would require Windows.UI.Notifications API
-        logger.debug("Windows notification dismissal not implemented")
+        logger.debug(f"Windows notification dismissal not fully implemented (ID: {notification_id})")
+        # Notifications will auto-dismiss after their duration expires
+        # For immediate dismissal, would need Windows.UI.Notifications API
 
 
 # Global notification service instance

@@ -31,6 +31,9 @@ grpcio-tools>=1.68.0  # For protobuf code generation
 # Video attachments and video calls
 python-vlc>=3.0.0
 
+# Windows notifications (Windows 10+ toast notifications)
+win10toast-ng>=1.0.0; platform_system == "Windows"
+
 # Audio/Video Calls - GStreamer (Legacy - Phase 1 archive)
 # NOTE: GStreamer + PyGObject are SYSTEM dependencies (cannot install via pip)
 # System packages required:
