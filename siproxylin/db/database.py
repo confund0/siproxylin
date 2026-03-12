@@ -98,7 +98,7 @@ class Database:
 
             # Try to read PID from lock file
             try:
-                with open(lock_path, 'r') as f:
+                with open(lock_path, 'r', encoding='utf-8') as f:
                     pid = f.read().strip()
                 error_msg = f"Another instance is already running (PID: {pid})"
             except:
