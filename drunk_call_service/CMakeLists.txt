@@ -1,8 +1,16 @@
 cmake_minimum_required(VERSION 3.15)
 project(drunk_call_service VERSION 1.0.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+if(MSVC)
+    # MSVC: Use C++23 preview (required by GStreamer Windows headers)
+    set(CMAKE_CXX_STANDARD 23)
+    add_compile_options(/std:c++latest)
+else()
+    # Linux/macOS: C++20 is fine
+    set(CMAKE_CXX_STANDARD 20)
+endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ============================================================================
 # Find Dependencies
