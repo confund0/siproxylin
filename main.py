@@ -171,6 +171,23 @@ def main():
     app.setOrganizationName("Siproxylin")
     app.setOrganizationDomain("siproxylin.local")
 
+    # Set application icon (taskbar, window, notifications)
+    from PySide6.QtGui import QIcon
+    icon_dir = Path(__file__).parent / "siproxylin" / "resources" / "icons"
+    # Prefer .ico on Windows (better taskbar/notification support), SVG elsewhere
+    if platform.system() == "Windows":
+        icon_path = icon_dir / "siproxylin.ico"
+        if not icon_path.exists():
+            icon_path = icon_dir / "siproxylin.svg"  # Fallback to SVG
+    else:
+        icon_path = icon_dir / "siproxylin.svg"
+
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+        logger.info(f"Application icon set: {icon_path}")
+    else:
+        logger.warning(f"Application icon not found: {icon_path}")
+
     # Enable high DPI scaling
     app.setAttribute(Qt.AA_EnableHighDpiScaling)
     app.setAttribute(Qt.AA_UseHighDpiPixmaps)
