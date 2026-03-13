@@ -130,6 +130,7 @@ ChatViewWidget QToolButton#spellCheckButton {
     border: 1px solid #cccccc;
     border-radius: 4px;
     font-size: 18pt;
+    font-family: "DejaVu Sans", "Noto Color Emoji", "Apple Color Emoji", sans-serif;
     padding: 0px;
 }
 
@@ -149,6 +150,7 @@ ChatViewWidget QToolButton#headerEncryptionButton {
     border: 1px solid #cccccc;
     border-radius: 4px;
     font-size: 18pt;
+    font-family: "DejaVu Sans", "Noto Color Emoji", "Apple Color Emoji", sans-serif;
     padding: 0px;
 }
 
@@ -173,6 +175,7 @@ ChatViewWidget QToolButton#infoButton {
     border-radius: 4px;
     color: #212121;
     font-size: 14pt;
+    font-family: "DejaVu Sans", "Noto Color Emoji", "Apple Color Emoji", sans-serif;
     padding: 4px;
 }
 
