@@ -110,6 +110,40 @@ class GoCallService:
             self.logger.info(f"GStreamer debug settings: G_MESSAGES_DEBUG={env['G_MESSAGES_DEBUG']}")
             self.logger.info(f"GStreamer debug settings: NICE_DEBUG={env['NICE_DEBUG']}")
 
+            # Windows-specific: Add GStreamer and drunk_call_service/bin to PATH
+            if platform.system() == "Windows":
+                gstreamer_bin = Path(r"C:\Program Files\gstreamer\1.0\msvc_x86_64\bin")
+                # Get absolute path to drunk_call_service/bin (relative to this file)
+                bridge_dir = Path(__file__).parent  # drunk_call_hook/
+                project_root = bridge_dir.parent     # siproxylin/
+                service_bin = project_root / "drunk_call_service" / "bin"
+
+                # Build PATH with components that exist
+                path_components = []
+                existing_path = env.get("PATH", "")
+
+                # Check GStreamer (optional - app runs without call service)
+                if gstreamer_bin.exists():
+                    path_components.append(str(gstreamer_bin))
+                    self.logger.info(f"Found GStreamer at: {gstreamer_bin}")
+                else:
+                    self.logger.warning(f"GStreamer not found at {gstreamer_bin} - call service will not work")
+                    self.logger.warning("Install GStreamer from: https://gstreamer.freedesktop.org/download/")
+
+                # Add drunk_call_service/bin (should always exist in dev/dist)
+                if service_bin.exists():
+                    path_components.append(str(service_bin.resolve()))
+                    self.logger.info(f"Found call service binaries at: {service_bin}")
+                else:
+                    self.logger.warning(f"Call service binaries not found at {service_bin}")
+
+                # Update PATH if we have components to add
+                if path_components:
+                    env["PATH"] = ";".join(path_components) + ";" + existing_path
+                    self.logger.debug(f"Windows PATH updated: {env['PATH']}")
+                else:
+                    self.logger.warning("No valid paths to add - call service may not start")
+
             # Load log level from logging settings
             logging_config_path = paths.config_dir / 'logging.json'
             log_level = 'INFO'  # Default
