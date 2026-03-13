@@ -60,6 +60,7 @@ def main():
     from PySide6.QtCore import Qt
     import qasync
     import asyncio
+    import platform
 
     from siproxylin.utils import setup_main_logger, get_paths
     from siproxylin.db.database import get_db
@@ -197,7 +198,6 @@ def main():
 
     # Load bundled emoji font on Windows for better emoji rendering
     # (Linux uses system fonts-noto-color-emoji from AppImage)
-    import platform
     if platform.system() == "Windows":
         from PySide6.QtGui import QFontDatabase
         emoji_font_path = Path(__file__).parent / "siproxylin" / "resources" / "fonts" / "windows" / "NotoColorEmoji_WindowsCompatible.ttf"
