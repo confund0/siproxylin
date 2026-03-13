@@ -67,6 +67,10 @@ def main():
     from siproxylin.gui.main_window import MainWindow
     from siproxylin.core import get_account_manager
 
+    # Enable high DPI scaling BEFORE creating QApplication
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
+
     # Get paths first (needed for config loading)
     paths = get_paths(args.profile)
 
@@ -199,10 +203,6 @@ def main():
             logger.info(f"Windows AppUserModelID set: {myappid}")
         except Exception as e:
             logger.warning(f"Failed to set Windows AppUserModelID: {e}")
-
-    # Enable high DPI scaling
-    app.setAttribute(Qt.AA_EnableHighDpiScaling)
-    app.setAttribute(Qt.AA_UseHighDpiPixmaps)
 
     # Configure tooltips
     QToolTip.setFont(app.font())  # Use application font for tooltips
