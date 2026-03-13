@@ -233,6 +233,7 @@ ChatViewWidget QTextEdit#inputField {
     padding: 8px;
     color: #33ff33;
     font-size: {{BASE_FONT_SIZE}}pt;
+    font-family: "Courier New", "Consolas", "DejaVu Sans Mono", "Noto Color Emoji", "Apple Color Emoji", monospace;
 }
 
 ChatViewWidget QTextEdit#inputField:focus {
@@ -288,6 +289,7 @@ ChatViewWidget QToolButton#attachButton {
     border-radius: 4px;
     color: #66ff66;
     font-size: 16pt;
+    font-family: "Courier New", "Consolas", "DejaVu Sans Mono", "Noto Color Emoji", "Apple Color Emoji", monospace;
     padding: 8px 4px;
     min-width: 40px;
 }
@@ -310,6 +312,7 @@ ChatViewWidget QToolButton#emojiButton {
     border: none;
     border-radius: 4px;
     font-size: 18pt;
+    font-family: "Courier New", "Consolas", "DejaVu Sans Mono", "Noto Color Emoji", "Apple Color Emoji", monospace;
     padding: 0px;
     min-width: 40px;
 }
