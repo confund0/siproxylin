@@ -413,6 +413,7 @@ QPushButton {
     color: #212121;
     padding: 6px 16px;
     font-size: {{BASE_FONT_SIZE}}pt;
+    font-family: "Segoe UI", "DejaVu Sans", "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
 }
 
 QPushButton:hover {

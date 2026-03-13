@@ -414,6 +414,7 @@ QPushButton {
     color: #33ff33;
     padding: 6px 16px;
     font-size: {{BASE_FONT_SIZE}}pt;
+    font-family: "Courier New", "Consolas", "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", monospace;
 }
 
 QPushButton:hover {
