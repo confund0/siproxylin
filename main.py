@@ -189,6 +189,17 @@ def main():
     else:
         logger.warning(f"Application icon not found: {icon_path}")
 
+    # Windows-specific: Set AppUserModelID for proper taskbar icon grouping
+    # Without this, Windows taskbar shows default Python icon instead of app icon
+    if platform.system() == "Windows":
+        try:
+            import ctypes
+            myappid = 'com.siproxylin.siproxylin.1.0'  # Arbitrary string
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+            logger.info(f"Windows AppUserModelID set: {myappid}")
+        except Exception as e:
+            logger.warning(f"Failed to set Windows AppUserModelID: {e}")
+
     # Enable high DPI scaling
     app.setAttribute(Qt.AA_EnableHighDpiScaling)
     app.setAttribute(Qt.AA_UseHighDpiPixmaps)
@@ -226,6 +237,11 @@ def main():
     # Create and show main window
     logger.info("Creating main window...")
     window = MainWindow()
+
+    # Set icon on main window explicitly (needed on Windows for taskbar icon)
+    if icon_path.exists():
+        window.setWindowIcon(QIcon(str(icon_path)))
+
     window.show()
 
     # Setup signal handlers for graceful shutdown (Ctrl+C, SIGTERM)
