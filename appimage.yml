@@ -80,6 +80,7 @@ AppDir:
       - usr/share/doc/*/changelog.*
       - usr/share/doc/*/NEWS.*
       - usr/share/doc/*/TODO.*
+      - usr/share/com.siproxylin/siproxylin/resources/fonts/windows
 
   runtime:
     path_mappings:

@@ -178,6 +178,21 @@ def main():
     # Configure tooltips
     QToolTip.setFont(app.font())  # Use application font for tooltips
 
+    # Load bundled emoji font on Windows for better emoji rendering
+    # (Linux uses system fonts-noto-color-emoji from AppImage)
+    import platform
+    if platform.system() == "Windows":
+        from PySide6.QtGui import QFontDatabase
+        emoji_font_path = Path(__file__).parent / "siproxylin" / "resources" / "fonts" / "windows" / "NotoColorEmoji_WindowsCompatible.ttf"
+        if emoji_font_path.exists():
+            font_id = QFontDatabase.addApplicationFont(str(emoji_font_path))
+            if font_id != -1:
+                logger.info("Loaded bundled Noto Color Emoji font for Windows")
+            else:
+                logger.warning("Failed to load bundled emoji font, using system default")
+        else:
+            logger.warning(f"Windows emoji font not found at {emoji_font_path}, using system default")
+
     # Install event filter to increase tooltip show delay
     # Default Qt behavior: shows after ~700ms, hides after ~5000ms
     # We'll increase the show delay to ~1200ms for better UX
