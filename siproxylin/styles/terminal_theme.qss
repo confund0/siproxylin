@@ -86,6 +86,7 @@ ContactListWidget QToolButton#settingsButton {
     border: 1px solid #1a4d1a;
     border-radius: 4px;
     font-size: 18pt;
+    font-family: "Courier New", "Consolas", "DejaVu Sans Mono", "Noto Color Emoji", "Apple Color Emoji", monospace;
     padding: 0px;
 }
 
@@ -178,6 +179,24 @@ ChatViewWidget QToolButton#infoButton {
 }
 
 ChatViewWidget QToolButton#infoButton:hover {
+    background-color: #2a2a2a;
+    border-color: #2a6d2a;
+}
+
+/* Audio/Video call buttons in header */
+ChatViewWidget QToolButton#audioCallButton,
+ChatViewWidget QToolButton#videoCallButton {
+    background-color: #1a1a1a;
+    border: 1px solid #1a4d1a;
+    border-radius: 4px;
+    color: #66ff66;
+    font-size: 16pt;
+    font-family: "Courier New", "Consolas", "DejaVu Sans Mono", "Noto Color Emoji", "Apple Color Emoji", monospace;
+    padding: 2px;
+}
+
+ChatViewWidget QToolButton#audioCallButton:hover,
+ChatViewWidget QToolButton#videoCallButton:hover {
     background-color: #2a2a2a;
     border-color: #2a6d2a;
 }

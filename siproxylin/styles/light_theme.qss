@@ -84,6 +84,7 @@ ContactListWidget QToolButton#settingsButton {
     border: 1px solid #cccccc;
     border-radius: 4px;
     font-size: 18pt;
+    font-family: "DejaVu Sans", "Noto Color Emoji", "Apple Color Emoji", sans-serif;
     padding: 0px;
 }
 
@@ -176,6 +177,24 @@ ChatViewWidget QToolButton#infoButton {
 }
 
 ChatViewWidget QToolButton#infoButton:hover {
+    background-color: #d0d0d0;
+    border-color: #b0b0b0;
+}
+
+/* Audio/Video call buttons in header */
+ChatViewWidget QToolButton#audioCallButton,
+ChatViewWidget QToolButton#videoCallButton {
+    background-color: #e0e0e0;
+    border: 1px solid #cccccc;
+    border-radius: 4px;
+    color: #212121;
+    font-size: 16pt;
+    font-family: "DejaVu Sans", "Noto Color Emoji", "Apple Color Emoji", sans-serif;
+    padding: 2px;
+}
+
+ChatViewWidget QToolButton#audioCallButton:hover,
+ChatViewWidget QToolButton#videoCallButton:hover {
     background-color: #d0d0d0;
     border-color: #b0b0b0;
 }
@@ -413,7 +432,7 @@ QPushButton {
     color: #212121;
     padding: 6px 16px;
     font-size: {{BASE_FONT_SIZE}}pt;
-    font-family: "Segoe UI", "DejaVu Sans", "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+    font-family: "DejaVu Sans", "Noto Color Emoji", "Apple Color Emoji", sans-serif;
 }
 
 QPushButton:hover {
