@@ -31,30 +31,30 @@ REM ============================================================================
 REM STEP 1: Check build output
 REM =============================================================================
 
-echo [1/6] Checking build output...
-if not exist "drunk_call_service\build\Release\%BINARY_NAME%" (
-    echo ERROR: Binary not found: drunk_call_service\build\Release\%BINARY_NAME%
+echo [1/5] Checking build output...
+if not exist "drunk_call_service\bin\%BINARY_NAME%" (
+    echo ERROR: Binary not found in drunk_call_service\bin\
     echo.
     echo Build it first with:
     echo   cd drunk_call_service
     echo   make winrel
     echo.
+    echo The Makefile will build the binary and copy all DLLs to bin/
     exit /b 1
 )
-echo Found: %BINARY_NAME%
+echo Found: drunk_call_service\bin\%BINARY_NAME%
 echo.
 
 REM =============================================================================
 REM STEP 2: Create distribution directory
 REM =============================================================================
 
-echo [2/6] Creating distribution directory...
+echo [2/5] Creating distribution directory...
 if exist "%DIST_DIR%" (
     echo Cleaning old distribution...
     rd /s /q "%DIST_DIR%"
 )
 mkdir "%DIST_DIR%"
-mkdir "%DIST_DIR%\bin"
 echo Created: %DIST_DIR%
 echo.
 
@@ -62,7 +62,7 @@ REM ============================================================================
 REM STEP 3: Copy Python application code
 REM =============================================================================
 
-echo [3/7] Copying Python application...
+echo [3/5] Copying Python application...
 
 REM Main entry point
 if not exist "main.py" (
@@ -88,41 +88,23 @@ echo Copied Python application code
 echo.
 
 REM =============================================================================
-REM STEP 4: Copy C++ service binary
+REM STEP 4: Copy C++ service binary + DLLs
 REM =============================================================================
 
-echo [4/7] Copying C++ service binary...
-copy "drunk_call_service\build\Release\%BINARY_NAME%" "%DIST_DIR%\bin\" >nul
+echo [4/5] Copying C++ service (binary + runtime DLLs)...
+xcopy /E /I /Q "drunk_call_service\bin" "%DIST_DIR%\drunk_call_service\bin\" >nul
 if errorlevel 1 (
-    echo ERROR: Failed to copy binary
+    echo ERROR: Failed to copy drunk_call_service\bin\
     exit /b 1
 )
-echo Copied: %BINARY_NAME%
+echo Copied: drunk_call_service\bin\ (binary + DLLs)
 echo.
 
 REM =============================================================================
-REM STEP 5: Copy vcpkg runtime DLLs
+REM STEP 5: Create launcher scripts and documentation
 REM =============================================================================
 
-echo [5/7] Copying vcpkg runtime DLLs...
-set VCPKG_BIN=%USERPROFILE%\Desktop\vcpkg\installed\x64-windows\bin
-if not exist "%VCPKG_BIN%" (
-    echo ERROR: vcpkg bin directory not found: %VCPKG_BIN%
-    echo Update the path in this script if vcpkg is elsewhere
-    exit /b 1
-)
-
-for %%f in ("%VCPKG_BIN%\*.dll") do (
-    copy "%%f" "%DIST_DIR%\bin\" >nul 2>&1
-)
-echo Copied vcpkg DLLs from: %VCPKG_BIN%
-echo.
-
-REM =============================================================================
-REM STEP 6: Create launcher scripts and documentation
-REM =============================================================================
-
-echo [6/7] Creating launcher scripts...
+echo [5/5] Creating launcher scripts...
 
 REM Main launcher
 echo @echo off > "%DIST_DIR%\siproxylin.bat"
@@ -160,7 +142,7 @@ echo     exit /b 1 >> "%DIST_DIR%\siproxylin.bat"
 echo ^) >> "%DIST_DIR%\siproxylin.bat"
 echo. >> "%DIST_DIR%\siproxylin.bat"
 echo REM Setup environment >> "%DIST_DIR%\siproxylin.bat"
-echo set PATH=C:\Program Files\gstreamer\1.0\msvc_x86_64\bin;%%~dp0bin;%%PATH%% >> "%DIST_DIR%\siproxylin.bat"
+echo set PATH=C:\Program Files\gstreamer\1.0\msvc_x86_64\bin;%%~dp0drunk_call_service\bin;%%PATH%% >> "%DIST_DIR%\siproxylin.bat"
 echo set PYTHONPATH=%%~dp0 >> "%DIST_DIR%\siproxylin.bat"
 echo. >> "%DIST_DIR%\siproxylin.bat"
 echo REM Launch Python application >> "%DIST_DIR%\siproxylin.bat"
@@ -207,7 +189,7 @@ echo   siproxylin.bat                 Start application ^(GUI^)
 echo   siproxylin.bat --help          Show help
 echo.
 echo NOTES:
-echo   - All C++ dependencies are included in bin/
+echo   - All C++ dependencies are included in drunk_call_service/bin/
 echo   - Python and GStreamer must be installed separately
 echo   - The application will check for dependencies on startup
 echo.

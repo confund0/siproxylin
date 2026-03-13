@@ -1,6 +1,7 @@
 # Build & Packaging Documentation
 
-> **Last Updated:** 2026-03-07
+> **Last Updated:** 2026-03-13
+> **Platforms:** Linux (primary), Windows 10/11, macOS (experimental)
 
 ---
 
@@ -238,7 +239,280 @@ git push origin v0.0.4
 
 ---
 
+---
+
+## Windows Build
+
+**See also:** `docs/WINDOWS.md` for detailed setup, `docs/C++_PLATFORM-COMPATIBILITY.md` for technical details
+
+### Quick Start
+
+```bash
+# In git-bash on Windows
+cd ~/Desktop/siproxylin
+
+# Build C++ service (produces binary + DLLs in drunk_call_service/bin/)
+cd drunk_call_service
+make winrel
+
+# Test the binary locally (optional)
+./bin/drunk-call-service-windows.exe --help
+
+# Package distribution
+cd ..
+./build-windows.bat
+```
+
+**Output:**
+- Build: `drunk_call_service/bin/drunk-call-service-windows.exe` + DLLs (testable immediately)
+- Package: `dist/Siproxylin-Windows-x64.zip` (~15-50MB)
+
+### System Requirements
+
+- **OS:** Windows 10/11 x64
+- **Disk Space:** ~50GB (includes Visual Studio + vcpkg cache)
+- **RAM:** 16GB recommended (8GB minimum)
+- **Time:** First build: 2-3 hours (vcpkg compilation), subsequent builds: 5-10 minutes
+
+### Prerequisites (One-Time Setup)
+
+#### 1. Visual Studio 2019 or 2022
+
+Download: [Visual Studio](https://visualstudio.microsoft.com/downloads/)
+
+**Required workload:**
+- Desktop development with C++
+- C++17 support
+- CMake tools
+
+**Size:** ~20GB
+
+#### 2. Git for Windows
+
+Download: [Git for Windows](https://git-scm.com/download/win)
+
+Provides git-bash terminal for build scripts.
+
+#### 3. Python 3.11.9
+
+Download: [Python 3.11.9](https://www.python.org/downloads/release/python-3119/)
+
+**IMPORTANT:**
+- Use exactly 3.11.9 (latest 3.11 for Windows)
+- Check "Add Python to PATH" during installation
+
+#### 4. vcpkg (C++ Package Manager)
+
+```bash
+# In git-bash
+cd ~/Desktop
+git clone https://github.com/Microsoft/vcpkg.git
+cd vcpkg
+./bootstrap-vcpkg.bat
+```
+
+#### 5. GStreamer for Windows
+
+Download: [GStreamer](https://gstreamer.freedesktop.org/download/)
+
+**Install BOTH:**
+1. `gstreamer-1.0-msvc-x86_64-*.msi` (Runtime)
+2. `gstreamer-1.0-devel-msvc-x86_64-*.msi` (Development)
+
+**Options:** Choose "Complete" installation
+
+**Set environment variable:**
+```cmd
+setx GSTREAMER_1_0_ROOT_MSVC_X86_64 "C:\Program Files\gstreamer\1.0\msvc_x86_64" /M
+```
+
+Restart terminal after setting.
+
+### Install C++ Dependencies
+
+**First time only (takes 45-90 minutes):**
+
+```bash
+cd ~/Desktop/vcpkg
+
+# Install packages (will compile from source)
+./vcpkg install grpc:x64-windows
+./vcpkg install spdlog[core]:x64-windows    # Note: [core] not [fmt]!
+./vcpkg install glib:x64-windows
+```
+
+**Why so slow?** vcpkg compiles grpc, protobuf, abseil-cpp from source. This is a one-time cost - packages are cached.
+
+**Disk usage:** ~15GB during build, ~5-8GB after cleanup
+
+**Speed up future builds:** Export compiled packages:
+```bash
+vcpkg export grpc spdlog glib --zip --output=siproxylin-deps-windows
+# Upload siproxylin-deps-windows.zip to GitHub releases
+```
+
+### Build C++ Service
+
+```bash
+cd ~/Desktop/siproxylin/drunk_call_service
+
+# Using Makefile (recommended - handles DLL copying)
+make winrel
+
+# Or manually with CMake
+mkdir build && cd build
+cmake .. -DCMAKE_TOOLCHAIN_FILE=~/Desktop/vcpkg/scripts/buildsystems/vcpkg.cmake -A x64
+cmake --build . --config Release
+cmake --install . --config Release
+# Then manually copy vcpkg DLLs:
+cp ~/Desktop/vcpkg/installed/x64-windows/bin/*.dll ../bin/
+```
+
+**Output:** `bin/drunk-call-service-windows.exe` + all runtime DLLs
+
+**Build time:** 5-10 minutes (after vcpkg setup)
+
+**What happens:**
+1. CMake builds the .exe in `build/Release/`
+2. CMake install copies .exe to `bin/`
+3. Makefile copies all vcpkg DLLs to `bin/`
+4. Result: Complete testable runtime directory at `bin/`
+
+### Package Distribution
+
+```bash
+cd ~/Desktop/siproxylin
+./build-windows.bat
+```
+
+**Creates:**
+```
+dist/
+└── Siproxylin-Windows-x64.zip
+    ├── main.py
+    ├── drunk_xmpp/
+    ├── drunk_call_hook/
+    ├── siproxylin/
+    ├── drunk_call_service/
+    │   └── bin/
+    │       ├── drunk-call-service-windows.exe
+    │       └── *.dll (vcpkg runtime libraries)
+    ├── siproxylin.bat (launcher with dependency checks)
+    ├── test-devices.bat
+    └── README.txt
+```
+
+**Size:** 15-50MB (depends on number of Python modules)
+
+**Note:** The script simply copies `drunk_call_service/bin/*` to the package - Makefile handles producing the complete runtime directory.
+
+**Does NOT include:** Python runtime, GStreamer (users install separately)
+
+### Distribution to End Users
+
+**User requirements:**
+1. Install Python 3.11.9 (add to PATH)
+2. Install GStreamer (both runtime + devel packages)
+3. Install Python dependencies: `pip install slixmpp==1.8.5 -r requirements.txt`
+4. Extract ZIP and run `siproxylin.bat`
+
+**The launcher script automatically:**
+- Checks for Python 3.11
+- Checks for GStreamer installation
+- Sets up PATH with GStreamer and vcpkg DLLs
+- Launches the application
+
+### Platform-Specific Notes
+
+**C++ Standard:**
+- Windows uses C++23 (required by GStreamer headers)
+- Linux/macOS use C++20
+
+**Compiler Flags:**
+- MSVC: `/W4 /O2 /std:c++latest`
+- GCC/Clang: `-Wall -Wextra -O3 -std=c++20`
+
+**Audio Backends:**
+- Windows: WASAPI (`wasapisrc`/`wasapisink`)
+- Linux: PulseAudio (`pulsesrc`/`pulsesink`)
+- macOS: CoreAudio (`osxaudiosrc`/`osxaudiosink`)
+
+See `docs/C++_PLATFORM-COMPATIBILITY.md` for implementation details.
+
+### Troubleshooting
+
+**vcpkg compilation extremely slow:**
+- Normal on first run (45-90 min for grpc)
+- Subsequent builds use cached packages (fast)
+- Check disk space (need 20GB+ free)
+
+**"GStreamer not found" during CMake:**
+- Check: `echo %GSTREAMER_1_0_ROOT_MSVC_X86_64%`
+- Should show: `C:\Program Files\gstreamer\1.0\msvc_x86_64`
+- Restart terminal after setting environment variable
+
+**"DLL not found" when running .exe:**
+- Use the launcher: `siproxylin.bat` (sets PATH automatically)
+- Or manually add to PATH:
+  - `C:\Program Files\gstreamer\1.0\msvc_x86_64\bin`
+  - `%USERPROFILE%\Desktop\vcpkg\installed\x64-windows\bin`
+
+**Build fails with C++23 errors:**
+- Already fixed in CMakeLists.txt (commit a5e59b6)
+- Delete `build/` directory and reconfigure
+
+**Out of RAM during compilation:**
+- Increase VM RAM to 16GB
+- Or limit parallel compilation: Add `/MP4` to CMake flags
+
+---
+
+## macOS Build (Experimental)
+
+**Status:** Code is cross-platform ready, untested on macOS.
+
+### Prerequisites
+
+```bash
+# Install Homebrew
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Install dependencies
+brew install cmake pkg-config python@3.11
+brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad
+brew install grpc protobuf spdlog glib
+```
+
+### Build
+
+```bash
+cd drunk_call_service
+make release
+```
+
+**Expected output:** `bin/drunk-call-service-darwin`
+
+**Audio:** Uses CoreAudio (`osxaudiosrc`/`osxaudiosink`)
+
+**Packaging:** Not yet implemented (would use .app bundle or .dmg)
+
+---
+
 ## Future Packaging
 
-- Windows installer (NSIS/WiX)
-- macOS package or Homebrew
+**Linux:**
+- ✅ AppImage (implemented)
+- Flatpak (future)
+- Snap (future)
+
+**Windows:**
+- ✅ ZIP archive (implemented)
+- Inno Setup installer .exe (future - better UX)
+- MSI installer (future - enterprise deployment)
+
+**macOS:**
+- .app bundle
+- .dmg disk image
+- Homebrew formula
+
+---

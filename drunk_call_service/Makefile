@@ -25,12 +25,18 @@ windbg:
 	@mkdir -p $(BUILD_DIR)
 	@cd $(BUILD_DIR) && cmake -DCMAKE_TOOLCHAIN_FILE=$(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake -A x64 .. && cmake --build . --config Debug
 	@cmake --install $(BUILD_DIR) --config Debug
+	@echo "Copying vcpkg runtime DLLs to $(BIN_DIR)/"
+	@cp $(VCPKG_ROOT)/installed/x64-windows/bin/*.dll $(BIN_DIR)/ 2>/dev/null || true
+	@echo "Build complete: $(BIN_DIR)/ contains binary + DLLs (ready to test)"
 
 # Windows Release build (MSVC)
 winrel:
 	@mkdir -p $(BUILD_DIR)
 	@cd $(BUILD_DIR) && cmake -DCMAKE_TOOLCHAIN_FILE=$(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake -A x64 .. && cmake --build . --config Release
 	@cmake --install $(BUILD_DIR) --config Release
+	@echo "Copying vcpkg runtime DLLs to $(BIN_DIR)/"
+	@cp $(VCPKG_ROOT)/installed/x64-windows/bin/*.dll $(BIN_DIR)/ 2>/dev/null || true
+	@echo "Build complete: $(BIN_DIR)/ contains binary + DLLs (ready to test)"
 
 # Run tests
 test: release
