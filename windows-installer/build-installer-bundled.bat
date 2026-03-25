@@ -1,0 +1,152 @@
+@echo off
+REM ============================================================================
+REM Build script for Siproxylin Windows Installer (BUNDLED VERSION)
+REM ============================================================================
+REM This creates a self-contained installer with all dependencies bundled.
+REM Prerequisites: Run prepare-windows-installer.bat first
+REM ============================================================================
+
+setlocal enabledelayedexpansion
+
+echo ============================================================================
+echo Siproxylin Bundled Installer Builder
+echo ============================================================================
+echo.
+
+REM =============================================================================
+REM STEP 1: Check for Inno Setup
+REM =============================================================================
+
+echo [1/4] Checking for Inno Setup...
+
+set ISCC_PATH="C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+
+if not exist %ISCC_PATH% (
+    echo ERROR: Inno Setup not found at %ISCC_PATH%
+    echo.
+    echo Please install Inno Setup 6 from:
+    echo   https://jrsoftware.org/isdl.php
+    echo.
+    pause
+    exit /b 1
+)
+
+echo Found: %ISCC_PATH%
+echo.
+
+REM =============================================================================
+REM STEP 2: Check for distribution files
+REM =============================================================================
+
+echo [2/4] Checking for distribution files...
+
+if not exist "..\dist\windows\" (
+    echo ERROR: Distribution not found at ..\dist\windows\
+    echo.
+    echo Build it first with:
+    echo   cd ..
+    echo   build-windows.bat
+    echo.
+    pause
+    exit /b 1
+)
+
+echo Found: ..\dist\windows\
+echo.
+
+REM =============================================================================
+REM STEP 3: Check for bundled dependencies
+REM =============================================================================
+
+echo [3/4] Checking for bundled dependencies...
+
+set MISSING_BUNDLES=0
+
+if not exist "bundle\python\" (
+    echo ERROR: Python bundle not found at bundle\python\
+    set MISSING_BUNDLES=1
+)
+
+if not exist "bundle\gstreamer_temp\" (
+    echo ERROR: GStreamer bundle not found at bundle\gstreamer_temp\
+    set MISSING_BUNDLES=1
+)
+
+if not exist "bundle\vcpkg\" (
+    echo ERROR: vcpkg bundle not found at bundle\vcpkg\
+    set MISSING_BUNDLES=1
+)
+
+if %MISSING_BUNDLES%==1 (
+    echo.
+    echo ERROR: Missing bundled dependencies!
+    echo.
+    echo Please run prepare-windows-installer.bat first to create bundles:
+    echo   prepare-windows-installer.bat
+    echo.
+    pause
+    exit /b 1
+)
+
+echo All bundles found:
+echo   - bundle\python\
+echo   - bundle\gstreamer_temp\
+echo   - bundle\vcpkg\
+echo.
+
+REM =============================================================================
+REM STEP 4: Compile installer
+REM =============================================================================
+
+echo [4/4] Compiling bundled installer with Inno Setup...
+echo.
+echo NOTE: This installer bundles ALL dependencies (~80-100 MB)
+echo       No internet connection required for installation
+echo       Works completely offline
+echo.
+
+%ISCC_PATH% siproxylin-bundled.iss
+
+if errorlevel 1 (
+    echo.
+    echo ERROR: Inno Setup compilation failed
+    echo Check the output above for errors
+    pause
+    exit /b 1
+)
+
+echo.
+echo ============================================================================
+echo BUILD SUCCESSFUL
+echo ============================================================================
+
+REM Find the generated installer
+for %%F in (..\dist\Siproxylin-Setup-*-bundled.exe) do (
+    echo Installer: %%F
+    for %%A in ("%%F") do (
+        set SIZE_BYTES=%%~zA
+        set /a SIZE_MB=!SIZE_BYTES! / 1048576
+        echo Size: !SIZE_MB! MB ^(%%~zA bytes^)
+    )
+)
+
+echo.
+echo Bundled components:
+echo   - Python 3.11.9 embeddable
+echo   - GStreamer runtime libraries
+echo   - vcpkg runtime DLLs
+echo   - Siproxylin application
+echo.
+echo To test:
+echo   1. Copy installer to a fresh Windows 10/11 VM
+echo   2. Run the installer (no internet needed)
+echo   3. Test audio calls with Conversations.im or Dino
+echo   4. Check logs in %%USERPROFILE%%\.siproxylin\logs\
+echo.
+echo To distribute:
+echo   Upload to GitHub releases:
+echo   gh release upload v{VERSION} ..\dist\Siproxylin-Setup-v{VERSION}-bundled.exe
+echo ============================================================================
+
+endlocal
+pause
