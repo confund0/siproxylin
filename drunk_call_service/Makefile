@@ -1,4 +1,11 @@
 # Makefile wrapper for CMake-based build
+#
+# Windows Dependency Strategy:
+# - Base libs (GLib, OpenSSL, zlib, etc.) from GStreamer installation
+# - gRPC stack (grpc++, protobuf, abseil, re2, cares) from vcpkg
+# - spdlog from vcpkg
+#
+# This ensures binary compatibility between .exe and GStreamer plugins.
 
 BUILD_DIR := build
 BIN_DIR := bin
@@ -23,20 +30,40 @@ debug:
 # Windows Debug build (MSVC)
 windbg:
 	@mkdir -p $(BUILD_DIR)
-	@cd $(BUILD_DIR) && cmake -DCMAKE_TOOLCHAIN_FILE=$(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake -A x64 .. && cmake --build . --config Debug
+	@cd $(BUILD_DIR) && cmake \
+		-DCMAKE_TOOLCHAIN_FILE=$(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake \
+		-DCMAKE_IGNORE_PATH="/mingw64/lib;/mingw64/bin;C:/msys64/mingw64/lib;C:/msys64/mingw64/bin" \
+		-A x64 .. && cmake --build . --config Debug
 	@cmake --install $(BUILD_DIR) --config Debug
-	@echo "Copying vcpkg runtime DLLs to $(BIN_DIR)/"
-	@cp $(VCPKG_ROOT)/installed/x64-windows/bin/*.dll $(BIN_DIR)/ 2>/dev/null || true
-	@echo "Build complete: $(BIN_DIR)/ contains binary + DLLs (ready to test)"
+	@echo "Copying ONLY grpc/protobuf/spdlog vcpkg DLLs to $(BIN_DIR)/"
+	@echo "  (GLib, OpenSSL, pcre2, iconv, etc. come from GStreamer)"
+	@for dll in abseil_dll.dll cares.dll re2.dll libprotobuf.dll libprotobuf-lite.dll spdlog.dll zlib1.dll upb*.dll; do \
+		if [ -f "$(VCPKG_ROOT)/installed/x64-windows/debug/bin/$$dll" ]; then \
+			cp "$(VCPKG_ROOT)/installed/x64-windows/debug/bin/$$dll" "$(BIN_DIR)/" 2>/dev/null || true; \
+		elif [ -f "$(VCPKG_ROOT)/installed/x64-windows/bin/$$dll" ]; then \
+			cp "$(VCPKG_ROOT)/installed/x64-windows/bin/$$dll" "$(BIN_DIR)/" 2>/dev/null || true; \
+		fi; \
+	done
+	@echo "Build complete: $(BIN_DIR)/ contains binary + minimal vcpkg DLLs"
+	@echo "NOTE: Ensure GStreamer DLLs are in lib/gstreamer/ for runtime"
 
 # Windows Release build (MSVC)
 winrel:
 	@mkdir -p $(BUILD_DIR)
-	@cd $(BUILD_DIR) && cmake -DCMAKE_TOOLCHAIN_FILE=$(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake -A x64 .. && cmake --build . --config Release
+	@cd $(BUILD_DIR) && cmake \
+		-DCMAKE_TOOLCHAIN_FILE=$(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake \
+		-DCMAKE_IGNORE_PATH="/mingw64/lib;/mingw64/bin;C:/msys64/mingw64/lib;C:/msys64/mingw64/bin" \
+		-A x64 .. && cmake --build . --config Release
 	@cmake --install $(BUILD_DIR) --config Release
-	@echo "Copying vcpkg runtime DLLs to $(BIN_DIR)/"
-	@cp $(VCPKG_ROOT)/installed/x64-windows/bin/*.dll $(BIN_DIR)/ 2>/dev/null || true
-	@echo "Build complete: $(BIN_DIR)/ contains binary + DLLs (ready to test)"
+	@echo "Copying ONLY grpc/protobuf/spdlog vcpkg DLLs to $(BIN_DIR)/"
+	@echo "  (GLib, OpenSSL, pcre2, iconv, etc. come from GStreamer)"
+	@for dll in abseil_dll.dll cares.dll re2.dll libprotobuf.dll libprotobuf-lite.dll spdlog.dll zlib1.dll upb*.dll; do \
+		if [ -f "$(VCPKG_ROOT)/installed/x64-windows/bin/$$dll" ]; then \
+			cp "$(VCPKG_ROOT)/installed/x64-windows/bin/$$dll" "$(BIN_DIR)/" 2>/dev/null || true; \
+		fi; \
+	done
+	@echo "Build complete: $(BIN_DIR)/ contains binary + minimal vcpkg DLLs"
+	@echo "NOTE: Ensure GStreamer DLLs are in lib/gstreamer/ for runtime"
 
 # Run tests
 test: release

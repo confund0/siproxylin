@@ -17,11 +17,27 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # ============================================================================
 
 if(WIN32)
-    # Windows: Manual path setup (GStreamer doesn't provide FindGStreamer.cmake)
+    # ========================================================================
+    # Windows Dependency Strategy:
+    # - ALL base libraries (GLib, OpenSSL, zlib, pcre2, iconv, etc.) from GStreamer
+    # - ONLY gRPC stack (grpc++, protobuf, abseil, re2, cares) from vcpkg
+    # - spdlog from vcpkg (with bundled fmt to avoid conflicts)
+    #
+    # This ensures binary compatibility: .exe and GStreamer plugins use the
+    # same GLib version, preventing ABI conflicts.
+    # ========================================================================
 
-    # GStreamer paths
+    # GStreamer paths (provides base dependencies)
     set(GSTREAMER_ROOT "$ENV{GSTREAMER_1_0_ROOT_MSVC_X86_64}")
-    set(GST_INCLUDE_DIRS "${GSTREAMER_ROOT}/include/gstreamer-1.0" "${GSTREAMER_ROOT}/include/glib-2.0" "${GSTREAMER_ROOT}/lib/glib-2.0/include")
+    if(NOT EXISTS "${GSTREAMER_ROOT}")
+        message(FATAL_ERROR "GSTREAMER_1_0_ROOT_MSVC_X86_64 not set or invalid: ${GSTREAMER_ROOT}")
+    endif()
+
+    set(GST_INCLUDE_DIRS
+        "${GSTREAMER_ROOT}/include/gstreamer-1.0"
+        "${GSTREAMER_ROOT}/include/glib-2.0"
+        "${GSTREAMER_ROOT}/lib/glib-2.0/include"
+    )
     set(GST_LIBRARIES
         "${GSTREAMER_ROOT}/lib/gstreamer-1.0.lib"
         "${GSTREAMER_ROOT}/lib/gstwebrtc-1.0.lib"
@@ -30,16 +46,25 @@ if(WIN32)
         "${GSTREAMER_ROOT}/lib/glib-2.0.lib"
     )
 
-    # vcpkg packages (these work fine)
+    # vcpkg packages - ONLY what GStreamer doesn't provide
+    # NOTE: grpc needs ZLIB::ZLIB target, so we must find it (vcpkg's zlib)
+    # vcpkg's zlib1.dll and GStreamer's z-1.dll can coexist (different names)
+    find_package(ZLIB REQUIRED)
     find_package(Protobuf REQUIRED)
     find_package(gRPC CONFIG REQUIRED)
     find_package(spdlog REQUIRED)
     find_package(Threads REQUIRED)
 
-    # GLib from GStreamer installation (already includes it)
-    # GStreamer ships with its own glib, so we don't need vcpkg's version
-    set(GLIB_INCLUDE_DIRS "${GSTREAMER_ROOT}/include/glib-2.0" "${GSTREAMER_ROOT}/lib/glib-2.0/include")
-    set(GLIB_LIBRARIES "${GSTREAMER_ROOT}/lib/glib-2.0.lib" "${GSTREAMER_ROOT}/lib/gobject-2.0.lib")
+    # GLib from GStreamer (NOT vcpkg)
+    # GStreamer's GLib ensures binary compatibility with GStreamer plugins
+    set(GLIB_INCLUDE_DIRS
+        "${GSTREAMER_ROOT}/include/glib-2.0"
+        "${GSTREAMER_ROOT}/lib/glib-2.0/include"
+    )
+    set(GLIB_LIBRARIES
+        "${GSTREAMER_ROOT}/lib/glib-2.0.lib"
+        "${GSTREAMER_ROOT}/lib/gobject-2.0.lib"
+    )
 
     # spdlog - use bundled fmt to avoid version conflicts
     add_compile_definitions(SPDLOG_FMT_EXTERNAL=0)
