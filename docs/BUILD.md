@@ -408,9 +408,44 @@ dist/
 
 **Does NOT include:** Python runtime, GStreamer (users install separately)
 
+### Windows Installer (Inno Setup)
+
+**Status**: Framework complete, GStreamer bundling in progress
+
+**Prerequisites:**
+- Inno Setup 6.x installed
+- Built distribution package (via `build-windows.bat`)
+
+**Build installer:**
+```bash
+cd windows-installer
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" siproxylin.iss
+```
+
+**Output:** `dist/Siproxylin-Setup-vX.Y.Z.exe`
+
+**Features:**
+- Bundles Python 3.11.9 embeddable (25 MB) - with option to use system Python
+- Bundles generous GStreamer DLLs (30 MB with extra codecs)
+- Bundles vcpkg runtime libraries (50 MB - from build)
+- Runs `pip install -r requirements.txt` during installation (~760 MB download)
+- Installs to `C:\Program Files\Siproxylin` (admin) or `%LOCALAPPDATA%\Programs\Siproxylin` (user)
+- Creates Start Menu + Desktop shortcuts
+- Proper uninstaller with config cleanup
+- Upgrade detection (removes old version first)
+- **Total installer download: ~112 MB**
+- **First run requires internet**: ~760 MB pip packages (or use pre-installed packages)
+
+**See:** `docs/WINDOWS.md` for complete installer documentation and bundling details
+
 ### Distribution to End Users
 
-**User requirements:**
+**Option 1: Installer (recommended):**
+- Download `Siproxylin-Setup-vX.Y.Z.exe` from GitHub Releases
+- Run installer (handles all dependencies automatically)
+- Launch from Start Menu
+
+**Option 2: ZIP Package:**
 1. Install Python 3.11.9 (add to PATH)
 2. Install GStreamer (both runtime + devel packages)
 3. Install Python dependencies: `pip install slixmpp==1.8.5 -r requirements.txt`
@@ -465,6 +500,143 @@ See `docs/C++_PLATFORM-COMPATIBILITY.md` for implementation details.
 - Increase VM RAM to 16GB
 - Or limit parallel compilation: Add `/MP4` to CMake flags
 
+**mingw PATH pollution (Git Bash):**
+- Git Bash adds `/mingw64/lib` to library search path
+- Can cause CMake to find mingw libraries before vcpkg/GStreamer
+- Symptom: .exe links to mingw's zlib instead of vcpkg's
+- Fix: Use GitHub Actions (clean environment) or temporarily rename mingw libs during build
+
+### Windows CI/CD (GitHub Actions)
+
+**Status:** Designed, ready for implementation
+
+**Why CI/CD?**
+- Clean build environment (no mingw PATH pollution)
+- Consistent MSVC toolchain (Windows Server 2022, MSVC 19.29-19.40)
+- Automated weekly releases for bugfixes and features
+- Pre-bundled dependencies reduce build time
+
+**Strategy:**
+
+Two dependency bundles uploaded as GitHub Releases:
+
+1. **vcpkg-runtime-x64-windows.zip** (~10 MB)
+   - grpc, protobuf, abseil, cares, re2 runtime DLLs
+   - spdlog with bundled fmt
+   - Compatible with MSVC 19.29+ (VS 2019 16.11+)
+
+2. **gstreamer-runtime-x64-windows.zip** (~30 MB)
+   - GStreamer core libraries (gstreamer-1.0, gstwebrtc, gstsdp)
+   - GLib ecosystem (glib-2.0, gobject-2.0, gio-2.0)
+   - Supporting libraries (OpenSSL, libnice, pcre2, zlib, etc.)
+   - WebRTC plugins (minimal set for audio/video calls)
+
+**Workflow:**
+```yaml
+name: Build Windows Binary
+on:
+  push:
+    branches: [main, win]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022  # MSVC 19.29-19.40, compatible with local builds (19.50)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: microsoft/setup-msbuild@v1.1
+
+      - name: Download runtime dependencies
+        shell: bash
+        run: |
+          # vcpkg runtime (grpc, protobuf, spdlog)
+          curl -L -o vcpkg-deps.zip \
+            https://github.com/${{ github.repository }}/releases/download/deps-v1/vcpkg-runtime-x64-windows.zip
+          mkdir -p drunk_call_service/bin
+          unzip vcpkg-deps.zip -d drunk_call_service/bin/
+
+          # GStreamer runtime (WebRTC + dependencies)
+          curl -L -o gst-deps.zip \
+            https://github.com/${{ github.repository }}/releases/download/deps-v1/gstreamer-runtime-x64-windows.zip
+          mkdir -p drunk_call_service/lib/gstreamer
+          unzip gst-deps.zip -d drunk_call_service/lib/gstreamer/
+
+      - name: Build C++ service
+        shell: cmd
+        run: |
+          cd drunk_call_service
+          mkdir build && cd build
+          cmake .. -A x64 -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --config Release
+          cmake --install . --config Release
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: drunk-call-service-windows
+          path: drunk_call_service/bin/
+```
+
+**Creating dependency bundles (one-time setup):**
+
+On Windows build machine with working vcpkg and GStreamer:
+
+```bash
+# 1. vcpkg runtime bundle
+cd drunk_call_service/bin
+zip vcpkg-runtime-x64-windows.zip \
+  abseil_dll.dll cares.dll re2.dll \
+  libprotobuf.dll libprotobuf-lite.dll \
+  spdlog.dll zlib1.dll upb*.dll
+
+# 2. GStreamer runtime bundle (from analysis in /tmp/gst-bin-dlls.txt)
+cd "C:\Program Files\gstreamer\1.0\msvc_x86_64"
+zip gstreamer-runtime-x64-windows.zip \
+  bin/ffi-7.dll bin/gio-2.0-0.dll bin/glib-2.0-0.dll \
+  bin/gmodule-2.0-0.dll bin/gobject-2.0-0.dll \
+  bin/gstreamer-1.0-0.dll bin/gstsdp-1.0-0.dll \
+  bin/gstwebrtc-1.0-0.dll bin/intl-8.dll \
+  bin/libcrypto-3-x64.dll bin/nice-10.dll \
+  bin/pcre2-8-0.dll bin/z-1.dll \
+  lib/gstreamer-1.0/*.dll  # All plugins
+```
+
+**Upload to GitHub Releases:**
+```bash
+gh release create deps-v1 \
+  --title "Windows Runtime Dependencies v1" \
+  --notes "Pre-built runtime libraries for Windows CI/CD builds" \
+  vcpkg-runtime-x64-windows.zip \
+  gstreamer-runtime-x64-windows.zip
+```
+
+**IMPORTANT: Binary compatibility:**
+- All DLLs must be MSVC-built (NOT mingw)
+- GLib version MUST match between vcpkg and GStreamer
+- Our strategy: Use GStreamer's GLib, vcpkg only provides grpc/protobuf/spdlog
+- CMakeLists.txt is configured to link GStreamer's GLib (lines 59-68 in /tmp/sipbuild/)
+- CMake explicitly disables vcpkg's zlib (line 51: `CMAKE_DISABLE_FIND_PACKAGE_ZLIB`)
+
+**Troubleshooting CI builds:**
+
+*Build fails with "cannot find gstreamer-1.0.lib":*
+- Ensure gstreamer-runtime bundle includes import libraries (.lib files)
+- Or: Install GStreamer SDK in CI (slower, but more robust)
+
+*Runtime error "DLL not found":*
+- Check that all dependencies are in the bundle (use `ldd` or `dumpbin /dependents`)
+- Verify bin/ and lib/gstreamer/ structure is correct
+
+*ABI mismatch or crashes:*
+- Verify all DLLs are MSVC-built (check with `dumpbin /headers` → look for MSVC timestamp)
+- Ensure GLib version matches between vcpkg dependencies and GStreamer
+
+**See also:** `docs/WINDOWS.md` → "GitHub Actions CI/CD" for complete implementation details
+
 ---
 
 ## macOS Build (Experimental)
@@ -498,21 +670,29 @@ make release
 
 ---
 
-## Future Packaging
+## Packaging Status
 
 **Linux:**
-- ✅ AppImage (implemented)
+- ✅ AppImage (implemented, tested, production-ready)
 - Flatpak (future)
 - Snap (future)
 
 **Windows:**
 - ✅ ZIP archive (implemented)
-- Inno Setup installer .exe (future - better UX)
+- 🚧 Inno Setup installer (framework complete, bundling strategy finalized)
+  - See `windows-installer/siproxylin.iss` for installer script
+  - See `docs/WINDOWS.md` for complete documentation
+  - Bundles: Python embeddable (25 MB) + GStreamer generous (30 MB) + vcpkg (50 MB)
+  - Installer download: ~112 MB
+  - First run: pip install ~760 MB (internet required)
+  - User can choose system Python or bundled Python
+  - GStreamer always bundled (includes H.264, H.265, extra codecs)
+  - Status: Implementation in progress
 - MSI installer (future - enterprise deployment)
 
 **macOS:**
-- .app bundle
-- .dmg disk image
-- Homebrew formula
+- .app bundle (code ready, untested)
+- .dmg disk image (future)
+- Homebrew formula (future)
 
 ---
