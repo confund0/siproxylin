@@ -148,6 +148,5 @@ Type: filesandordirs; Name: "{app}\python\Lib\site-packages"
 ; Registry and Environment Setup
 ; ============================================================================
 [Registry]
-; Add GStreamer plugin path to registry (used by bridge.py)
-Root: HKLM; Subkey: "Software\{#AppName}"; ValueType: string; ValueName: "GStreamerPath"; ValueData: "{app}\lib\gstreamer"; Flags: uninsdeletekey
+; No registry entries needed - bridge.py uses relative paths
 
