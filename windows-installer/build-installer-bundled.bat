@@ -35,23 +35,24 @@ echo Found: %ISCC_PATH%
 echo.
 
 REM =============================================================================
-REM STEP 2: Check for distribution files
+REM STEP 2: Check for application source files
 REM =============================================================================
 
-echo [2/4] Checking for distribution files...
+echo [2/4] Checking for application source files...
 
-if not exist "..\dist\windows\" (
-    echo ERROR: Distribution not found at ..\dist\windows\
-    echo.
-    echo Build it first with:
-    echo   cd ..
-    echo   build-windows.bat
-    echo.
+if not exist "..\main.py" (
+    echo ERROR: main.py not found in project root
     pause
     exit /b 1
 )
 
-echo Found: ..\dist\windows\
+if not exist "..\siproxylin\" (
+    echo ERROR: siproxylin module not found
+    pause
+    exit /b 1
+)
+
+echo Found: Application source files
 echo.
 
 REM =============================================================================
@@ -60,20 +61,26 @@ REM ============================================================================
 
 echo [3/4] Checking for bundled dependencies...
 
+REM Bundle directory structure
+set BUNDLE_DIR=bundle
+set PYTHON_BUNDLE=%BUNDLE_DIR%\python
+set GST_BUNDLE=%BUNDLE_DIR%\gstreamer
+set VCPKG_BUNDLE=%BUNDLE_DIR%\vcpkg
+
 set MISSING_BUNDLES=0
 
-if not exist "bundle\python\" (
-    echo ERROR: Python bundle not found at bundle\python\
+if not exist "%PYTHON_BUNDLE%\python.exe" (
+    echo ERROR: Python bundle not found at %PYTHON_BUNDLE%
     set MISSING_BUNDLES=1
 )
 
-if not exist "bundle\gstreamer_temp\" (
-    echo ERROR: GStreamer bundle not found at bundle\gstreamer_temp\
+if not exist "%GST_BUNDLE%\bin\gstreamer-1.0-0.dll" (
+    echo ERROR: GStreamer bundle not found at %GST_BUNDLE%
     set MISSING_BUNDLES=1
 )
 
-if not exist "bundle\vcpkg\" (
-    echo ERROR: vcpkg bundle not found at bundle\vcpkg\
+if not exist "%VCPKG_BUNDLE%\abseil_dll.dll" (
+    echo ERROR: vcpkg DLLs not found at %VCPKG_BUNDLE%
     set MISSING_BUNDLES=1
 )
 
@@ -81,17 +88,20 @@ if %MISSING_BUNDLES%==1 (
     echo.
     echo ERROR: Missing bundled dependencies!
     echo.
-    echo Please run prepare-windows-installer.bat first to create bundles:
+    echo Please run prepare-windows-installer.bat first:
     echo   prepare-windows-installer.bat
+    echo.
+    echo Then build the C++ service:
+    echo   cd drunk_call_service ^&^& make winrel
     echo.
     pause
     exit /b 1
 )
 
-echo All bundles found:
-echo   - bundle\python\
-echo   - bundle\gstreamer_temp\
-echo   - bundle\vcpkg\
+echo All dependencies found:
+echo   - %PYTHON_BUNDLE%
+echo   - %GST_BUNDLE%
+echo   - %VCPKG_BUNDLE%
 echo.
 
 REM =============================================================================

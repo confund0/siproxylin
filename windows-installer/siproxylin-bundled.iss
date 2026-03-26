@@ -24,6 +24,10 @@
 #define AppVersion Copy(VersionLine, Pos('="', VersionLine) + 2, Pos('"', Copy(VersionLine, Pos('="', VersionLine) + 2, 100)) - 1)
 #expr FileClose(VersionFile)
 
+; Path defines
+#define BundleDir "bundle"
+#define ProjectRoot ".."
+
 [Setup]
 ; ============================================================================
 ; Application Identity
@@ -38,9 +42,9 @@ AppUpdatesURL={#AppURL}/releases
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 AllowNoIcons=yes
-LicenseFile=..\LICENSE
-InfoBeforeFile=..\README.md
-OutputDir=..\dist
+LicenseFile={#ProjectRoot}\LICENSE
+InfoBeforeFile={#ProjectRoot}\README.md
+OutputDir={#ProjectRoot}\dist
 OutputBaseFilename=Siproxylin-Setup-v{#AppVersion}-bundled
 Compression=lzma2/ultra64
 SolidCompression=yes
@@ -59,17 +63,29 @@ MinVersion=10.0
 ; Files to Install
 ; ============================================================================
 [Files]
-; Main application (from dist/windows built by build-windows.bat)
-Source: "..\dist\windows\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Python application code (from project root)
+Source: "{#ProjectRoot}\main.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ProjectRoot}\version.sh"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ProjectRoot}\requirements.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ProjectRoot}\drunk_xmpp\*"; DestDir: "{app}\drunk_xmpp"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#ProjectRoot}\drunk_call_hook\*"; DestDir: "{app}\drunk_call_hook"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#ProjectRoot}\siproxylin\*"; DestDir: "{app}\siproxylin"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-; Python 3.11.9 embeddable (from bundle/python)
-Source: "bundle\python\*"; DestDir: "{app}\python"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Python 3.11.9 embeddable
+Source: "{#BundleDir}\python\*"; DestDir: "{app}\python"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-; GStreamer runtime libraries (from bundle/gstreamer_temp)
-Source: "bundle\gstreamer_temp\bin\*"; DestDir: "{app}\lib\gstreamer\bin"; Flags: ignoreversion
-Source: "bundle\gstreamer_temp\lib\gstreamer-1.0\*"; DestDir: "{app}\lib\gstreamer\lib\gstreamer-1.0"; Flags: ignoreversion
+; GStreamer runtime libraries
+Source: "{#BundleDir}\gstreamer\bin\*"; DestDir: "{app}\drunk_call_service\lib\gstreamer\bin"; Flags: ignoreversion
+Source: "{#BundleDir}\gstreamer\lib\gstreamer-1.0\*"; DestDir: "{app}\drunk_call_service\lib\gstreamer\lib\gstreamer-1.0"; Flags: ignoreversion
 
-; vcpkg DLLs and exe are already in dist/windows/drunk_call_service/bin (copied by main application)
+; vcpkg DLLs
+Source: "{#BundleDir}\vcpkg\*.dll"; DestDir: "{app}\drunk_call_service\bin"; Flags: ignoreversion
+
+; C++ service exe (must be built first)
+Source: "{#ProjectRoot}\drunk_call_service\bin\drunk-call-service-windows.exe"; DestDir: "{app}\drunk_call_service\bin"; Flags: ignoreversion
+
+; Launcher script
+Source: "siproxylin-launcher.bat"; DestName: "siproxylin.bat"; DestDir: "{app}"; Flags: ignoreversion
 
 ; ============================================================================
 ; Shortcuts

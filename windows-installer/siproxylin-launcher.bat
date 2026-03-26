@@ -15,18 +15,21 @@ REM Get the installation directory (where this script is located)
 set INSTALL_DIR=%~dp0
 set INSTALL_DIR=%INSTALL_DIR:~0,-1%
 
-REM Add bundled Python to PATH
+REM Add bundled Python to PATH (first, so it takes priority)
 set PATH=%INSTALL_DIR%\python;%PATH%
 
 REM Add bundled GStreamer to PATH
-set PATH=%INSTALL_DIR%\lib\gstreamer\bin;%PATH%
+set PATH=%INSTALL_DIR%\drunk_call_service\lib\gstreamer\bin;%PATH%
 
 REM Add vcpkg DLLs (in drunk_call_service/bin) to PATH
 set PATH=%INSTALL_DIR%\drunk_call_service\bin;%PATH%
 
 REM Set GStreamer plugin path
-set GST_PLUGIN_PATH=%INSTALL_DIR%\lib\gstreamer\lib\gstreamer-1.0
-set GST_PLUGIN_SYSTEM_PATH=%INSTALL_DIR%\lib\gstreamer\lib\gstreamer-1.0
+set GST_PLUGIN_PATH=%INSTALL_DIR%\drunk_call_service\lib\gstreamer\lib\gstreamer-1.0
+set GST_PLUGIN_SYSTEM_PATH=%INSTALL_DIR%\drunk_call_service\lib\gstreamer\lib\gstreamer-1.0
+
+REM Set PYTHONPATH to find our modules
+set PYTHONPATH=%INSTALL_DIR%
 
 REM Launch Siproxylin
 echo Starting Siproxylin...

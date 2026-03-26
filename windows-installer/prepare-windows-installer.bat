@@ -34,6 +34,13 @@ if not exist "..\version.sh" (
 
 REM GitHub release tag for dependencies
 set DEPS_TAG=deps-v!VERSION!
+set GITHUB_REPO=confund0/siproxylin
+
+REM Bundle directory structure
+set BUNDLE_DIR=bundle
+set PYTHON_DEST=%BUNDLE_DIR%\python
+set GST_DEST=%BUNDLE_DIR%\gstreamer
+set VCPKG_DEST=%BUNDLE_DIR%\vcpkg
 
 echo Downloading dependencies from GitHub release: %DEPS_TAG%
 echo.
@@ -44,14 +51,13 @@ REM ============================================================================
 echo [1/4] Downloading Python 3.11.9 embeddable...
 set PYTHON_ZIP=python-3.11.9-embed-amd64.zip
 set PYTHON_URL=https://www.python.org/ftp/python/3.11.9/%PYTHON_ZIP%
-set PYTHON_DEST=bundle\python
 
 if exist "%PYTHON_DEST%\python.exe" (
     echo Python embeddable already extracted, skipping...
 ) else (
     echo Downloading from %PYTHON_URL%
-    if not exist "bundle" mkdir "bundle"
-    powershell -Command "Invoke-WebRequest -Uri '%PYTHON_URL%' -OutFile 'bundle\%PYTHON_ZIP%'"
+    if not exist "%BUNDLE_DIR%" mkdir "%BUNDLE_DIR%"
+    powershell -Command "Invoke-WebRequest -Uri '%PYTHON_URL%' -OutFile '%BUNDLE_DIR%\%PYTHON_ZIP%'"
     if errorlevel 1 (
         echo ERROR: Failed to download Python embeddable
         exit /b 1
@@ -59,7 +65,7 @@ if exist "%PYTHON_DEST%\python.exe" (
     echo Downloaded %PYTHON_ZIP%
 
     echo Extracting Python...
-    powershell -Command "Expand-Archive -Path 'bundle\%PYTHON_ZIP%' -DestinationPath '%PYTHON_DEST%' -Force"
+    powershell -Command "Expand-Archive -Path '%BUNDLE_DIR%\%PYTHON_ZIP%' -DestinationPath '%PYTHON_DEST%' -Force"
     if errorlevel 1 (
         echo ERROR: Failed to extract Python
         exit /b 1
@@ -84,8 +90,7 @@ REM Step 2: Download GStreamer runtime deps from GitHub
 REM ============================================================================
 echo [2/4] Downloading GStreamer runtime dependencies...
 set GST_ZIP=siproxylin-windows-gst-deps-v!VERSION!.zip
-set GST_URL=https://github.com/confund0/siproxylin/releases/download/%DEPS_TAG%/%GST_ZIP%
-set GST_DEST=..\drunk_call_service\lib\gstreamer
+set GST_URL=https://github.com/%GITHUB_REPO%/releases/download/%DEPS_TAG%/%GST_ZIP%
 
 if exist "%GST_DEST%\bin\gstreamer-1.0-0.dll" (
     echo GStreamer deps already extracted, skipping...
@@ -117,8 +122,7 @@ REM Step 3: Download vcpkg runtime deps from GitHub
 REM ============================================================================
 echo [3/4] Downloading vcpkg runtime dependencies...
 set VCPKG_ZIP=siproxylin-windows-vcpkg-deps-v!VERSION!.zip
-set VCPKG_URL=https://github.com/confund0/siproxylin/releases/download/%DEPS_TAG%/%VCPKG_ZIP%
-set VCPKG_DEST=..\drunk_call_service\bin
+set VCPKG_URL=https://github.com/%GITHUB_REPO%/releases/download/%DEPS_TAG%/%VCPKG_ZIP%
 
 if exist "%VCPKG_DEST%\abseil_dll.dll" (
     echo vcpkg deps already extracted, skipping...
@@ -183,12 +187,6 @@ if not exist "%VCPKG_DEST%\abseil_dll.dll" (
     echo   OK: vcpkg runtime DLLs
 )
 
-REM Check if exe was built
-if not exist "%VCPKG_DEST%\drunk-call-service-windows.exe" (
-    echo   WARNING: drunk-call-service-windows.exe not found
-    echo   Build it with: cd drunk_call_service ^&^& make winrel
-)
-
 echo.
 
 if %MISSING%==1 (
@@ -203,13 +201,13 @@ echo ===========================================================================
 echo PREPARATION COMPLETE
 echo ============================================================================
 echo.
-echo Dependencies ready:
-echo   Python:    %PYTHON_DEST%
-echo   GStreamer: %GST_DEST%
-echo   vcpkg:     %VCPKG_DEST%
+echo Dependencies ready in %BUNDLE_DIR%/:
+echo   %PYTHON_DEST%
+echo   %GST_DEST%
+echo   %VCPKG_DEST%
 echo.
 echo Next steps:
-echo   1. Build the C++ service: cd drunk_call_service ^&^& make winrel
+echo   1. Copy application code from project root (done by Inno Setup)
 echo   2. Build the installer: build-installer-bundled.bat
 echo ============================================================================
 echo.
