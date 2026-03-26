@@ -110,39 +110,52 @@ class GoCallService:
             self.logger.info(f"GStreamer debug settings: G_MESSAGES_DEBUG={env['G_MESSAGES_DEBUG']}")
             self.logger.info(f"GStreamer debug settings: NICE_DEBUG={env['NICE_DEBUG']}")
 
-            # Windows-specific: Add GStreamer and drunk_call_service/bin to PATH
+            # Windows-specific: Add bundled GStreamer and vcpkg DLLs to PATH
             if platform.system() == "Windows":
-                gstreamer_bin = Path(r"C:\Program Files\gstreamer\1.0\msvc_x86_64\bin")
-                # Get absolute path to drunk_call_service/bin (relative to this file)
+                # Get absolute path to project root (relative to this file)
                 bridge_dir = Path(__file__).parent  # drunk_call_hook/
                 project_root = bridge_dir.parent     # siproxylin/
+
+                # Bundled dependency paths
+                gstreamer_bin = project_root / "drunk_call_service" / "lib" / "gstreamer" / "bin"
+                gstreamer_plugins = project_root / "drunk_call_service" / "lib" / "gstreamer" / "lib" / "gstreamer-1.0"
                 service_bin = project_root / "drunk_call_service" / "bin"
 
                 # Build PATH with components that exist
                 path_components = []
                 existing_path = env.get("PATH", "")
 
-                # Check GStreamer (optional - app runs without call service)
+                # Check bundled GStreamer
                 if gstreamer_bin.exists():
                     path_components.append(str(gstreamer_bin))
-                    self.logger.info(f"Found GStreamer at: {gstreamer_bin}")
-                else:
-                    self.logger.warning(f"GStreamer not found at {gstreamer_bin} - call service will not work")
-                    self.logger.warning("Install GStreamer from: https://gstreamer.freedesktop.org/download/")
+                    self.logger.info(f"Found bundled GStreamer at: {gstreamer_bin}")
 
-                # Add drunk_call_service/bin (should always exist in dev/dist)
+                    # Set GStreamer plugin path
+                    if gstreamer_plugins.exists():
+                        env["GST_PLUGIN_PATH"] = str(gstreamer_plugins)
+                        env["GST_PLUGIN_SYSTEM_PATH"] = str(gstreamer_plugins)
+                        self.logger.info(f"GStreamer plugin path: {gstreamer_plugins}")
+                    else:
+                        self.logger.warning(f"GStreamer plugins not found at {gstreamer_plugins}")
+                else:
+                    self.logger.error(f"Bundled GStreamer not found at {gstreamer_bin}")
+                    self.logger.error("Download siproxylin-windows-gst-deps-vX.zip from GitHub releases")
+                    self.logger.error("Extract to drunk_call_service/lib/gstreamer/")
+
+                # Add vcpkg DLLs (should always exist after build)
                 if service_bin.exists():
                     path_components.append(str(service_bin.resolve()))
-                    self.logger.info(f"Found call service binaries at: {service_bin}")
+                    self.logger.info(f"Found vcpkg DLLs and service binary at: {service_bin}")
                 else:
-                    self.logger.warning(f"Call service binaries not found at {service_bin}")
+                    self.logger.error(f"Service binaries not found at {service_bin}")
+                    self.logger.error("Build with: cd drunk_call_service && make winrel")
 
                 # Update PATH if we have components to add
                 if path_components:
                     env["PATH"] = ";".join(path_components) + ";" + existing_path
                     self.logger.debug(f"Windows PATH updated: {env['PATH']}")
                 else:
-                    self.logger.warning("No valid paths to add - call service may not start")
+                    self.logger.error("No valid paths to add - call service will not start")
 
             # Load log level from logging settings
             logging_config_path = paths.config_dir / 'logging.json'
