@@ -17,7 +17,7 @@ fi
 CURR="v$CURR"
 
 # Get previous from latest tag
-PREV=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+PREV=$(git describe --tags --abbrev=0 --match='v*' 2>/dev/null || echo "v0.0.0")
 PREV_CODE=$(git tag -l --format='%(contents)' "$PREV" 2>/dev/null | head -1)
 
 # Version must increase

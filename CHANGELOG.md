@@ -4,7 +4,37 @@ All notable changes to Siproxylin are documented in this file.
 
 ---
 
+## [deps-v0.0.27 - Fermented] - 2026-03-13
+
+> (dc9527d2ba)
+
+    Update README.md
+
+> (722fa50035)
+
+    Update README.md
+
+> (75c78afdd9)
+
+    Update WINDOWS.md
+
+> (d3d81e8ebf)
+
+    Create docs/WINDOWS.md
+
 ## [0.0.27 - Fermented] - 2026-03-11
+
+> (767e6c784f)
+
+    VLC player fixes and AppImage debloat (removed some unnecessary libs)
+
+> (0d57d4f093)
+
+    VLC fixes
+
+> (0e2d8f17d8)
+
+    Release: add python3-vlc (fix attachments), multi-line code blocks, URL handling
 
 > (b183cc2213)
 
