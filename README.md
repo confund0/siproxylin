@@ -6,7 +6,11 @@
 
 ## Breaking News!
 
-**Today, 2026-03-13, at 13:13, we confirmed that Siproxylin installation makes successful calls on Windows**
+**2026-03-26 first version, containing an installer for Windows, has been released (v0.0.28)**
+
+It took an eternity to cherry-pick GStreamer and VCPKG dll files one by one to make the package as small as possible. Installer contains bundled libraries including base Python. During installation Python pulls a lot of dependencies, be aware of disk space. All libraries are installed inside of the app directory itself, so should not interfere with any system libs.
+
+**2026-03-13, at 13:13, we confirmed that Siproxylin installation makes successful calls on Windows**
 
 Same code base compiled with GStreamer, gRPC amd Glib works perfectly fine. It is still in the branch, being carefully prepared for a release. The build of C++ part with dependencies on 8 cores and 16GB of RAM takes approximately 4-5h; I will package it to avoid this really complex task.
 
