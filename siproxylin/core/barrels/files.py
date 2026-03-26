@@ -55,6 +55,7 @@ class FileBarrel:
         import os
         from datetime import datetime
         from urllib.parse import urlparse
+        from ...utils.paths import _mkdir_secure, _chmod_secure
 
         try:
             # Determine if URL is encrypted (aesgcm://)
@@ -89,7 +90,7 @@ class FileBarrel:
             # Create sender-specific directory (automatically uses dev or XDG path)
             attachments_base = paths.data_dir / 'attachments'
             sender_dir = attachments_base / str(self.account_id) / from_jid
-            sender_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _mkdir_secure(sender_dir, parents=True)
 
             # Generate timestamped filename
             dt = datetime.fromtimestamp(timestamp)
@@ -150,7 +151,7 @@ class FileBarrel:
 
                         # Write to file with secure permissions
                         local_path.write_bytes(file_data)
-                        os.chmod(local_path, 0o600)
+                        _chmod_secure(local_path, 0o600)
 
                         file_size = len(file_data)
 
@@ -231,6 +232,7 @@ class FileBarrel:
         import os
         from datetime import datetime
         from urllib.parse import urlparse
+        from ...utils.paths import _mkdir_secure, _chmod_secure
 
         try:
             # DEDUPLICATION: For sent files (direction=1), check if GUI already created record
@@ -295,7 +297,7 @@ class FileBarrel:
             # Create counterpart-specific directory (automatically uses dev or XDG path)
             attachments_base = paths.data_dir / 'attachments'
             counterpart_dir = attachments_base / str(self.account_id) / counterpart_jid
-            counterpart_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _mkdir_secure(counterpart_dir, parents=True)
 
             # Generate timestamped filename
             dt = datetime.fromtimestamp(timestamp)
@@ -357,7 +359,7 @@ class FileBarrel:
 
                         # Write to file with secure permissions
                         local_path.write_bytes(file_data)
-                        os.chmod(local_path, 0o600)
+                        _chmod_secure(local_path, 0o600)
 
                         file_size = len(file_data)
 

@@ -54,6 +54,10 @@ class RegistrationWizard(QWizard):
 
     def __init__(self, parent=None):
         """Initialize registration wizard."""
+        # Track if size has been locked (for CAPTCHA display)
+        # IMPORTANT: Initialize BEFORE super().__init__() because Qt may call resizeEvent() during construction
+        self.size_locked = False
+
         super().__init__(parent)
 
         self.setWindowTitle("Register New XMPP Account")
@@ -75,9 +79,6 @@ class RegistrationWizard(QWizard):
         self.setPage(self.PAGE_PROXY, ProxyPage(self))
         self.setPage(self.PAGE_CREDENTIALS, CredentialsPage(self))
         self.setPage(self.PAGE_REGISTRATION, RegistrationPage(self))
-
-        # Track if size has been locked (for CAPTCHA display)
-        self.size_locked = False
 
         logger.info("Registration wizard initialized")
 

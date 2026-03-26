@@ -33,12 +33,12 @@ def parse_args():
     parser.add_argument(
         '--xdg',
         action='store_true',
-        help='Use XDG Base Directory paths (~/.config, ~/.local/share, ~/.cache)'
+        help='Use XDG Base Directory paths (~/.config, ~/.local/share, ~/.cache) - Linux only'
     )
     parser.add_argument(
         '--dot-data-dir',
         action='store_true',
-        help='Use ~/.siproxylin directory for all data (default for AppImage)'
+        help='Use OS-standard user directories (Linux/macOS: ~/.siproxylin; Windows: AppData folders) - default for AppImage and Windows installer'
     )
     return parser.parse_args()
 
@@ -46,6 +46,12 @@ def parse_args():
 def main():
     """Main application entry point."""
     args = parse_args()
+
+    # Validate --xdg is Linux-only
+    if args.xdg and sys.platform != 'linux':
+        print(f"Error: --xdg is only supported on Linux (current platform: {sys.platform})", file=sys.stderr)
+        print("Use --dot-data-dir instead for OS-standard user directories", file=sys.stderr)
+        sys.exit(1)
 
     # Set path mode based on arguments BEFORE importing siproxylin modules
     # (paths.py reads PATH_MODE at import time, so this must happen first)
@@ -60,11 +66,16 @@ def main():
     from PySide6.QtCore import Qt
     import qasync
     import asyncio
+    import platform
 
     from siproxylin.utils import setup_main_logger, get_paths
     from siproxylin.db.database import get_db
     from siproxylin.gui.main_window import MainWindow
     from siproxylin.core import get_account_manager
+
+    # Enable high DPI scaling BEFORE creating QApplication
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
 
     # Get paths first (needed for config loading)
     paths = get_paths(args.profile)
@@ -171,12 +182,50 @@ def main():
     app.setOrganizationName("Siproxylin")
     app.setOrganizationDomain("siproxylin.local")
 
-    # Enable high DPI scaling
-    app.setAttribute(Qt.AA_EnableHighDpiScaling)
-    app.setAttribute(Qt.AA_UseHighDpiPixmaps)
+    # Set application icon (taskbar, window, notifications)
+    from PySide6.QtGui import QIcon
+    icon_dir = Path(__file__).parent / "siproxylin" / "resources" / "icons"
+    # Prefer .ico on Windows (better taskbar/notification support), SVG elsewhere
+    if platform.system() == "Windows":
+        icon_path = icon_dir / "siproxylin.ico"
+        if not icon_path.exists():
+            icon_path = icon_dir / "siproxylin.svg"  # Fallback to SVG
+    else:
+        icon_path = icon_dir / "siproxylin.svg"
+
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+        logger.info(f"Application icon set: {icon_path}")
+    else:
+        logger.warning(f"Application icon not found: {icon_path}")
+
+    # Windows-specific: Set AppUserModelID for proper taskbar icon grouping
+    # Without this, Windows taskbar shows default Python icon instead of app icon
+    if platform.system() == "Windows":
+        try:
+            import ctypes
+            myappid = 'com.siproxylin.siproxylin.1.0'  # Arbitrary string
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+            logger.info(f"Windows AppUserModelID set: {myappid}")
+        except Exception as e:
+            logger.warning(f"Failed to set Windows AppUserModelID: {e}")
 
     # Configure tooltips
     QToolTip.setFont(app.font())  # Use application font for tooltips
+
+    # Load bundled emoji font on Windows for better emoji rendering
+    # (Linux uses system fonts-noto-color-emoji from AppImage)
+    if platform.system() == "Windows":
+        from PySide6.QtGui import QFontDatabase
+        emoji_font_path = Path(__file__).parent / "siproxylin" / "resources" / "fonts" / "windows" / "NotoColorEmoji_WindowsCompatible.ttf"
+        if emoji_font_path.exists():
+            font_id = QFontDatabase.addApplicationFont(str(emoji_font_path))
+            if font_id != -1:
+                logger.info("Loaded bundled Noto Color Emoji font for Windows")
+            else:
+                logger.warning("Failed to load bundled emoji font, using system default")
+        else:
+            logger.warning(f"Windows emoji font not found at {emoji_font_path}, using system default")
 
     # Install event filter to increase tooltip show delay
     # Default Qt behavior: shows after ~700ms, hides after ~5000ms
@@ -194,6 +243,11 @@ def main():
     # Create and show main window
     logger.info("Creating main window...")
     window = MainWindow()
+
+    # Set icon on main window explicitly (needed on Windows for taskbar icon)
+    if icon_path.exists():
+        window.setWindowIcon(QIcon(str(icon_path)))
+
     window.show()
 
     # Setup signal handlers for graceful shutdown (Ctrl+C, SIGTERM)

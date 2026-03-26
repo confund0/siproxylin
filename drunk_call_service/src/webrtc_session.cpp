@@ -865,14 +865,31 @@ bool WebRTCSession::setup_answerer_audio_pipeline() {
 
         LOG_DEBUG("[WebRTCSession] Pausing pipeline to add audio elements...");
         GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PAUSED);
-        LOG_DEBUG("[WebRTCSession] Pause state change result: {}", ret);
+        LOG_DEBUG("[WebRTCSession] Pause state change result: {}", static_cast<int>(ret));
         gst_element_get_state(pipeline_, &current_state, nullptr, GST_CLOCK_TIME_NONE);
         LOG_INFO("[WebRTCSession] Pipeline state after pause: {}", gst_element_state_get_name(current_state));
 
-        // Create audio elements - use pulsesrc if device specified, otherwise autoaudiosrc
-        const char *src_name = config_.microphone_device.empty() ?
-            "autoaudiosrc" : "pulsesrc";
+        // Create audio elements - platform-specific audio source selection
+        const char *src_name;
+        if (config_.microphone_device.empty()) {
+            // No device specified: use auto-detection (works on all platforms)
+            src_name = "autoaudiosrc";
+        } else {
+            // Device specified: use platform-specific source
+            #ifdef _WIN32
+                src_name = "wasapisrc";      // Windows Audio Session API
+            #elif __APPLE__
+                src_name = "osxaudiosrc";    // macOS CoreAudio
+            #else
+                src_name = "pulsesrc";       // Linux PulseAudio
+            #endif
+        }
+
         audio_src_ = gst_element_factory_make(src_name, "audio_src");
+        if (!audio_src_) {
+            LOG_ERROR("[WebRTCSession] Failed to create audio source: {}", src_name);
+            return false;
+        }
 
         // Only create webrtcdsp if at least one DSP feature is enabled
         bool use_dsp = config_.echo_cancel || config_.noise_suppression || config_.gain_control;
@@ -893,17 +910,18 @@ bool WebRTCSession::setup_answerer_audio_pipeline() {
         GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", "rtpopuspay");
         GstElement *capsfilter = gst_element_factory_make("capsfilter", "rtp_caps");
 
-        if (!audio_src_ || !volume_ || !queue || !convert || !resample || !opusenc || !rtpopuspay || !capsfilter) {
+        if (!volume_ || !queue || !convert || !resample || !opusenc || !rtpopuspay || !capsfilter) {
             LOG_ERROR("[WebRTCSession] Failed to create audio elements");
             return false;
         }
 
         // Configure microphone device if specified
-        if (!config_.microphone_device.empty() && src_name == std::string("pulsesrc")) {
+        if (!config_.microphone_device.empty()) {
             g_object_set(audio_src_, "device", config_.microphone_device.c_str(), nullptr);
-            LOG_INFO("[WebRTCSession] ✓ Set microphone device: {}", config_.microphone_device);
+            LOG_INFO("[WebRTCSession] ✓ Set microphone device: {} (using {})",
+                     config_.microphone_device, src_name);
         } else {
-            LOG_INFO("[WebRTCSession] Using autoaudiosrc (no specific microphone device)");
+            LOG_INFO("[WebRTCSession] Using {} (default device)", src_name);
         }
 
         // Configure webrtcdsp if enabled
@@ -1031,7 +1049,7 @@ bool WebRTCSession::setup_answerer_audio_pipeline() {
         GstPad *caps_src = gst_element_get_static_pad(capsfilter, "src");
         GstPadLinkReturn link_ret = gst_pad_link(caps_src, webrtc_sink);
         if (link_ret != GST_PAD_LINK_OK) {
-            LOG_ERROR("[WebRTCSession] Failed to link capsfilter to webrtcbin sink_0: {}", link_ret);
+            LOG_ERROR("[WebRTCSession] Failed to link capsfilter to webrtcbin sink_0: {}", static_cast<int>(link_ret));
             if (sink_caps) gst_caps_unref(sink_caps);
             gst_object_unref(caps_src);
             gst_object_unref(webrtc_sink);
@@ -1063,7 +1081,7 @@ bool WebRTCSession::setup_answerer_audio_pipeline() {
         // Resume pipeline to PLAYING
         LOG_DEBUG("[WebRTCSession] Resuming pipeline to PLAYING...");
         ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
-        LOG_DEBUG("[WebRTCSession] Resume state change result: {}", ret);
+        LOG_DEBUG("[WebRTCSession] Resume state change result: {}", static_cast<int>(ret));
         gst_element_get_state(pipeline_, &current_state, nullptr, GST_CLOCK_TIME_NONE);
         LOG_INFO("[WebRTCSession] Pipeline state after resume: {}", gst_element_state_get_name(current_state));
 
@@ -1093,14 +1111,31 @@ bool WebRTCSession::setup_offerer_audio_pipeline() {
 
         LOG_DEBUG("[WebRTCSession] [OFFERER] Pausing pipeline to add audio elements...");
         GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PAUSED);
-        LOG_DEBUG("[WebRTCSession] [OFFERER] Pause state change result: {}", ret);
+        LOG_DEBUG("[WebRTCSession] [OFFERER] Pause state change result: {}", static_cast<int>(ret));
         gst_element_get_state(pipeline_, &current_state, nullptr, GST_CLOCK_TIME_NONE);
         LOG_INFO("[WebRTCSession] [OFFERER] Pipeline state after pause: {}", gst_element_state_get_name(current_state));
 
-        // Create audio elements
-        const char *src_name = config_.microphone_device.empty() ?
-            "autoaudiosrc" : "pulsesrc";
+        // Create audio elements - platform-specific audio source selection
+        const char *src_name;
+        if (config_.microphone_device.empty()) {
+            // No device specified: use auto-detection (works on all platforms)
+            src_name = "autoaudiosrc";
+        } else {
+            // Device specified: use platform-specific source
+            #ifdef _WIN32
+                src_name = "wasapisrc";      // Windows Audio Session API
+            #elif __APPLE__
+                src_name = "osxaudiosrc";    // macOS CoreAudio
+            #else
+                src_name = "pulsesrc";       // Linux PulseAudio
+            #endif
+        }
+
         audio_src_ = gst_element_factory_make(src_name, "audio_src");
+        if (!audio_src_) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create audio source: {}", src_name);
+            return false;
+        }
 
         // Only create webrtcdsp if at least one DSP feature is enabled
         bool use_dsp = config_.echo_cancel || config_.noise_suppression || config_.gain_control;
@@ -1121,17 +1156,18 @@ bool WebRTCSession::setup_offerer_audio_pipeline() {
         GstElement *rtpopuspay = gst_element_factory_make("rtpopuspay", "rtpopuspay");
         GstElement *capsfilter = gst_element_factory_make("capsfilter", "rtp_caps");
 
-        if (!audio_src_ || !volume_ || !queue || !convert || !resample || !opusenc || !rtpopuspay || !capsfilter) {
+        if (!volume_ || !queue || !convert || !resample || !opusenc || !rtpopuspay || !capsfilter) {
             LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create audio elements");
             return false;
         }
 
         // Configure microphone device if specified
-        if (!config_.microphone_device.empty() && src_name == std::string("pulsesrc")) {
+        if (!config_.microphone_device.empty()) {
             g_object_set(audio_src_, "device", config_.microphone_device.c_str(), nullptr);
-            LOG_INFO("[WebRTCSession] [OFFERER] ✓ Set microphone device: {}", config_.microphone_device);
+            LOG_INFO("[WebRTCSession] [OFFERER] ✓ Set microphone device: {} (using {})",
+                     config_.microphone_device, src_name);
         } else {
-            LOG_INFO("[WebRTCSession] [OFFERER] Using autoaudiosrc (no specific microphone device)");
+            LOG_INFO("[WebRTCSession] [OFFERER] Using {} (default device)", src_name);
         }
 
         // Configure webrtcdsp if enabled
@@ -1227,7 +1263,7 @@ bool WebRTCSession::setup_offerer_audio_pipeline() {
         GstPad *caps_src = gst_element_get_static_pad(capsfilter, "src");
         GstPadLinkReturn link_ret = gst_pad_link(caps_src, webrtc_sink);
         if (link_ret != GST_PAD_LINK_OK) {
-            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link capsfilter to webrtcbin: {}", link_ret);
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link capsfilter to webrtcbin: {}", static_cast<int>(link_ret));
             gst_object_unref(caps_src);
             gst_object_unref(webrtc_sink);
             return false;
@@ -1240,7 +1276,7 @@ bool WebRTCSession::setup_offerer_audio_pipeline() {
         // Resume pipeline to PLAYING
         LOG_DEBUG("[WebRTCSession] [OFFERER] Resuming pipeline to PLAYING...");
         ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
-        LOG_DEBUG("[WebRTCSession] [OFFERER] Resume state change result: {}", ret);
+        LOG_DEBUG("[WebRTCSession] [OFFERER] Resume state change result: {}", static_cast<int>(ret));
         gst_element_get_state(pipeline_, &current_state, nullptr, GST_CLOCK_TIME_NONE);
         LOG_INFO("[WebRTCSession] [OFFERER] Pipeline state after resume: {}", gst_element_state_get_name(current_state));
 
@@ -2038,8 +2074,22 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
         GstElement *decoder = gst_element_factory_make("opusdec", "decoder");
         GstElement *queue = gst_element_factory_make("queue", "recv_queue");
 
-        const char *sink_name = config_.speakers_device.empty() ?
-            "autoaudiosink" : "pulsesink";
+        // Platform-specific audio sink selection
+        const char *sink_name;
+        if (config_.speakers_device.empty()) {
+            // No device specified: use auto-detection (works on all platforms)
+            sink_name = "autoaudiosink";
+        } else {
+            // Device specified: use platform-specific sink
+            #ifdef _WIN32
+                sink_name = "wasapisink";      // Windows Audio Session API
+            #elif __APPLE__
+                sink_name = "osxaudiosink";    // macOS CoreAudio
+            #else
+                sink_name = "pulsesink";       // Linux PulseAudio
+            #endif
+        }
+
         audio_sink_ = gst_element_factory_make(sink_name, "audio_sink");
 
         if (!depay || !decoder || !queue || !audio_sink_ || !echoprobe_) {
@@ -2048,11 +2098,12 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
         }
 
         // Configure speaker device if specified
-        if (!config_.speakers_device.empty() && sink_name == std::string("pulsesink")) {
+        if (!config_.speakers_device.empty()) {
             g_object_set(audio_sink_, "device", config_.speakers_device.c_str(), nullptr);
-            LOG_INFO("[WebRTCSession] ✓ Set speaker device: {}", config_.speakers_device);
+            LOG_INFO("[WebRTCSession] ✓ Set speaker device: {} (using {})",
+                     config_.speakers_device, sink_name);
         } else {
-            LOG_INFO("[WebRTCSession] Using autoaudiosink (no specific speaker device)");
+            LOG_INFO("[WebRTCSession] Using {} (default device)", sink_name);
         }
 
         LOG_INFO("[WebRTCSession] ✓ Using pre-created webrtcechoprobe0 for echo cancellation");
@@ -2083,7 +2134,7 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
             // ISSUE #9 FIX: Cleanup zombie elements on pad link failure
             // Official Pattern: https://gstreamer.freedesktop.org/documentation/application-development/advanced/pipeline-manipulation.html
             // ========================================================================
-            LOG_ERROR("[WebRTCSession] Failed to link incoming pad to depay: {}", link_ret);
+            LOG_ERROR("[WebRTCSession] Failed to link incoming pad to depay: {}", static_cast<int>(link_ret));
 
             // Remove elements from pipeline
             gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, queue, audio_sink_, nullptr);

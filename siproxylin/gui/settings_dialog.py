@@ -473,7 +473,7 @@ class SettingsDialog(QDialog):
         """Load settings from JSON file."""
         if self.settings_path.exists():
             try:
-                with open(self.settings_path, 'r') as f:
+                with open(self.settings_path, 'r', encoding='utf-8') as f:
                     return json.load(f)
             except Exception as e:
                 logger.error(f"Failed to load settings: {e}")
@@ -494,7 +494,7 @@ class SettingsDialog(QDialog):
         """Load logging settings from JSON file."""
         if self.logging_settings_path.exists():
             try:
-                with open(self.logging_settings_path, 'r') as f:
+                with open(self.logging_settings_path, 'r', encoding='utf-8') as f:
                     return json.load(f)
             except Exception as e:
                 logger.error(f"Failed to load logging settings: {e}")
@@ -514,7 +514,7 @@ class SettingsDialog(QDialog):
         """Load GStreamer debug settings from JSON file."""
         if self.gstreamer_settings_path.exists():
             try:
-                with open(self.gstreamer_settings_path, 'r') as f:
+                with open(self.gstreamer_settings_path, 'r', encoding='utf-8') as f:
                     return json.load(f)
             except Exception as e:
                 logger.error(f"Failed to load GStreamer settings: {e}")

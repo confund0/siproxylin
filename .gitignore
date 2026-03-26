@@ -20,3 +20,7 @@ test-drunk-xmpp-logs
 *.zsync
 old_docs
 drunk_call_service_go
+
+# Windows installer bundles
+windows-installer/bundle/
+windows-installer/version-generated.iss

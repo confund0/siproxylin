@@ -140,14 +140,14 @@ class EmojiPickerDialog(QDialog):
             emoji_icon = self._get_category_emoji(category_name)
             btn = QPushButton(emoji_icon)
             btn.setMinimumSize(60, 40)
-            btn.setStyleSheet("font-size: 22px; padding: 4px;")
+            btn.setStyleSheet("font-size: 22px; padding: 4px; font-family: 'Noto Color Emoji', 'Apple Color Emoji', 'Segoe UI Emoji', monospace;")
             btn.setToolTip(category_name)  # Show category name on hover
             btn.setProperty("category_name", category_name)
             btn.clicked.connect(lambda checked=False, cat=category_name: self._switch_category(cat))
 
             # Style active category
             if category_name == self.current_category:
-                btn.setStyleSheet("font-size: 22px; padding: 4px; font-weight: bold; background-color: #d0d0d0;")
+                btn.setStyleSheet("font-size: 22px; padding: 4px; font-weight: bold; background-color: #d0d0d0; font-family: 'Noto Color Emoji', 'Apple Color Emoji', 'Segoe UI Emoji', monospace;")
 
             nav_layout.addWidget(btn)
 

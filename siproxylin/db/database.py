@@ -7,10 +7,22 @@ Handles SQLite database initialization, schema management, and migrations.
 import sqlite3
 import logging
 import os
-import fcntl
+import sys
 from pathlib import Path
 from typing import Optional, Any, List, Dict
 from contextlib import contextmanager
+
+# Cross-platform file locking
+if sys.platform == 'win32':
+    import msvcrt
+    LOCK_EX = 0x1  # Exclusive lock
+    LOCK_NB = 0x2  # Non-blocking
+    LOCK_UN = 0x4  # Unlock
+else:
+    import fcntl
+    LOCK_EX = fcntl.LOCK_EX
+    LOCK_NB = fcntl.LOCK_NB
+    LOCK_UN = fcntl.LOCK_UN
 
 from ..utils.paths import get_paths
 
@@ -60,8 +72,16 @@ class Database:
             # Open lock file (create if doesn't exist)
             self._lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
 
-            # Try to acquire exclusive lock (non-blocking)
-            fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Platform-specific locking
+            if sys.platform == 'win32':
+                # Windows: Use msvcrt.locking
+                try:
+                    msvcrt.locking(self._lock_fd, msvcrt.LK_NBLCK, 1)
+                except OSError:
+                    raise BlockingIOError("Lock held by another process")
+            else:
+                # Unix: Use fcntl.flock
+                fcntl.flock(self._lock_fd, LOCK_EX | LOCK_NB)
 
             # Write PID to lock file
             os.ftruncate(self._lock_fd, 0)
@@ -78,7 +98,7 @@ class Database:
 
             # Try to read PID from lock file
             try:
-                with open(lock_path, 'r') as f:
+                with open(lock_path, 'r', encoding='utf-8') as f:
                     pid = f.read().strip()
                 error_msg = f"Another instance is already running (PID: {pid})"
             except:
@@ -98,7 +118,12 @@ class Database:
         """Release database lock."""
         if self._lock_fd is not None:
             try:
-                fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+                # Platform-specific unlocking
+                if sys.platform == 'win32':
+                    msvcrt.locking(self._lock_fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(self._lock_fd, LOCK_UN)
+
                 os.close(self._lock_fd)
                 self._lock_fd = None
 

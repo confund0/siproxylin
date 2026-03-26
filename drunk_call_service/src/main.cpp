@@ -60,6 +60,14 @@
 #include <cstring>
 #include <filesystem>
 
+// Platform-specific includes
+#ifdef _WIN32
+    #include <windows.h>
+#elif __APPLE__
+    #include <mach-o/dyld.h>
+    #include <climits>  // PATH_MAX
+#endif
+
 // Global shutdown flag (set by signal handler)
 std::atomic<bool> g_shutdown_requested(false);
 
@@ -155,13 +163,32 @@ void test_devices_and_exit() {
 }
 
 /**
- * Signal handler for SIGINT/SIGTERM.
- * Triggers graceful shutdown.
+ * Signal/Console handler for graceful shutdown.
+ * Triggers graceful shutdown on SIGINT/SIGTERM (Unix) or Ctrl+C/Break/Close (Windows).
  *
  * IMPORTANT: Keep this async-signal-safe!
  * Only set atomic flags and call async-signal-safe functions.
  * Session cleanup will happen in main() shutdown sequence.
  */
+#ifdef _WIN32
+// Windows Console Control Handler
+BOOL WINAPI ConsoleCtrlHandler(DWORD dwCtrlType) {
+    switch (dwCtrlType) {
+        case CTRL_C_EVENT:        // Ctrl+C pressed
+        case CTRL_BREAK_EVENT:    // Ctrl+Break pressed
+        case CTRL_CLOSE_EVENT:    // Console window closing
+            // Set shutdown flag (atomic, safe for Windows handler)
+            g_shutdown_requested = true;
+            return TRUE;  // Handled
+        default:
+            return FALSE;  // Not handled
+    }
+
+    // CRITICAL: Do NOT quit GLib loop here!
+    // Same reasoning as POSIX signal handler - see below.
+}
+#else
+// POSIX Signal Handler (Linux, macOS)
 void signal_handler(int signum) {
     // Set shutdown flag (atomic, signal-safe)
     g_shutdown_requested = true;
@@ -175,6 +202,7 @@ void signal_handler(int signum) {
     // Note: Session cleanup happens in main() shutdown sequence,
     // not here, to avoid async-signal-safety issues
 }
+#endif
 
 /**
  * GLib main loop thread function.
@@ -241,8 +269,32 @@ int main(int argc, char* argv[]) {
     std::string log_path = config.log_path;
     if (log_path.empty()) {
         namespace fs = std::filesystem;
-        // Get executable directory
-        fs::path exe_path = fs::canonical("/proc/self/exe").parent_path();
+
+        // Get executable directory (platform-specific)
+        fs::path exe_path;
+        #ifdef _WIN32
+            // Windows: Use GetModuleFileName Win32 API
+            char buffer[MAX_PATH];
+            GetModuleFileNameA(NULL, buffer, MAX_PATH);
+            exe_path = fs::path(buffer).parent_path();
+        #elif __APPLE__
+            // macOS: Use _NSGetExecutablePath
+            char buffer[PATH_MAX];
+            uint32_t size = sizeof(buffer);
+            if (_NSGetExecutablePath(buffer, &size) == 0) {
+                exe_path = fs::canonical(buffer).parent_path();
+            } else {
+                // Buffer too small (very rare), reallocate
+                char* bigger_buffer = new char[size];
+                _NSGetExecutablePath(bigger_buffer, &size);
+                exe_path = fs::canonical(bigger_buffer).parent_path();
+                delete[] bigger_buffer;
+            }
+        #else  // Linux
+            // Linux: Use /proc virtual filesystem
+            exe_path = fs::canonical("/proc/self/exe").parent_path();
+        #endif
+
         // Go up one level and into app/logs
         fs::path logs_dir = exe_path.parent_path() / "app" / "logs";
         // Create directory if it doesn't exist
@@ -284,9 +336,16 @@ int main(int argc, char* argv[]) {
     // Phase 5: Setup signal handlers
     // ========================================================================
 
-    std::signal(SIGINT, signal_handler);
-    std::signal(SIGTERM, signal_handler);
-    LOG_INFO("Signal handlers registered (SIGINT, SIGTERM)");
+    #ifdef _WIN32
+        // Windows: Console control handler
+        SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+        LOG_INFO("Signal handlers registered (CTRL_C, CTRL_BREAK, CTRL_CLOSE)");
+    #else
+        // Linux, macOS: POSIX signals
+        std::signal(SIGINT, signal_handler);
+        std::signal(SIGTERM, signal_handler);
+        LOG_INFO("Signal handlers registered (SIGINT, SIGTERM)");
+    #endif
 
     // ========================================================================
     // Phase 6: Start gRPC server

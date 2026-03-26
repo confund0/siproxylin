@@ -235,12 +235,20 @@ class MessageExtensionsMixin:
 
         if not encrypt:
             # Send plaintext correction
-            correction = self['xep_0308'].build_correction(
-                id_to_replace=message_id,
-                mto=jid,
-                mtype=msg_type,
-                mbody=new_body
-            )
+            # Compatibility: build_correction() added in slixmpp 1.9.0
+            if hasattr(self['xep_0308'], 'build_correction'):
+                correction = self['xep_0308'].build_correction(
+                    id_to_replace=message_id,
+                    mto=jid,
+                    mtype=msg_type,
+                    mbody=new_body
+                )
+            else:
+                # Fallback for slixmpp < 1.9.0 (manual stanza building)
+                correction = self.make_message(mto=jid, mtype=msg_type)
+                correction['body'] = new_body
+                correction['replace']['id'] = message_id
+
             # Add origin-id for message tracking (XEP-0359)
             correction['origin_id']['id'] = correction['id']
             correction.send()

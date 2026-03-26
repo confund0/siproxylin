@@ -804,7 +804,7 @@ class ChatViewWidget(QWidget):
 
         import os
         from datetime import datetime
-        from ...utils.paths import get_paths
+        from ...utils.paths import get_paths, _mkdir_secure
 
         # Detect image format from MIME data
         # Common formats: image/png, image/jpeg, image/webp, image/bmp, image/gif
@@ -841,7 +841,7 @@ class ChatViewWidget(QWidget):
         paths = get_paths()
         attachments_base = paths.data_dir / 'attachments'
         jid_dir = attachments_base / str(self.current_account_id) / self.current_jid
-        jid_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _mkdir_secure(jid_dir, parents=True)
 
         # Generate timestamped filename
         timestamp_str = datetime.now().strftime('%Y-%m-%d_%H%M%S')

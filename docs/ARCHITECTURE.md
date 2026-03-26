@@ -246,11 +246,16 @@ Messages follow Dino-compatible state model:
 
 ### Path Modes
 
-| Mode | Flag | Data Location |
-|------|------|---------------|
-| dev | (none) | `./sip_dev_paths/` |
-| xdg | `--xdg` | `~/.config/`, `~/.local/share/`, `~/.cache/` |
-| dot | `--dot-data-dir` | `~/.siproxylin/` (AppImage default) |
+| Mode | Flag | Linux | Windows |
+|------|------|-------|---------|
+| dev | (none) | `./sip_dev_paths/` | `.\sip_dev_paths\` |
+| xdg | `--xdg` | `~/.config/siproxylin/`<br>`~/.local/share/siproxylin/`<br>`~/.cache/siproxylin/` | N/A |
+| dot | `--dot-data-dir` | `~/.siproxylin/` | `%APPDATA%\Siproxylin\` (config)<br>`%LOCALAPPDATA%\Siproxylin\` (data/cache/logs) |
+
+**Defaults:**
+- Linux dev: `dev` mode
+- Linux AppImage: `dot` mode (launcher passes `--dot-data-dir`)
+- Windows installer: `dot` mode (launcher passes `--dot-data-dir`)
 
 ### Per-Account Settings
 
