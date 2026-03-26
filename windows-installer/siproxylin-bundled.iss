@@ -20,22 +20,22 @@
 
 ; Read version from version.sh - search for SIPROXYLIN_VERSION line
 #define VersionLine ""
-#define FileHandle FileOpen("..\version.sh")
+#expr FileHandle = FileOpen("..\\version.sh", 0)
 #sub ProcessLine
-  #define CurrentLine FileRead(FileHandle)
+  #define CurrentLine FileRead(FileHandle, 32768)
   #if Pos("SIPROXYLIN_VERSION", CurrentLine) > 0
     #define VersionLine CurrentLine
   #endif
 #endsub
 #for {FileHandle; FileHandle && !FileEof(FileHandle) && VersionLine == ""; ""} ProcessLine
-#if FileHandle
-  #expr FileClose(FileHandle)
-#endif
+#expr FileClose(FileHandle)
 #if VersionLine == ""
   #error Could not find SIPROXYLIN_VERSION in version.sh
 #endif
 ; Extract version: SIPROXYLIN_VERSION="v0.0.27" -> v0.0.27
-#define AppVersion Copy(VersionLine, Pos('"', VersionLine) + 1, Pos('"', Copy(VersionLine, Pos('"', VersionLine) + 1, 100)) - 1)
+#define FirstQuote Pos('"', VersionLine)
+#define SecondQuote Pos('"', Copy(VersionLine, FirstQuote + 1, 32768))
+#define AppVersion Copy(VersionLine, FirstQuote + 1, SecondQuote - 1)
 
 ; Path defines
 #define BundleDir "bundle"
