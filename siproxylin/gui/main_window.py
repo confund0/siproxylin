@@ -23,6 +23,7 @@ from PySide6.QtGui import QAction, QActionGroup
 
 from ..db.database import get_db
 from ..utils.paths import get_paths
+from ..version import VERSION, BUILD_CODENAME
 from .log_viewer import LogViewer
 from .account_dialog import AccountDialog
 from .registration_wizard import RegistrationWizard
@@ -65,7 +66,7 @@ class MainWindow(QMainWindow):
         self.app_start_time = time.time()
 
         # Window setup
-        self.setWindowTitle("Siproxylin")
+        self.setWindowTitle(f"Siproxylin {VERSION} - {BUILD_CODENAME}")
         self.setGeometry(100, 100, 1200, 800)
 
         # Setup UI first (creates contact_list and chat_view widgets)
