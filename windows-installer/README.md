@@ -15,6 +15,7 @@ The installer includes:
 - ✅ vcpkg runtime DLLs (~50 MB)
 - ✅ Siproxylin application
 - ✅ Downloads pip packages during installation (shows progress)
+- ✅ User choice: Install for all users (requires admin) OR just for me (no admin)
 - ✅ Auto-upgrades old versions
 - ✅ Clean uninstaller
 
@@ -77,10 +78,13 @@ Downloads and organizes dependencies into `bundle/` directory:
 
 1. **Installation**
    - [ ] Run installer
+   - [ ] Installation mode page appears with radio buttons
+   - [ ] Test "Install just for me" (no admin password needed)
    - [ ] Pip packages download (console shows progress)
    - [ ] Installation completes without errors
    - [ ] Start Menu shortcut created
    - [ ] Desktop shortcut created (if selected)
+   - [ ] Verify install location matches choice
 
 2. **Application Launch**
    - [ ] Launch from Start Menu
@@ -99,6 +103,11 @@ Downloads and organizes dependencies into `bundle/` directory:
    - [ ] Run new installer
    - [ ] Old version auto-uninstalled
    - [ ] Settings preserved
+
+**Bonus Tests:**
+   - [ ] Test "Install for anyone using this computer" mode (requires admin password)
+   - [ ] Verify installation to `C:\Program Files\Siproxylin`
+   - [ ] Test that non-admin user can still run the app (if installed for all users)
 
 5. **Uninstall**
    - [ ] Go to "Add/Remove Programs"
@@ -132,12 +141,19 @@ windows-installer/
 ## Installer Features
 
 - **Self-contained**: All dependencies bundled (except pip packages)
+- **Installation mode choice**: User can choose during install:
+  - **"Install for anyone using this computer"** (requires admin)
+    - → `C:\Program Files\Siproxylin` (all users)
+  - **"Install just for me"** (no admin needed)
+    - → `%LOCALAPPDATA%\Programs\Siproxylin` (current user only)
 - **Version info**: Reads from `version.sh`, shows in window title
 - **Progress**: Console window shows pip install progress
 - **Disk space**: Warns user about ~1 GB requirement
 - **Upgrade detection**: Auto-removes old version
-- **User data**: Preserved on uninstall (`%USERPROFILE%\.siproxylin\`)
-- **Silent install**: `Siproxylin-Setup-v{VERSION}-bundled.exe /SILENT`
+- **User data**: Preserved on uninstall (stored in AppData)
+- **Silent install**:
+  - All users: `Siproxylin-Setup-v{VERSION}-bundled.exe /ALLUSERS /SILENT`
+  - Current user: `Siproxylin-Setup-v{VERSION}-bundled.exe /CURRENTUSER /SILENT`
 
 ---
 

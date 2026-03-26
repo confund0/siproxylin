@@ -69,7 +69,12 @@ UninstallDisplayIcon={app}\siproxylin\resources\icons\siproxylin.ico
 ; ============================================================================
 ; Privileges and Compatibility
 ; ============================================================================
-PrivilegesRequired=admin
+; Allow user to choose between per-user or all-users installation
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
+; Show installation mode page with radio buttons:
+; - "Install for anyone using this computer" (requires admin)
+; - "Install just for me" (no admin needed)
 MinVersion=10.0
 
 ; ============================================================================

@@ -16,12 +16,19 @@ Siproxylin supports **Windows 10/11 x64** via a self-contained Inno Setup instal
 
 1. **Download** `Siproxylin-Setup-v{VERSION}-bundled.exe` from [GitHub Releases](https://github.com/confund0/siproxylin/releases)
 
-2. **Run installer** - It will:
+2. **Run installer** - You'll be asked to choose:
+   - **"Install for anyone using this computer"** (requires admin password)
+     - Installs to: `C:\Program Files\Siproxylin`
+     - Available to all users on the PC
+   - **"Install just for me"** (no admin needed)
+     - Installs to: `%LOCALAPPDATA%\Programs\Siproxylin`
+     - Only available to current user
+
+   Then it will:
    - Install bundled Python 3.11.9 embeddable
    - Install bundled GStreamer runtime (~30 MB)
    - Install bundled vcpkg DLLs
    - Download Python dependencies via pip (~760 MB, requires internet)
-   - Install to `C:\Program Files\Siproxylin`
    - Create Start Menu and Desktop shortcuts
 
 3. **Launch** via Start Menu or Desktop shortcut
