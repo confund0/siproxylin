@@ -1,255 +1,220 @@
 # Windows Installer for Siproxylin
 
-This directory contains Inno Setup scripts for creating professional Windows installers.
+This directory contains the Inno Setup bundled installer for Windows.
 
-## Two Installer Versions
+## Overview
 
-### 1. Bundled Installer (RECOMMENDED) ⭐
+**Installer Type:** Self-contained with bundled dependencies
 **File:** `siproxylin-bundled.iss`
-**Size:** ~80-100 MB
-**Approach:** Self-contained, bundles all dependencies
+**Size:** ~100 MB
+**Internet Required:** Yes (for pip packages, ~760 MB during install)
 
 The installer includes:
 - ✅ Python 3.11.9 embeddable (~25 MB)
 - ✅ GStreamer runtime libraries (~30 MB)
-- ✅ vcpkg runtime DLLs (~10 MB)
+- ✅ vcpkg runtime DLLs (~50 MB)
 - ✅ Siproxylin application
-- ✅ Works completely offline (no downloads)
-- ✅ Faster installation
-- ✅ More reliable (no download failures)
+- ✅ Downloads pip packages during installation (shows progress)
+- ✅ Auto-upgrades old versions
+- ✅ Clean uninstaller
 
-### 2. Download Installer (LEGACY)
-**File:** `siproxylin.iss`
-**Size:** ~5 MB
-**Approach:** Downloads Python + GStreamer during installation (~175 MB total)
+---
 
-Use only if you need a small installer package (slow internet users).
-
-## Quick Start (Bundled Installer)
+## Quick Start
 
 ### Prerequisites
 
-1. **Install Inno Setup 6** (Windows)
+1. **Inno Setup 6.x**
    - Download: https://jrsoftware.org/isdl.php
-   - Get the **Unicode** version (default)
    - Install to: `C:\Program Files (x86)\Inno Setup 6\`
 
-2. **Build the C++ call service** (Windows or Linux cross-compile)
+2. **Build C++ call service**
    ```bash
    cd drunk_call_service
-   make winrel    # Creates drunk-call-service-windows.exe
+   make winrel VCPKG_ROOT=C:/vcpkg
    ```
 
-3. **Build the Windows distribution** (Windows or Linux)
-   ```bash
-   cd ..
-   ./build-windows.bat   # Creates dist/windows/
-   ```
+### Build Installer
 
-### Build Process
-
-**Step 1: Prepare bundled dependencies**
 ```cmd
 cd windows-installer
+
+REM Step 1: Prepare bundled dependencies
 prepare-windows-installer.bat
-```
 
-This script will:
-- Download Python 3.11.9 embeddable from python.org
-- Collect minimal GStreamer DLLs from your local installation
-- Collect vcpkg runtime DLLs from `drunk_call_service/bin/`
-- Organize everything in `bundle/` directory
-
-**Step 2: Build the installer**
-```cmd
+REM Step 2: Build installer
 build-installer-bundled.bat
 ```
 
-Output: `dist/Siproxylin-Setup-v{VERSION}-bundled.exe` (~80-100 MB)
+**Output:** `dist/Siproxylin-Setup-v{VERSION}-bundled.exe` (~100 MB)
 
-## Alternative Build Methods
+---
 
-### Option A: Manual (Inno Setup GUI)
+## What the Scripts Do
 
-1. Run `prepare-windows-installer.bat` first
-2. Open `siproxylin-bundled.iss` in Inno Setup Compiler
-3. Click **Build** → **Compile**
-4. Installer created in `dist/`
+### prepare-windows-installer.bat
 
-### Option B: Command Line
+Downloads and organizes dependencies into `bundle/` directory:
 
-```cmd
-REM Prepare bundles first
-prepare-windows-installer.bat
+1. **Python 3.11.9 embeddable** (~10 MB) - from python.org
+2. **GStreamer runtime** (~12 MB) - from GitHub releases `deps-v{VERSION}`
+3. **vcpkg DLLs** (~3 MB) - from GitHub releases `deps-v{VERSION}`
 
-REM Then compile
-"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" siproxylin-bundled.iss
-```
+### build-installer-bundled.bat
 
-## Testing the Bundled Installer
+1. Extracts version from `../version.sh`
+2. Creates `version-generated.iss` with version define
+3. Compiles installer using Inno Setup
+4. Output: `dist/Siproxylin-Setup-v{VERSION}-bundled.exe`
 
-### Test on a fresh Windows 10/11 VM:
+---
 
-**Requirements:**
-- Windows 10 or Windows 11 (x64)
-- No prior installation of Python or GStreamer
-- No internet connection required (tests offline capability)
+## Testing the Installer
+
+### Test on fresh Windows 10/11 VM:
 
 **Test Checklist:**
 
-1. **Fresh Install**
-   - [ ] Copy installer to VM (no internet needed)
-   - [ ] Run `Siproxylin-Setup-v{VERSION}-bundled.exe`
+1. **Installation**
+   - [ ] Run installer
+   - [ ] Pip packages download (console shows progress)
    - [ ] Installation completes without errors
-   - [ ] No download prompts or internet requests
    - [ ] Start Menu shortcut created
    - [ ] Desktop shortcut created (if selected)
 
 2. **Application Launch**
-   - [ ] Launch from Start Menu shortcut
-   - [ ] Application window appears
-   - [ ] No DLL missing errors
+   - [ ] Launch from Start Menu
+   - [ ] Application window shows version in title
+   - [ ] No DLL errors
    - [ ] Can add XMPP account
 
-3. **Audio Call Test**
-   - [ ] Login to test account
-   - [ ] Make call to Conversations.im or Dino
-   - [ ] Receive incoming call
+3. **Audio Call**
+   - [ ] Login to account
+   - [ ] Make call (test with Conversations.im or Dino)
    - [ ] Bidirectional audio works
-   - [ ] No crashes during call
+   - [ ] No crashes
 
-4. **Upgrade Test**
+4. **Upgrade**
    - [ ] Install older version first
    - [ ] Run new installer
-   - [ ] Old version uninstalled automatically
-   - [ ] New version installs successfully
+   - [ ] Old version auto-uninstalled
    - [ ] Settings preserved
 
-5. **Uninstall Test**
+5. **Uninstall**
    - [ ] Go to "Add/Remove Programs"
    - [ ] Uninstall Siproxylin
-   - [ ] Removes `C:\Program Files\Siproxylin\`
-   - [ ] Removes Start Menu shortcuts
-   - [ ] Asks about removing `%USERPROFILE%\.siproxylin\`
+   - [ ] Program files removed
+   - [ ] Shortcuts removed
+   - [ ] User data preserved in `%APPDATA%\Siproxylin\` and `%LOCALAPPDATA%\Siproxylin\`
 
-6. **File Verification**
-   - [ ] Check `C:\Program Files\Siproxylin\python\` exists
-   - [ ] Check `C:\Program Files\Siproxylin\lib\gstreamer\` exists
-   - [ ] Check `C:\Program Files\Siproxylin\lib\*.dll` exists
-   - [ ] Check logs in `%USERPROFILE%\.siproxylin\logs\`
+---
 
 ## File Structure
 
 ```
 windows-installer/
-├── siproxylin-bundled.iss         # Bundled installer script (RECOMMENDED)
-├── siproxylin.iss                 # Download installer script (legacy)
-├── prepare-windows-installer.bat  # Prepare bundles before building
-├── build-installer-bundled.bat    # Build bundled installer
-├── build-installer.bat            # Build download installer (legacy)
-├── siproxylin-launcher.bat        # Launcher with PATH setup
+├── siproxylin-bundled.iss         # Inno Setup script
+├── prepare-windows-installer.bat  # Download dependencies
+├── build-installer-bundled.bat    # Build installer
+├── siproxylin-launcher.bat        # Application launcher (sets PATH)
+├── version-generated.iss          # Auto-generated version (gitignored)
 ├── README.md                      # This file
-└── bundle/                        # Created by prepare script
+└── bundle/                        # Created by prepare script (gitignored)
     ├── python/                    # Python 3.11.9 embeddable
-    ├── gstreamer_temp/            # GStreamer runtime DLLs
+    ├── gstreamer/                 # GStreamer runtime DLLs
+    │   ├── bin/                   # Core DLLs
+    │   └── lib/gstreamer-1.0/     # Plugins
     └── vcpkg/                     # vcpkg runtime DLLs
 ```
 
+---
+
 ## Installer Features
 
-### Bundled Installer (siproxylin-bundled.iss)
-- ✅ Self-contained (~80-100 MB)
-- ✅ Works offline (no downloads)
-- ✅ Faster installation
-- ✅ More reliable
-- ✅ Bundles Python 3.11.9 embeddable
-- ✅ Bundles minimal GStreamer runtime
-- ✅ Bundles vcpkg DLLs
-- ✅ Installs pip packages from PyPI during install
-- ✅ Auto-upgrades old versions
-- ✅ Clean uninstaller
+- **Self-contained**: All dependencies bundled (except pip packages)
+- **Version info**: Reads from `version.sh`, shows in window title
+- **Progress**: Console window shows pip install progress
+- **Disk space**: Warns user about ~1 GB requirement
+- **Upgrade detection**: Auto-removes old version
+- **User data**: Preserved on uninstall (`%USERPROFILE%\.siproxylin\`)
+- **Silent install**: `Siproxylin-Setup-v{VERSION}-bundled.exe /SILENT`
 
-### Silent Installation
+---
+
+## Dependency Management
+
+Dependencies are version-tagged and stored as GitHub releases (`deps-v{VERSION}`).
+
+**To update dependencies for new version:**
+
 ```cmd
-Siproxylin-Setup-v0.0.4-bundled.exe /SILENT
+REM 1. On Windows dev machine with working build:
+cd drunk_call_service/bin
+zip ..\..\siproxylin-windows-vcpkg-deps-v{VERSION}.zip *.dll
+
+cd ..\lib\gstreamer
+zip ..\..\..\siproxylin-windows-gst-deps-v{VERSION}.zip bin\ lib\
+
+REM 2. Upload to GitHub
+gh release create deps-v{VERSION} --title "Windows Dependencies v{VERSION}"
+gh release upload deps-v{VERSION} siproxylin-windows-*.zip
+
+REM 3. Update version.sh
+REM prepare-windows-installer.bat will auto-download from new release
 ```
 
-### Upgrade Handling
-- Detects previous installation
-- Uninstalls old version silently
-- Installs new version
-- Preserves user config in `%USERPROFILE%\.siproxylin\`
-
-### Uninstaller
-- Removes all program files
-- Removes shortcuts
-- Optionally removes user data (prompts user)
-
-## Customization
-
-### Change GStreamer version
-Edit `siproxylin.iss` line with GStreamer filename:
-```pascal
-Source: "prereqs\gstreamer-1.0-msvc-x86_64-1.24.10.msi"; ...
-```
-
-Update both the filename and the installer command.
-
-### Change installation directory
-Users can change during installation, but default is:
-```pascal
-DefaultDirName={autopf}\{#AppName}  ; C:\Program Files\Siproxylin
-```
-
-### Add more prerequisites
-Add new component in `[Components]` section and corresponding `[Run]` command.
+---
 
 ## Troubleshooting
 
-### "Error reading version from version.sh"
-- Make sure `../version.sh` exists
-- Check format: `SIPROXYLIN_VERSION="x.y.z"`
+**"Error reading version from version.sh"**
+- Ensure `../version.sh` exists with `SIPROXYLIN_VERSION="v0.0.27"`
 
-### "Source file not found: dist/windows"
-- Run `build-windows.bat` first to create distribution
+**"Source file not found"**
+- Run `make winrel` to build C++ service first
+- Run `prepare-windows-installer.bat` to download dependencies
 
-### "Download failed"
-- Check internet connection
-- Prerequisites are downloaded from python.org and gstreamer.org
-- User can cancel and install Python/GStreamer manually
+**"Pip install fails"**
+- Check internet connection (downloads ~760 MB)
+- Verify `requirements.txt` pins slixmpp==1.8.5 on Windows
 
-### Installer won't run on Windows 7/8
-- Minimum version is Windows 10 (set in `[Setup]` section)
-- Change `MinVersion=10.0` to `MinVersion=6.1` for Windows 7+
+**"Application won't start"**
+- Check logs: `%LOCALAPPDATA%\Siproxylin\Logs\`
+- Verify launcher uses `python main.py --dot-data-dir`
 
-### Python dependencies fail to install
-- Check internet connection (pip downloads from PyPI)
-- Check `requirements.txt` is in `dist/windows/`
-- Run installer as Administrator
+**"Call service won't start"**
+- Check: `%LOCALAPPDATA%\Siproxylin\Logs\drunk-call-service.err`
 
-## Code signing (optional)
+---
 
-To sign the installer for Windows SmartScreen:
+## Code Signing (Optional)
 
-1. Get a code signing certificate
-2. Add to `[Setup]` section:
-```pascal
-SignTool=signtool /f MyCert.pfx /p MyPassword /t http://timestamp.digicert.com $f
-SignedUninstaller=yes
-```
+To avoid Windows SmartScreen warnings, sign the installer:
+
+1. Obtain code signing certificate
+2. Add to `[Setup]` section in `siproxylin-bundled.iss`:
+   ```pascal
+   SignTool=signtool /f MyCert.pfx /p MyPassword /t http://timestamp.digicert.com $f
+   SignedUninstaller=yes
+   ```
+
+---
 
 ## Distribution
 
 Upload to GitHub releases:
 ```bash
-gh release upload v0.0.4 dist/Siproxylin-Setup-v0.0.4.exe
+gh release upload v{VERSION} dist/Siproxylin-Setup-v{VERSION}-bundled.exe
 ```
 
-Installer size: ~2-5 MB (without bundled prerequisites)
-With prerequisites: ~180 MB
+---
 
 ## References
 
 - Inno Setup Documentation: https://jrsoftware.org/ishelp/
-- Gajim Windows installer (similar Python app): https://github.com/gajim/gajim/tree/master/win
-- Pidgin Windows installer: https://github.com/pidgin/pidgin/tree/master/pidgin/win32/nsis
+- Project Documentation: `../docs/WINDOWS.md`
+
+---
+
+**Last Updated**: 2026-03-26
+**Status**: Production Ready
