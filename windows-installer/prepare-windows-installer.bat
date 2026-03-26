@@ -89,7 +89,7 @@ REM ============================================================================
 REM Step 2: Download GStreamer runtime deps from GitHub
 REM ============================================================================
 echo [2/4] Downloading GStreamer runtime dependencies...
-set GST_ZIP=siproxylin-windows-gst-deps-v!VERSION!.zip
+set GST_ZIP=siproxylin-windows-gst-deps-!VERSION!.zip
 set GST_URL=https://github.com/%GITHUB_REPO%/releases/download/%DEPS_TAG%/%GST_ZIP%
 
 if exist "%GST_DEST%\bin\gstreamer-1.0-0.dll" (
@@ -121,7 +121,7 @@ REM ============================================================================
 REM Step 3: Download vcpkg runtime deps from GitHub
 REM ============================================================================
 echo [3/4] Downloading vcpkg runtime dependencies...
-set VCPKG_ZIP=siproxylin-windows-vcpkg-deps-v!VERSION!.zip
+set VCPKG_ZIP=siproxylin-windows-vcpkg-deps-!VERSION!.zip
 set VCPKG_URL=https://github.com/%GITHUB_REPO%/releases/download/%DEPS_TAG%/%VCPKG_ZIP%
 
 if exist "%VCPKG_DEST%\abseil_dll.dll" (
