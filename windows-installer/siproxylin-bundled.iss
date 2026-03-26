@@ -18,24 +18,15 @@
 #define AppURL "https://github.com/confund0/siproxylin"
 #define AppExeName "siproxylin.bat"
 
-; Read version from version.sh - search for SIPROXYLIN_VERSION line
-#define VersionLine ""
-#expr FileHandle = FileOpen("..\\version.sh", 0)
-#sub ProcessLine
-  #define CurrentLine FileRead(FileHandle, 32768)
-  #if Pos("SIPROXYLIN_VERSION", CurrentLine) > 0
-    #define VersionLine CurrentLine
+; Version is extracted by build script and passed via /D command line or included from version-generated.iss
+#ifndef AppVersion
+  #if FileExists("version-generated.iss")
+    #include "version-generated.iss"
+  #else
+    #define AppVersion "0.0.0-dev"
+    #pragma message "WARNING: Using default version " + AppVersion + ". Run prepare-windows-installer.bat to extract version."
   #endif
-#endsub
-#for {FileHandle; FileHandle && !FileEof(FileHandle) && VersionLine == ""; ""} ProcessLine
-#expr FileClose(FileHandle)
-#if VersionLine == ""
-  #error Could not find SIPROXYLIN_VERSION in version.sh
 #endif
-; Extract version: SIPROXYLIN_VERSION="v0.0.27" -> v0.0.27
-#define FirstQuote Pos('"', VersionLine)
-#define SecondQuote Pos('"', Copy(VersionLine, FirstQuote + 1, 32768))
-#define AppVersion Copy(VersionLine, FirstQuote + 1, SecondQuote - 1)
 
 ; Path defines
 #define BundleDir "bundle"

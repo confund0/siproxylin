@@ -105,10 +105,32 @@ echo   - %VCPKG_BUNDLE%
 echo.
 
 REM =============================================================================
-REM STEP 4: Compile installer
+REM STEP 4: Extract version from version.sh
 REM =============================================================================
 
-echo [4/4] Compiling bundled installer with Inno Setup...
+echo [4/5] Extracting version from version.sh...
+
+REM Use findstr to extract the version line
+for /f "tokens=2 delims==" %%a in ('findstr "SIPROXYLIN_VERSION" "..\version.sh"') do (
+    set VERSION_RAW=%%a
+)
+
+REM Remove quotes and spaces
+set VERSION_RAW=%VERSION_RAW:"=%
+set VERSION_RAW=%VERSION_RAW: =%
+
+REM Create version-generated.iss
+echo #define AppVersion "%VERSION_RAW%" > version-generated.iss
+
+echo Extracted version: %VERSION_RAW%
+echo Created: version-generated.iss
+echo.
+
+REM =============================================================================
+REM STEP 5: Compile installer
+REM =============================================================================
+
+echo [5/5] Compiling bundled installer with Inno Setup...
 echo.
 echo NOTE: This installer bundles ALL dependencies (~80-100 MB)
 echo       No internet connection required for installation
