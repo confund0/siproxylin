@@ -69,9 +69,7 @@ Source: "bundle\python\*"; DestDir: "{app}\python"; Flags: ignoreversion recurse
 Source: "bundle\gstreamer_temp\bin\*"; DestDir: "{app}\lib\gstreamer\bin"; Flags: ignoreversion
 Source: "bundle\gstreamer_temp\lib\gstreamer-1.0\*"; DestDir: "{app}\lib\gstreamer\lib\gstreamer-1.0"; Flags: ignoreversion
 
-; vcpkg runtime DLLs (from bundle/vcpkg)
-Source: "bundle\vcpkg\*.dll"; DestDir: "{app}\lib"; Flags: ignoreversion
-Source: "bundle\vcpkg\drunk-call-service-windows.exe"; DestDir: "{app}\lib"; Flags: ignoreversion
+; vcpkg DLLs and exe are already in dist/windows/drunk_call_service/bin (copied by main application)
 
 ; ============================================================================
 ; Shortcuts

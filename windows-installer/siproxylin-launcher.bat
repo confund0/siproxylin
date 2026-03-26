@@ -21,8 +21,8 @@ set PATH=%INSTALL_DIR%\python;%PATH%
 REM Add bundled GStreamer to PATH
 set PATH=%INSTALL_DIR%\lib\gstreamer\bin;%PATH%
 
-REM Add bundled vcpkg libs to PATH
-set PATH=%INSTALL_DIR%\lib;%PATH%
+REM Add vcpkg DLLs (in drunk_call_service/bin) to PATH
+set PATH=%INSTALL_DIR%\drunk_call_service\bin;%PATH%
 
 REM Set GStreamer plugin path
 set GST_PLUGIN_PATH=%INSTALL_DIR%\lib\gstreamer\lib\gstreamer-1.0
