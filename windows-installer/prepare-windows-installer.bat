@@ -33,7 +33,7 @@ if not exist "..\version.sh" (
 )
 
 REM GitHub release tag for dependencies
-set DEPS_TAG=deps-v!VERSION!
+set DEPS_TAG=deps-!VERSION!
 set GITHUB_REPO=confund0/siproxylin
 
 REM Bundle directory structure
