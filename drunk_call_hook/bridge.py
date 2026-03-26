@@ -127,7 +127,7 @@ class GoCallService:
 
                 # Check bundled GStreamer
                 if gstreamer_bin.exists():
-                    path_components.append(str(gstreamer_bin))
+                    path_components.append(str(gstreamer_bin.resolve()))
                     self.logger.info(f"Found bundled GStreamer at: {gstreamer_bin}")
 
                     # Set GStreamer plugin path
@@ -153,7 +153,8 @@ class GoCallService:
                 # Update PATH if we have components to add
                 if path_components:
                     env["PATH"] = ";".join(path_components) + ";" + existing_path
-                    self.logger.debug(f"Windows PATH updated: {env['PATH']}")
+                    self.logger.debug(f"Windows PATH updated with {len(path_components)} components")
+                    self.logger.debug(f"Full PATH: {env['PATH']}")
                 else:
                     self.logger.error("No valid paths to add - call service will not start")
 
