@@ -18,11 +18,22 @@
 #define AppURL "https://github.com/confund0/siproxylin"
 #define AppExeName "siproxylin.bat"
 
-; Read version from version.sh (format: SIPROXYLIN_VERSION="x.y.z")
+; Read version from version.sh - search for SIPROXYLIN_VERSION line
 #define VersionFile FileOpen("..\version.sh")
-#define VersionLine FileRead(VersionFile)
-#define AppVersion Copy(VersionLine, Pos('="', VersionLine) + 2, Pos('"', Copy(VersionLine, Pos('="', VersionLine) + 2, 100)) - 1)
+#define VersionLine ""
+#sub ReadVersionLine
+  #define CurrentLine FileRead(VersionFile)
+  #if Pos("SIPROXYLIN_VERSION", CurrentLine) > 0
+    #define VersionLine CurrentLine
+  #endif
+#endsub
+#for {i = 0; i < 20 && VersionLine == ""; i++} ReadVersionLine
 #expr FileClose(VersionFile)
+#if VersionLine == ""
+  #error Could not find SIPROXYLIN_VERSION in version.sh
+#endif
+; Extract version: SIPROXYLIN_VERSION="v0.0.27" -> v0.0.27
+#define AppVersion Copy(VersionLine, Pos('"', VersionLine) + 1, Pos('"', Copy(VersionLine, Pos('"', VersionLine) + 1, 100)) - 1)
 
 ; Path defines
 #define BundleDir "bundle"
