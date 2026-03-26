@@ -5,7 +5,9 @@ PySide6>=6.6.0
 qasync  # Asyncio integration with Qt event loop
 
 # XMPP client library
-slixmpp>=1.8.0
+# NOTE: Windows MUST use slixmpp==1.8.5 (newer versions require Rust compiler)
+slixmpp==1.8.5; platform_system == "Windows"
+slixmpp>=1.8.5; platform_system != "Windows"
 aiodns>=3.0.0  # DNS SRV lookups for slixmpp
 
 # HTTP client for file uploads (required by slixmpp xep_0363)

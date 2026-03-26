@@ -34,7 +34,7 @@ set PYTHONPATH=%INSTALL_DIR%
 REM Launch Siproxylin
 echo Starting Siproxylin...
 cd /d "%INSTALL_DIR%"
-python -m siproxylin %*
+python main.py %*
 
 REM Keep window open on error
 if errorlevel 1 (

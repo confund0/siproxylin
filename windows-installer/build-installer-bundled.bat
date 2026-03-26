@@ -115,7 +115,7 @@ for /f "tokens=2 delims==" %%a in ('findstr "SIPROXYLIN_VERSION" "..\version.sh"
     set VERSION_RAW=%%a
 )
 
-REM Remove quotes and spaces
+REM Remove quotes and spaces only (keep the "v" prefix)
 set VERSION_RAW=%VERSION_RAW:"=%
 set VERSION_RAW=%VERSION_RAW: =%
 

@@ -39,6 +39,7 @@
 AppId={{A7E8B2F4-6C3D-4A1B-9E5F-8D2C4B1A6E3F}
 AppName={#AppName}
 AppVersion={#AppVersion}
+VersionInfoVersion={#AppVersion}.0
 AppPublisher={#AppPublisher}
 AppPublisherURL={#AppURL}
 AppSupportURL={#AppURL}/issues
@@ -46,10 +47,11 @@ AppUpdatesURL={#AppURL}/releases
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 AllowNoIcons=yes
+ExtraDiskSpaceRequired=1073741824
 LicenseFile={#ProjectRoot}\LICENSE
 InfoBeforeFile={#ProjectRoot}\README.md
 OutputDir={#ProjectRoot}\dist
-OutputBaseFilename=Siproxylin-Setup-v{#AppVersion}-bundled
+OutputBaseFilename=Siproxylin-Setup-{#AppVersion}-bundled
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -106,11 +108,11 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; Post-Installation: Install Python Dependencies
 ; ============================================================================
 [Run]
-; Bootstrap pip in embeddable Python
-Filename: "{app}\python\python.exe"; Parameters: "get-pip.py"; StatusMsg: "Installing pip..."; Flags: runhidden waituntilterminated
+; Bootstrap pip in embeddable Python (show console for progress)
+Filename: "{app}\python\python.exe"; Parameters: "get-pip.py"; StatusMsg: "Installing pip (1/2)..."; Flags: waituntilterminated
 
-; Install Python dependencies
-Filename: "{app}\python\python.exe"; Parameters: "-m pip install --no-warn-script-location -r ""{app}\requirements.txt"""; StatusMsg: "Installing Python dependencies (this may take a few minutes)..."; Flags: runhidden waituntilterminated
+; Install Python dependencies (show console for progress, takes 3-5 minutes, downloads ~760 MB)
+Filename: "{app}\python\python.exe"; Parameters: "-m pip install --no-warn-script-location -r ""{app}\requirements.txt"""; StatusMsg: "Installing Python dependencies (2/2) - Downloading ~760 MB, please wait 3-5 minutes..."; Flags: waituntilterminated
 
 ; Optional: Launch application after install
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
