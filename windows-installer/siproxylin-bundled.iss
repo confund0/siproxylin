@@ -62,8 +62,8 @@ OutputBaseFilename=Siproxylin-Setup-{#AppVersion}-bundled
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
-ArchitecturesInstallIn64BitMode=x64
-ArchitecturesAllowed=x64
+ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed=x64compatible
 UninstallDisplayIcon={app}\siproxylin\resources\icons\siproxylin.ico
 
 ; ============================================================================
@@ -129,8 +129,15 @@ Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(
 ; ============================================================================
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\python\Lib\site-packages"
-Type: filesandordirs; Name: "{userappdata}\.siproxylin"
-Type: filesandordirs; Name: "{localappdata}\.siproxylin"
+
+; NOTE: User data directories are NOT automatically deleted on uninstall.
+; Users can manually delete these if desired:
+;   %APPDATA%\Siproxylin (config)
+;   %LOCALAPPDATA%\Siproxylin (data, logs, cache)
+;
+; Uncomment these lines to auto-delete user data on uninstall (not recommended):
+; Type: filesandordirs; Name: "{userappdata}\Siproxylin"
+; Type: filesandordirs; Name: "{localappdata}\Siproxylin"
 
 ; ============================================================================
 ; Registry and Environment Setup
