@@ -3,8 +3,10 @@ Path management for Siproxylin.
 
 Three path modes:
 - dev: Use local paths (./sip_dev_paths/*) - default for development
-- xdg: Use XDG paths (~/.config, ~/.local/share, ~/.cache) - XDG standard
-- dot: Use dot directory (~/.siproxylin/*) - simple, supports gocryptfs
+- xdg: Use XDG paths (~/.config, ~/.local/share, ~/.cache) - Linux only
+- dot: Use OS-standard user directories
+  - Linux: ~/.siproxylin/* (simple, supports gocryptfs)
+  - Windows: %APPDATA%\Siproxylin\ (config), %LOCALAPPDATA%\Siproxylin\ (data/cache/logs)
 
 Toggle via PATH_MODE constant or SIPROXYLIN_PATH_MODE environment variable.
 """
@@ -76,10 +78,15 @@ class Paths:
             _mkdir_secure(xdg_config, parents=True)
             base = xdg_config / 'siproxylin'
         elif PATH_MODE == 'dot':
-            # Dot: ~/.siproxylin/config/<profile>/
-            dot_root = Path.home() / '.siproxylin'
-            _mkdir_secure(dot_root, parents=True)
-            base = dot_root / 'config'
+            if sys.platform == 'win32':
+                # Windows: %APPDATA%\Siproxylin\ (Roaming - synced across machines)
+                appdata = Path(os.getenv('APPDATA', Path.home() / 'AppData' / 'Roaming'))
+                base = appdata / 'Siproxylin'
+            else:
+                # Unix: ~/.siproxylin/config/<profile>/
+                dot_root = Path.home() / '.siproxylin'
+                _mkdir_secure(dot_root, parents=True)
+                base = dot_root / 'config'
         else:  # dev
             # Development: ./sip_dev_paths/config/
             base = self._project_root / 'sip_dev_paths' / 'config'
@@ -97,10 +104,15 @@ class Paths:
             _mkdir_secure(xdg_data, parents=True)
             base = xdg_data / 'siproxylin'
         elif PATH_MODE == 'dot':
-            # Dot: ~/.siproxylin/data/<profile>/
-            dot_root = Path.home() / '.siproxylin'
-            _mkdir_secure(dot_root, parents=True)
-            base = dot_root / 'data'
+            if sys.platform == 'win32':
+                # Windows: %LOCALAPPDATA%\Siproxylin\ (Local - not synced)
+                localappdata = Path(os.getenv('LOCALAPPDATA', Path.home() / 'AppData' / 'Local'))
+                base = localappdata / 'Siproxylin'
+            else:
+                # Unix: ~/.siproxylin/data/<profile>/
+                dot_root = Path.home() / '.siproxylin'
+                _mkdir_secure(dot_root, parents=True)
+                base = dot_root / 'data'
         else:  # dev
             # Development: ./sip_dev_paths/data/
             base = self._project_root / 'sip_dev_paths' / 'data'
@@ -118,10 +130,15 @@ class Paths:
             _mkdir_secure(xdg_cache, parents=True)
             base = xdg_cache / 'siproxylin'
         elif PATH_MODE == 'dot':
-            # Dot: ~/.siproxylin/cache/<profile>/
-            dot_root = Path.home() / '.siproxylin'
-            _mkdir_secure(dot_root, parents=True)
-            base = dot_root / 'cache'
+            if sys.platform == 'win32':
+                # Windows: %LOCALAPPDATA%\Siproxylin\Cache\
+                localappdata = Path(os.getenv('LOCALAPPDATA', Path.home() / 'AppData' / 'Local'))
+                base = localappdata / 'Siproxylin' / 'Cache'
+            else:
+                # Unix: ~/.siproxylin/cache/<profile>/
+                dot_root = Path.home() / '.siproxylin'
+                _mkdir_secure(dot_root, parents=True)
+                base = dot_root / 'cache'
         else:  # dev
             # Development: ./sip_dev_paths/cache/
             base = self._project_root / 'sip_dev_paths' / 'cache'
@@ -137,13 +154,20 @@ class Paths:
             # XDG: ~/.local/share/siproxylin/<profile>/logs/
             base = self.data_dir / 'logs'
         elif PATH_MODE == 'dot':
-            # Dot: ~/.siproxylin/logs/<profile>/
-            # Ensure ~/.siproxylin root has secure permissions
-            dot_root = Path.home() / '.siproxylin'
-            _mkdir_secure(dot_root, parents=True)
-            base = dot_root / 'logs'
-            if self.profile != 'default':
-                base = base / self.profile
+            if sys.platform == 'win32':
+                # Windows: %LOCALAPPDATA%\Siproxylin\Logs\
+                localappdata = Path(os.getenv('LOCALAPPDATA', Path.home() / 'AppData' / 'Local'))
+                base = localappdata / 'Siproxylin' / 'Logs'
+                if self.profile != 'default':
+                    base = base / self.profile
+            else:
+                # Unix: ~/.siproxylin/logs/<profile>/
+                # Ensure ~/.siproxylin root has secure permissions
+                dot_root = Path.home() / '.siproxylin'
+                _mkdir_secure(dot_root, parents=True)
+                base = dot_root / 'logs'
+                if self.profile != 'default':
+                    base = base / self.profile
         else:  # dev
             # Development: ./sip_dev_paths/logs/
             base = self._project_root / 'sip_dev_paths' / 'logs'

@@ -33,12 +33,12 @@ def parse_args():
     parser.add_argument(
         '--xdg',
         action='store_true',
-        help='Use XDG Base Directory paths (~/.config, ~/.local/share, ~/.cache)'
+        help='Use XDG Base Directory paths (~/.config, ~/.local/share, ~/.cache) - Linux only'
     )
     parser.add_argument(
         '--dot-data-dir',
         action='store_true',
-        help='Use ~/.siproxylin directory for all data (default for AppImage)'
+        help='Use OS-standard user directories (Linux/macOS: ~/.siproxylin; Windows: AppData folders) - default for AppImage and Windows installer'
     )
     return parser.parse_args()
 
@@ -46,6 +46,12 @@ def parse_args():
 def main():
     """Main application entry point."""
     args = parse_args()
+
+    # Validate --xdg is Linux-only
+    if args.xdg and sys.platform != 'linux':
+        print(f"Error: --xdg is only supported on Linux (current platform: {sys.platform})", file=sys.stderr)
+        print("Use --dot-data-dir instead for OS-standard user directories", file=sys.stderr)
+        sys.exit(1)
 
     # Set path mode based on arguments BEFORE importing siproxylin modules
     # (paths.py reads PATH_MODE at import time, so this must happen first)
