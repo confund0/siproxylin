@@ -28,6 +28,13 @@
   #endif
 #endif
 
+; Strip "v" prefix for VersionInfoVersion (needs numeric format like 0.0.27.0)
+#if Copy(AppVersion, 1, 1) == "v"
+  #define AppVersionNumeric Copy(AppVersion, 2, 999)
+#else
+  #define AppVersionNumeric AppVersion
+#endif
+
 ; Path defines
 #define BundleDir "bundle"
 #define ProjectRoot ".."
@@ -39,7 +46,7 @@
 AppId={{A7E8B2F4-6C3D-4A1B-9E5F-8D2C4B1A6E3F}
 AppName={#AppName}
 AppVersion={#AppVersion}
-VersionInfoVersion={#AppVersion}.0
+VersionInfoVersion={#AppVersionNumeric}.0
 AppPublisher={#AppPublisher}
 AppPublisherURL={#AppURL}
 AppSupportURL={#AppURL}/issues
