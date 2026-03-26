@@ -19,16 +19,18 @@
 #define AppExeName "siproxylin.bat"
 
 ; Read version from version.sh - search for SIPROXYLIN_VERSION line
-#define VersionFile FileOpen("..\version.sh")
 #define VersionLine ""
-#sub ReadVersionLine
-  #define CurrentLine FileRead(VersionFile)
+#define FileHandle FileOpen("..\version.sh")
+#sub ProcessLine
+  #define CurrentLine FileRead(FileHandle)
   #if Pos("SIPROXYLIN_VERSION", CurrentLine) > 0
     #define VersionLine CurrentLine
   #endif
 #endsub
-#for {i = 0; i < 20 && VersionLine == ""; i++} ReadVersionLine
-#expr FileClose(VersionFile)
+#for {FileHandle; FileHandle && !FileEof(FileHandle) && VersionLine == ""; ""} ProcessLine
+#if FileHandle
+  #expr FileClose(FileHandle)
+#endif
 #if VersionLine == ""
   #error Could not find SIPROXYLIN_VERSION in version.sh
 #endif
