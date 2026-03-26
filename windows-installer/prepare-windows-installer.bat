@@ -21,7 +21,7 @@ if exist "..\version.sh" (
 )
 
 echo ============================================================================
-echo Siproxylin Windows Installer Preparation v!VERSION!
+echo Siproxylin Windows Installer Preparation !VERSION!
 echo ============================================================================
 echo.
 
