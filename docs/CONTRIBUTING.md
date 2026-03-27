@@ -16,13 +16,13 @@ Thank you for your interest in contributing! Siproxylin is a privacy-focused XMP
 - **Architecture**: `docs/ARCHITECTURE.md` - Understand the system design
 - **Build Instructions**: `docs/BUILD.md` - Set up your development environment
 - **Architecture Decision Records**: `docs/ADR.md` - Learn the "10 Commandments" (critical rules)
-- **Technology Stack**: `docs/TECHNOLOGY.md` - Dependencies and tools
+- **Call System**: `docs/CALLS.md` - Audio/video call architecture
 
 ### Development Environment
 
 **Prerequisites**:
 - Python 3.11+
-- Go 1.21+ (for call service)
+- C++ compiler (GCC/Clang/MSVC) and CMake 3.15+ (for call service)
 - GStreamer 1.0
 - Qt6 libraries
 - Git
@@ -36,9 +36,9 @@ cd siproxylin
 # Install Python dependencies
 pip install -r requirements.txt
 
-# Build Go call service
+# Build C++ call service
 cd drunk_call_service
-go build -o ../drunk_call_service.bin
+make
 cd ..
 
 # Run application in dev mode
@@ -259,12 +259,12 @@ How to test these changes:
 
 ### Adding a New XEP
 
-1. Check if already implemented (see `app/version.py::SUPPORTED_XEPS`)
+1. Check if already implemented (see `siproxylin/version.py::SUPPORTED_XEPS`)
 2. Implement in DrunkXMPP library (`drunk_xmpp/`)
 3. Add callback handling in appropriate barrel
 4. Update GUI if needed
 5. Add to `SUPPORTED_XEPS` list
-6. Document in `docs/PHASE-CHATS/` or appropriate directory
+6. Document in `docs/` or reference in `old_docs/` if detailed implementation notes
 
 ### GUI Improvements
 
@@ -375,8 +375,8 @@ Contributors will be:
 ## Release Process
 
 **For Maintainers**:
-1. Update version in `app/version.py`
-2. Update `SUPPORTED_XEPS` if needed
+1. Update version in `version.sh`
+2. Update `SUPPORTED_XEPS` in `siproxylin/version.py` if needed
 3. Build AppImage: `./build-appimage.sh`
 4. Create git tag: `git tag v1.2.3`
 5. Push tag: `git push origin v1.2.3`
