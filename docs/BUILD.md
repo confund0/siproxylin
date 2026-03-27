@@ -45,13 +45,28 @@ python main.py
 
 **Build targets:**
 ```bash
-make           # Release build (optimized, 1.2MB)
-make debug     # Debug build (with sanitizers, 59MB)
+make           # Build release version (Linux/macOS)
+make release   # Build optimized release binary (Linux/macOS)
+make debug     # Build with debug symbols and sanitizers (Linux/macOS)
+make winrel    # Build optimized release binary (Windows/MSVC)
+make windbg    # Build debug binary (Windows/MSVC)
 make test      # Run unit tests
 make clean     # Remove build artifacts
+make install   # Install binary to bin/
+make check-deps # Verify all build dependencies (Linux/macOS)
+make help      # Show all available targets
 ```
 
-**Binary location:** `drunk_call_service/bin/drunk-call-service-linux`
+**Binary location:** `drunk_call_service/bin/drunk-call-service-{linux|windows|darwin}`
+
+**Windows builds:**
+```bash
+# Default (assumes vcpkg in C:/vcpkg)
+make winrel
+
+# Custom vcpkg location
+make winrel VCPKG_ROOT=D:/vcpkg
+```
 
 ---
 
