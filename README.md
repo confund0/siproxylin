@@ -73,7 +73,7 @@ chmod +x Siproxylin-*.AppImage
 - ✅ **Themes** - Multiple color schemes (matters at night!)
 - ⏳ **Video calls** - In progress
 - ⏳ **Screen sharing** - Planned
-- ⏳ **Windows/macOS** - Linux-only for now
+- ⏳ **macOS** - Linux and Windows already working
 
 ---
 
