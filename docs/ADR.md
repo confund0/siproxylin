@@ -45,9 +45,9 @@
 - See: `siproxylin/utils/logger.py`
 
 ### 7. Codec Parameter Negotiation (Calls)
-- **DO**: Parse `a=fmtp:` from Pion's SDP answer → convert to Jingle `<parameter>` elements
+- **DO**: Parse `a=fmtp:` from GStreamer webrtcbin's SDP answer → convert to Jingle `<parameter>` elements
 - **DON'T**: Hardcode codec parameters
-- **Why**: Pion handles codec negotiation - Python just translates SDP ↔ Jingle
+- **Why**: GStreamer webrtcbin handles codec negotiation - Python just translates SDP ↔ Jingle
 - See: `drunk_call_hook/protocol/jingle.py`
 
 ### 8. MUC Message Direction (XEP-0421)
@@ -64,6 +64,13 @@
 - **MUST USE**: `get_db()` singleton
 - NEVER create new SQLite connections
 - See: `app/db/database.py`
+
+### 11. Call State Coordination
+- **Python owns**: Signaling state machine (proposed, ringing, connecting, active, ended)
+- **C++ reports**: Media/ICE states via gRPC (ice-connection-state, gathering-state)
+- **Critical**: NEVER let layers get out of sync - always bidirectional cleanup
+- **Termination**: All paths (user hangup, network failure, remote hangup) must synchronize both layers
+- See: `docs/CALLS.md` for detailed state machine
 
 ---
 
@@ -127,7 +134,7 @@
 
 ```
 main_window.py
-    ├─ GoCallService (Go process, app lifetime)
+    ├─ CallService (C++ process, app lifetime)
     └─ AccountManager (per-account)
            ├─ CallBridge (gRPC client)
            └─ JingleAdapter (Jingle ↔ SDP)

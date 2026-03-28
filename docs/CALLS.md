@@ -355,7 +355,7 @@ for (const auto& device : audio_inputs) {
 
 ### Build Output
 - Binary: `drunk_call_service/bin/drunk-call-service-{linux,windows,macos}`
-- Service managed by `drunk_call_hook/bridge.py` (GoCallService class)
+- Service managed by `drunk_call_hook/bridge.py` (CallService class)
 - Logs: `~/.siproxylin/logs/drunk-call-service.log` (or `sip_dev_paths/logs/` in dev mode)
 
 ## Current Status
@@ -389,6 +389,189 @@ for (const auto& device : audio_inputs) {
 4. **DTLS-SRTP**: All media encrypted end-to-end
 
 See: `docs/ADR.md` security requirements section.
+
+## Call State Machine & Layer Coordination
+
+### State Ownership
+
+The call system uses a **distributed state machine** split across two layers:
+
+**Python Layer (Signaling States)**:
+- Owns high-level call states: `PROPOSED`, `RINGING`, `CONNECTING`, `ACTIVE`, `ENDED`
+- Manages Jingle protocol states (XEP-0353 Jingle Message Initiation)
+- Stored in: `siproxylin/core/barrels/calls.py` (CallBarrel)
+- Implemented by: `drunk_xmpp/calls/mixin.py` (XEP-0353 state machine)
+
+**C++ Layer (Media/ICE States)**:
+- Owns WebRTC connection states: ICE states, gathering states, connection states
+- GStreamer webrtcbin properties:
+  - `ice-gathering-state`: NEW / GATHERING / COMPLETE
+  - `ice-connection-state`: NEW / CHECKING / CONNECTED / COMPLETED / FAILED / DISCONNECTED
+  - `connection-state`: NEW / CONNECTING / CONNECTED / DISCONNECTED / FAILED / CLOSED
+- No persistent state - exists only during active call session
+- Monitored in: `drunk_call_service/src/webrtc_session.cpp`
+
+**Key Principle**: Python owns **what** the call is doing (signaling), C++ owns **how** media is flowing (transport).
+
+### State Transitions & Responsibilities
+
+#### Outgoing Call Flow
+
+```
+[Python] User clicks call → PROPOSED
+[Python] Send Jingle propose message → PROPOSED
+[Python] Receive accept → RINGING
+[Python] Create gRPC session → CONNECTING
+[C++] Create pipeline, set to PLAYING → ice-gathering-state: GATHERING
+[C++] Generate offer → send to Python
+[Python] Convert offer to Jingle, send to peer → CONNECTING
+[Python] Receive Jingle answer → send to C++ via gRPC
+[C++] Set remote description → ice-connection-state: CHECKING
+[C++] ICE candidates exchanged → ice-connection-state: CONNECTED
+[Python] Receive first media notification → ACTIVE
+```
+
+**Responsibility**: Python triggers media session creation only after Jingle accept received.
+
+#### Incoming Call Flow
+
+```
+[Python] Receive Jingle propose → RINGING (show incoming call UI)
+[Python] User clicks accept → CONNECTING
+[Python] Create gRPC session, send Jingle accept
+[Python] Receive Jingle proceed → send offer request to peer
+[Python] Receive Jingle offer → forward to C++ via gRPC
+[C++] Create pipeline in READY state
+[C++] Set remote description → ice-gathering-state: GATHERING
+[C++] Generate answer → send to Python
+[Python] Convert answer to Jingle, send to peer → CONNECTING
+[C++] Set pipeline to PLAYING → ice-connection-state: CHECKING
+[C++] ICE connection established → ice-connection-state: CONNECTED
+[Python] Receive media notification → ACTIVE
+```
+
+**Responsibility**: C++ stays in READY until remote offer received, then generates answer.
+
+### Failure Handling & Synchronization
+
+Critical rule from ADR #11: **NEVER let layers get out of sync**. All termination paths must cleanup both layers.
+
+#### Path 1: User Hangup (Normal Termination)
+
+```
+[Python] User clicks hangup button
+    ↓
+[Python] CallBarrel.end_call() → state = ENDED
+    ↓ (parallel actions)
+    ├─ [Python] Send Jingle session-terminate to peer
+    └─ [Python] gRPC TerminateCall() to C++
+          ↓
+       [C++] Stop pipeline, cleanup session
+          ↓
+       [C++] Return success to Python
+```
+
+**Synchronization**: Python waits for gRPC response before considering cleanup complete.
+
+#### Path 2: ICE Connection Failure (Network Issue)
+
+```
+[C++] ICE fails to establish (timeout or all candidates fail)
+    ↓
+[C++] ice-connection-state → FAILED (GStreamer property notify)
+    ↓
+[C++] WebRTCSession::on_ice_connection_state_notify() detects FAILED
+    ↓
+[C++] Send CallTerminated gRPC notification to Python (reason: ICE_FAILED)
+    ↓
+[Python] CallBridge receives notification → CallBarrel.on_call_failed()
+    ↓ (parallel actions)
+    ├─ [Python] Update UI state to ENDED with error
+    └─ [Python] Send Jingle session-terminate to peer (reason: connectivity-error)
+```
+
+**Synchronization**: C++ proactively notifies Python. Python doesn't need to send TerminateCall gRPC (already terminated).
+
+#### Path 3: Remote Hangup (Peer Terminates)
+
+```
+[Python] Receive Jingle session-terminate from peer
+    ↓
+[Python] DrunkXMPP calls/mixin handles session-terminate
+    ↓
+[Python] CallBarrel.on_remote_terminate() → state = ENDED
+    ↓
+[Python] gRPC TerminateCall() to C++
+    ↓
+[C++] Stop pipeline, cleanup session
+    ↓
+[Python] Update UI to show call ended
+```
+
+**Synchronization**: Python ensures C++ cleanup even though Jingle already terminated.
+
+#### Path 4: DTLS Failure (Encryption Failure)
+
+```
+[C++] DTLS handshake fails (certificate/fingerprint mismatch)
+    ↓
+[C++] connection-state → FAILED
+    ↓
+[C++] Send CallTerminated gRPC notification (reason: DTLS_FAILED)
+    ↓
+[Python] Similar handling to ICE failure (update UI, send Jingle terminate)
+```
+
+### gRPC State Notifications (C++ → Python)
+
+The C++ service actively reports state changes via gRPC:
+
+**Notification Types** (from `drunk_call_service/proto/call.proto`):
+- `IceCandidate`: Trickle ICE candidate generated
+- `IceGatheringStateChange`: NEW / GATHERING / COMPLETE
+- `IceConnectionStateChange`: NEW / CHECKING / CONNECTED / FAILED
+- `CallTerminated`: Media session ended (with reason code)
+
+**Python Handling** (in `drunk_call_hook/bridge.py`):
+- Separate gRPC streaming thread receives notifications
+- Forwards to CallBarrel via callback
+- CallBarrel updates UI and signaling state accordingly
+
+### Critical Timing Considerations
+
+**Issue**: If Python sends `TerminateCall` gRPC while C++ is sending `CallTerminated` notification, race condition occurs.
+
+**Solution**:
+1. Python ignores `CallTerminated` after sending `TerminateCall` (idempotent)
+2. C++ accepts `TerminateCall` even if already terminated (cleanup is idempotent)
+3. Both layers use cleanup flags to prevent double-free of resources
+
+**Implementation**: See `drunk_call_service/src/webrtc_session.cpp` cleanup guards and `siproxylin/core/barrels/calls.py` state checks.
+
+### State Persistence
+
+**Python**: Call state persisted in database for call history (call_log table)
+**C++**: No persistence - session state exists only in memory during call
+
+When application restarts, only Python state is restored (for history). Active calls are not recoverable.
+
+### Debugging State Issues
+
+**Symptoms of Desync**:
+- UI shows "Active" but no audio flows
+- C++ session terminated but Python still shows call active
+- Jingle messages sent after media session destroyed
+
+**Debug Tools**:
+1. Python logs: `sip_dev_paths/logs/account-*-app.log` (search for "CallBarrel")
+2. C++ logs: `sip_dev_paths/logs/drunk-call-service.log` (GST_DEBUG for webrtcbin)
+3. XMPP protocol: `sip_dev_paths/logs/xmpp-protocol.log` (Jingle messages)
+4. Check both layers' state simultaneously during failure
+
+**Common Fixes**:
+- Ensure gRPC calls have timeouts (don't block forever)
+- Verify all error paths call cleanup on both layers
+- Check that Jingle session-terminate is always sent (XMPP peer needs notification)
 
 ## Reference Files
 

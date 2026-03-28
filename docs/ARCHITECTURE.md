@@ -115,7 +115,7 @@ Each "barrel" handles one feature domain:
 | **MessageBarrel** | Send/receive messages, receipts, markers | XEP-0184, 0333 |
 | **PresenceBarrel** | Roster, subscriptions, presence | RFC 6121 |
 | **OmemoBarrel** | E2E encryption device management | XEP-0384 |
-| **CallBarrel** | Audio/video calls via Go service | XEP-0353, 0166 |
+| **CallBarrel** | Audio/video calls via C++ media service | XEP-0353, 0166 |
 | **FileBarrel** | File uploads and attachments | XEP-0363, 0454 |
 | **AvatarBarrel** | Avatar fetching and caching | XEP-0084, 0153 |
 | **MucBarrel** | Multi-user chat rooms | XEP-0045, 0402 |
@@ -241,7 +241,7 @@ Messages follow Dino-compatible state model:
 
 - **Main Thread**: Qt event loop (GUI)
 - **XMPP Thread**: asyncio event loop (networking)
-- **Go Service**: Separate process (media)
+- **C++ Media Service**: Separate process (GStreamer webrtcbin)
 
 **Bridge**: Qt signals are thread-safe and cross thread boundaries
 

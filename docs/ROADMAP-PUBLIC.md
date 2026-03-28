@@ -98,7 +98,7 @@ This document outlines the vision and development direction for Siproxylin.
 
 ### Current Stack
 - **Python 3.11+** - Application framework and GUI (PySide6/Qt6)
-- **Go** - Media processing service (Pion WebRTC, GStreamer)
+- **C++ with GStreamer** - Media service (GStreamer webrtcbin for WebRTC)
 - **SQLite** - Local data storage
 - **slixmpp** - XMPP protocol implementation
 - **python-omemo** - OMEMO encryption
