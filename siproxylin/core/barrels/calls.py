@@ -950,6 +950,13 @@ class CallBarrel:
 
         peer_jid = session_info['peer_jid']
 
+        # Get media types from session
+        media_types = self.jingle_adapter.sessions[session_id].get('media', ['audio'])
+        enable_video = 'video' in media_types
+
+        if self.logger:
+            self.logger.debug(f"Session {session_id} media types: {media_types}, video enabled: {enable_video}")
+
         # Query XEP-0215 for TURN servers
         turn_server, turn_username, turn_password = '', '', ''
         try:
@@ -971,7 +978,7 @@ class CallBarrel:
         mic_device, mic_display, speakers_device, speakers_display, audio_proc = self._load_audio_settings()
 
         # Create WebRTC session
-        await self.call_bridge.create_session(
+        result = await self.call_bridge.create_session(
             peer_jid, session_id, mic_device, speakers_device,
             microphone_display_name=mic_display,
             speakers_display_name=speakers_display,
@@ -987,8 +994,27 @@ class CallBarrel:
             echo_suppression_level=audio_proc['echo_suppression_level'],
             noise_suppression=audio_proc['noise_suppression'],
             noise_suppression_level=audio_proc['noise_suppression_level'],
-            gain_control=audio_proc['gain_control']
+            gain_control=audio_proc['gain_control'],
+            enable_video=enable_video
         )
+
+        # Handle return value - can be bool (legacy) or tuple (success, video_port)
+        if isinstance(result, tuple):
+            success, video_port = result
+        else:
+            success = result
+            video_port = None
+
+        if not success:
+            if self.logger:
+                self.logger.error("Failed to create CallBridge session")
+            return
+
+        # Store video port for RTP streaming
+        if video_port:
+            self.jingle_adapter.sessions[session_id]['video_port'] = video_port
+            if self.logger:
+                self.logger.info(f"Video enabled for session {session_id}, RTP port: {video_port}")
 
         # Set remote description (caller's offer)
         await self.call_bridge.set_remote_description(

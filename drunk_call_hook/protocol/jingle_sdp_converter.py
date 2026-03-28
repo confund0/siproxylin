@@ -129,6 +129,16 @@ class JingleSDPConverter:
                     content_name = line.split(':', 1)[1]
                     break
 
+            # Parse per-media ICE credentials (overrides global if present)
+            # With BALANCED bundle-policy, each media has separate ice-ufrag/ice-pwd
+            media_ice_ufrag = ice_ufrag  # Default to global
+            media_ice_pwd = ice_pwd      # Default to global
+            for line in media_lines:
+                if line.startswith('a=ice-ufrag:'):
+                    media_ice_ufrag = line.split(':', 1)[1]
+                elif line.startswith('a=ice-pwd:'):
+                    media_ice_pwd = line.split(':', 1)[1]
+
             # Parse SDP direction from media lines
             # a=sendrecv → senders='both'
             # a=recvonly → senders='initiator' (only initiator/Dino sends, we receive)
@@ -257,10 +267,10 @@ class JingleSDPConverter:
             # Add ICE-UDP transport with credentials
             transport = ET.SubElement(content, '{urn:xmpp:jingle:transports:ice-udp:1}transport')
 
-            if ice_ufrag:
-                transport.set('ufrag', ice_ufrag)
-            if ice_pwd:
-                transport.set('pwd', ice_pwd)
+            if media_ice_ufrag:
+                transport.set('ufrag', media_ice_ufrag)
+            if media_ice_pwd:
+                transport.set('pwd', media_ice_pwd)
 
             # Parse ICE candidates
             for line in media_lines:

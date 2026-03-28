@@ -61,6 +61,8 @@ private:
     GstElement *audio_sink_;  // Created dynamically on pad-added
     GstElement *volume_;      // For mute functionality
     GstElement *echoprobe_;   // WebRTC echo probe for echo cancellation
+    GstElement *video_src_;   // Video source (v4l2src/autovideosrc)
+    GstElement *video_sink_;  // Video sink (created dynamically on pad-added)
 
     // Configuration
     SessionConfig config_;
@@ -70,8 +72,10 @@ private:
     // Pad management: Track the pad created during negotiation for answerer mode
     // Answerer: webrtcbin auto-creates transceiver from offer, we get its pad
     // after negotiation completes, then reuse that pad for audio pipeline
-    GstPad* negotiated_pad_;  // Pad used for SDP negotiation (answerer only)
-    GstCaps* offer_codec_caps_;  // Codec caps parsed from remote offer (answerer only)
+    GstPad* negotiated_pad_;  // Audio pad used for SDP negotiation (answerer only)
+    GstCaps* offer_codec_caps_;  // Audio codec caps parsed from remote offer (answerer only)
+    GstPad* negotiated_video_pad_;  // Video pad used for SDP negotiation (answerer only)
+    GstCaps* offer_video_codec_caps_;  // Video codec caps parsed from remote offer (answerer only)
 
     // Negotiated codec parameters from answer SDP (used to configure audio pipeline)
     int negotiated_payload_;   // RTP payload type from answer (e.g., 111)
@@ -150,6 +154,7 @@ private:
     // Helper methods
     bool create_pipeline();
     bool setup_answerer_audio_pipeline();  // Incoming calls (answerer mode)
+    bool setup_answerer_video_pipeline();  // Incoming calls - video send (answerer mode)
     bool setup_offerer_audio_pipeline();    // Outgoing calls (offerer mode)
     bool configure_webrtcbin();
     bool configure_proxy();

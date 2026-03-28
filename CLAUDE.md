@@ -1,0 +1,5 @@
+DO NOT TOUCH GIT
+DO NOT TOUCH BUILDS
+DO NOT TOUCH docs/ADR.md and CLAUDE.md files
+
+

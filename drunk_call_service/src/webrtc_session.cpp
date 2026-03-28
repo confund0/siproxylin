@@ -133,6 +133,78 @@ static GstCaps* parse_audio_codec_from_offer(GstSDPMessage *offer) {
     return caps;
 }
 
+static GstCaps* parse_video_codec_from_offer(GstSDPMessage *offer) {
+    const GstSDPMedia *media = nullptr;
+    std::string encoding_name;
+    int clock_rate = 0;
+    int payload = -1;
+
+    // Find first video m-line
+    for (guint i = 0; i < gst_sdp_message_medias_len(offer); i++) {
+        media = gst_sdp_message_get_media(offer, i);
+        if (strcmp(gst_sdp_media_get_media(media), "video") == 0) {
+            LOG_INFO("[WebRTCSession] Found video m-line at index {}", i);
+            break;
+        }
+        media = nullptr;
+    }
+
+    if (!media) {
+        LOG_INFO("[WebRTCSession] No video m-line in offer (audio-only call)");
+        return nullptr;
+    }
+
+    // Get first payload type
+    if (gst_sdp_media_formats_len(media) > 0) {
+        const char *payload_str = gst_sdp_media_get_format(media, 0);
+        payload = atoi(payload_str);
+        LOG_INFO("[WebRTCSession] First video payload type: {}", payload);
+    } else {
+        LOG_ERROR("[WebRTCSession] No payload formats in video m-line!");
+        return nullptr;
+    }
+
+    // Find rtpmap for this payload
+    for (guint i = 0; i < gst_sdp_media_attributes_len(media); i++) {
+        const GstSDPAttribute *attr = gst_sdp_media_get_attribute(media, i);
+
+        if (strcmp(attr->key, "rtpmap") == 0) {
+            // Parse "96 VP8/90000" or "97 H264/90000"
+            int attr_payload;
+            char codec_name[32];
+            int rate;
+
+            if (sscanf(attr->value, "%d %31[^/]/%d", &attr_payload, codec_name, &rate) == 3) {
+                if (attr_payload == payload) {
+                    // CRITICAL: GStreamer uppercases encoding-name!
+                    for (char *p = codec_name; *p; p++) *p = toupper(*p);
+
+                    encoding_name = codec_name;
+                    clock_rate = rate;
+
+                    LOG_INFO("[WebRTCSession] Parsed video codec: {}/{}", encoding_name, clock_rate);
+                    break;
+                }
+            }
+        }
+    }
+
+    if (encoding_name.empty() || clock_rate == 0) {
+        LOG_ERROR("[WebRTCSession] Could not parse rtpmap for video payload {}", payload);
+        return nullptr;
+    }
+
+    // Create caps WITHOUT fixed payload (allows flexible matching)
+    GstCaps *caps = gst_caps_new_simple("application/x-rtp",
+        "media", G_TYPE_STRING, "video",
+        "encoding-name", G_TYPE_STRING, encoding_name.c_str(),
+        "clock-rate", G_TYPE_INT, clock_rate,
+        nullptr);
+
+    LOG_INFO("[WebRTCSession] Created video codec-preferences caps (payload NOT fixed)");
+    return caps;
+}
+
 /**
  * Extract mid values from SDP and build mline index → mid mapping
  *
@@ -192,10 +264,14 @@ WebRTCSession::WebRTCSession()
     , audio_sink_(nullptr)
     , volume_(nullptr)
     , echoprobe_(nullptr)
+    , video_src_(nullptr)
+    , video_sink_(nullptr)
     , is_muted_(false)
     , is_outgoing_(false)
     , negotiated_pad_(nullptr)
     , offer_codec_caps_(nullptr)
+    , negotiated_video_pad_(nullptr)
+    , offer_video_codec_caps_(nullptr)
     , negotiated_payload_(-1)
     , negotiated_channels_(1)  // Default to mono (will be overridden by SDP negotiation)
     , sdp_done_(false)
@@ -487,6 +563,16 @@ bool WebRTCSession::set_remote_description(const SDPMessage &remote_sdp) {
             gchar *caps_str = gst_caps_to_string(offer_codec_caps_);
             LOG_INFO("[WebRTCSession] ✓ Parsed codec from offer: {}", caps_str);
             g_free(caps_str);
+
+            // Parse video codec from offer if present (may be null for audio-only calls)
+            offer_video_codec_caps_ = parse_video_codec_from_offer(sdp_msg);
+            if (offer_video_codec_caps_) {
+                gchar *video_caps_str = gst_caps_to_string(offer_video_codec_caps_);
+                LOG_INFO("[WebRTCSession] ✓ Parsed video codec from offer: {}", video_caps_str);
+                g_free(video_caps_str);
+            } else {
+                LOG_INFO("[WebRTCSession] No video m-line in offer (audio-only call)");
+            }
         }
         // For offerer mode receiving answer: parse negotiated payload/channels
         else if (is_outgoing_ && remote_sdp.type == SDPMessage::Type::ANSWER) {
@@ -1095,6 +1181,121 @@ bool WebRTCSession::setup_answerer_audio_pipeline() {
 }
 
 // ============================================================================
+// Video Pipeline Setup - ANSWERER (Incoming Calls)
+// ============================================================================
+
+bool WebRTCSession::setup_answerer_video_pipeline() {
+    try {
+        LOG_DEBUG("[WebRTCSession] [ANSWERER] Creating video source pipeline...");
+
+        // CRITICAL: Pause pipeline before adding elements to avoid FLUSHING state
+        GstState current_state, pending_state;
+        gst_element_get_state(pipeline_, &current_state, &pending_state, 0);
+        LOG_INFO("[WebRTCSession] Pipeline state before pause: current={}, pending={}",
+                 gst_element_state_get_name(current_state),
+                 gst_element_state_get_name(pending_state));
+
+        LOG_DEBUG("[WebRTCSession] Pausing pipeline to add video elements...");
+        GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PAUSED);
+        LOG_DEBUG("[WebRTCSession] Pause state change result: {}", static_cast<int>(ret));
+        gst_element_get_state(pipeline_, &current_state, nullptr, GST_CLOCK_TIME_NONE);
+        LOG_INFO("[WebRTCSession] Pipeline state after pause: {}", gst_element_state_get_name(current_state));
+
+        // Create video elements
+        const char *src_name = config_.camera_device.empty() ?
+            "autovideosrc" : "v4l2src";
+        video_src_ = gst_element_factory_make(src_name, "video_src");
+        GstElement *queue = gst_element_factory_make("queue", "queue_video_src");
+        GstElement *convert = gst_element_factory_make("videoconvert", "videoconvert");
+        GstElement *scale = gst_element_factory_make("videoscale", "videoscale");
+        GstElement *encoder = gst_element_factory_make("vp8enc", "vp8enc");
+        GstElement *payloader = gst_element_factory_make("rtpvp8pay", "rtpvp8pay");
+        GstElement *capsfilter = gst_element_factory_make("capsfilter", "rtp_video_caps");
+
+        if (!video_src_ || !queue || !convert || !scale || !encoder || !payloader || !capsfilter) {
+            LOG_ERROR("[WebRTCSession] Failed to create video elements");
+            return false;
+        }
+
+        // Configure camera device if specified
+        if (!config_.camera_device.empty() && src_name == std::string("v4l2src")) {
+            g_object_set(video_src_, "device", config_.camera_device.c_str(), nullptr);
+            LOG_INFO("[WebRTCSession] ✓ Set camera device: {}", config_.camera_device);
+        } else {
+            LOG_INFO("[WebRTCSession] Using autovideosrc (no specific camera device)");
+        }
+
+        // Configure encoder for good quality with low latency
+        g_object_set(encoder,
+            "deadline", G_GINT64_CONSTANT(1),        // Realtime encoding (lowest latency)
+            "cpu-used", 8,                            // Max speed (lowest latency, slight quality loss)
+            "target-bitrate", 1500000,                // 1.5Mbps (good quality for 640x480)
+            "keyframe-max-dist", 30,                  // Keyframe every 30 frames (~1 sec at 30fps)
+            nullptr);
+        LOG_INFO("[WebRTCSession] ✓ Configured vp8enc (bitrate=1.5Mbps, low latency)");
+
+        // CRITICAL: Use payload from negotiated video codec caps (if available)
+        // For now, use standard VP8 payload=96
+        int payload = 98;  // Match what Dino sends in offer
+
+        GstCaps *rtp_caps = gst_caps_new_simple("application/x-rtp",
+            "media", G_TYPE_STRING, "video",
+            "encoding-name", G_TYPE_STRING, "VP8",
+            "payload", G_TYPE_INT, payload,
+            nullptr);
+        g_object_set(capsfilter, "caps", rtp_caps, nullptr);
+        gst_caps_unref(rtp_caps);
+        LOG_INFO("[WebRTCSession] ✓ Set RTP caps: application/x-rtp,media=video,encoding-name=VP8,payload={}", payload);
+
+        // Add to pipeline
+        gst_bin_add_many(GST_BIN(pipeline_), video_src_, queue, convert, scale, encoder, payloader, capsfilter, nullptr);
+
+        // Link video chain FIRST (while pipeline is PAUSED, elements are NULL)
+        if (!gst_element_link_many(video_src_, queue, convert, scale, encoder, payloader, capsfilter, nullptr)) {
+            LOG_ERROR("[WebRTCSession] Failed to link video chain");
+            return false;
+        }
+        LOG_INFO("[WebRTCSession] ✓ Linked video chain: src→queue→convert→scale→vp8enc→rtpvp8pay→capsfilter");
+
+        // Get webrtcbin sink pad - ANSWERER MODE
+        // Reuse the pad we created during set-remote-description
+        // This ensures video pipeline connects to the same transceiver used for SDP negotiation
+        if (!negotiated_video_pad_) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] No negotiated video pad available!");
+            return false;
+        }
+
+        LOG_INFO("[WebRTCSession] [ANSWERER] Using negotiated video pad from set-remote-description");
+
+        // Link capsfilter to the negotiated pad
+        GstPad *caps_src = gst_element_get_static_pad(capsfilter, "src");
+        GstPadLinkReturn link_ret = gst_pad_link(caps_src, negotiated_video_pad_);
+        if (link_ret != GST_PAD_LINK_OK) {
+            LOG_ERROR("[WebRTCSession] Failed to link video capsfilter to negotiated pad: {}", static_cast<int>(link_ret));
+            gst_object_unref(caps_src);
+            return false;
+        }
+        LOG_INFO("[WebRTCSession] ✓ Linked video capsfilter to negotiated webrtcbin pad");
+
+        gst_object_unref(caps_src);
+
+        // Resume pipeline to PLAYING
+        LOG_DEBUG("[WebRTCSession] Resuming pipeline to PLAYING...");
+        ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
+        LOG_DEBUG("[WebRTCSession] Resume state change result: {}", static_cast<int>(ret));
+        gst_element_get_state(pipeline_, &current_state, nullptr, GST_CLOCK_TIME_NONE);
+        LOG_INFO("[WebRTCSession] Pipeline state after resume: {}", gst_element_state_get_name(current_state));
+
+        LOG_INFO("[WebRTCSession] [ANSWERER] Video source pipeline created and linked");
+        return true;
+
+    } catch (const std::exception &e) {
+        LOG_ERROR("[WebRTCSession] [ANSWERER] setup_answerer_video_pipeline exception: {}", e.what());
+        return false;
+    }
+}
+
+// ============================================================================
 // Audio Pipeline Setup - OFFERER (Outgoing Calls)
 // ============================================================================
 
@@ -1297,8 +1498,9 @@ bool WebRTCSession::configure_webrtcbin() {
     try {
         LOG_DEBUG("[WebRTCSession] Configuring webrtcbin...");
 
-        // Set bundle policy to max-bundle (required for modern clients)
-        g_object_set(webrtc_, "bundle-policy", GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE, nullptr);
+        // Set bundle policy to max-compat (separate ICE transport per media stream)
+        // Dino sends separate ICE credentials per media (audio + video), so we must match
+        g_object_set(webrtc_, "bundle-policy", GST_WEBRTC_BUNDLE_POLICY_MAX_COMPAT, nullptr);
 
         // Set ICE transport policy
         if (config_.relay_only) {
@@ -1805,6 +2007,22 @@ void WebRTCSession::on_answer_created(GstPromise *promise) {
                 }
                 return;
             }
+
+            // If video pad was created, also create video source pipeline
+            if (negotiated_video_pad_) {
+                LOG_INFO("[WebRTCSession] Answerer mode: Creating video source pipeline...");
+
+                if (!setup_answerer_video_pipeline()) {
+                    LOG_ERROR("[WebRTCSession] Failed to create answerer video source pipeline!");
+                    gst_webrtc_session_description_free(answer);
+                    if (sdp_callback_) {
+                        sdp_callback_(false, SDPMessage(), "Failed to create video pipeline");
+                    }
+                    return;
+                }
+            } else {
+                LOG_INFO("[WebRTCSession] No video pad (audio-only call)");
+            }
         }
 
         // Call user callback
@@ -1880,6 +2098,62 @@ void WebRTCSession::on_offer_set_for_answer() {
         // Store this pad for audio pipeline creation AFTER answer
         negotiated_pad_ = webrtc_sink;
         LOG_INFO("[WebRTCSession] ✓ Stored pad for audio pipeline");
+
+        // If video codec was found in offer, create video transceiver
+        if (offer_video_codec_caps_) {
+            LOG_INFO("[WebRTCSession] Video found in offer, requesting video pad...");
+
+            // Request a second sink pad for video - this creates a video transceiver
+            GstPad *video_webrtc_sink = gst_element_request_pad_simple(webrtc_, "sink_%u");
+            if (!video_webrtc_sink) {
+                LOG_ERROR("[WebRTCSession] Failed to request video sink pad!");
+                if (sdp_callback_) {
+                    sdp_callback_(false, SDPMessage(), "Failed to request video sink pad");
+                }
+                return;
+            }
+
+            gchar *video_pad_name = gst_pad_get_name(video_webrtc_sink);
+            LOG_INFO("[WebRTCSession] ✓ Requested video pad: {}", video_pad_name);
+            g_free(video_pad_name);
+
+            // Get the video transceiver for this pad
+            GValue video_val = G_VALUE_INIT;
+            g_object_get_property(G_OBJECT(video_webrtc_sink), "transceiver", &video_val);
+            GstWebRTCRTPTransceiver *video_trans = GST_WEBRTC_RTP_TRANSCEIVER(g_value_get_object(&video_val));
+
+            if (!video_trans) {
+                LOG_ERROR("[WebRTCSession] No video transceiver associated with pad!");
+                gst_object_unref(video_webrtc_sink);
+                g_value_unset(&video_val);
+                if (sdp_callback_) {
+                    sdp_callback_(false, SDPMessage(), "No video transceiver found");
+                }
+                return;
+            }
+
+            // Set direction to SENDRECV for video
+            g_object_set(video_trans, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, nullptr);
+            LOG_INFO("[WebRTCSession] ✓ Set video transceiver direction to SENDRECV");
+
+            // Set video codec-preferences if we have them
+            if (offer_video_codec_caps_) {
+                g_object_set(video_trans, "codec-preferences", offer_video_codec_caps_, nullptr);
+                gchar *video_caps_str = gst_caps_to_string(offer_video_codec_caps_);
+                LOG_INFO("[WebRTCSession] ✓ Set video codec-preferences: {}", video_caps_str);
+                g_free(video_caps_str);
+                gst_caps_unref(offer_video_codec_caps_);
+                offer_video_codec_caps_ = nullptr;
+            }
+
+            g_value_unset(&video_val);
+
+            // Store this pad for video pipeline creation AFTER answer
+            negotiated_video_pad_ = video_webrtc_sink;
+            LOG_INFO("[WebRTCSession] ✓ Stored video pad for pipeline");
+        } else {
+            LOG_INFO("[WebRTCSession] No video in offer (audio-only call)");
+        }
 
         // Create the answer - webrtcbin will reuse our transceiver
         LOG_INFO("[WebRTCSession] Creating answer...");

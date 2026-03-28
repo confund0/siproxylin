@@ -21,6 +21,7 @@ from typing import Optional, Dict, Any, Callable
 
 import grpc
 from .proto import call_pb2, call_pb2_grpc
+from .video_manager import VideoStreamManager
 
 # Import paths utility for proper log directory handling (dev + XDG modes)
 import sys
@@ -421,6 +422,9 @@ class CallBridge:
         self._event_streams: Dict[str, asyncio.Task] = {}
         self._stream_lock = asyncio.Lock()
 
+        # Video stream managers per session
+        self._video_managers: Dict[str, VideoStreamManager] = {}
+
     async def connect(self) -> bool:
         """
         Connect to Go service via gRPC.
@@ -489,7 +493,8 @@ class CallBridge:
                              turn_password: str = "",
                              echo_cancel: bool = True, echo_suppression_level: int = 1,
                              noise_suppression: bool = True, noise_suppression_level: int = 1,
-                             gain_control: bool = True) -> bool:
+                             gain_control: bool = True,
+                             enable_video: bool = False) -> tuple[bool, Optional[int]]:
         """
         Create new call session.
 
@@ -513,13 +518,30 @@ class CallBridge:
             noise_suppression: Enable noise suppression (default: True)
             noise_suppression_level: Noise suppression level 0-3 (low/moderate/high/very-high, default: 1)
             gain_control: Enable automatic gain control (default: True)
+            enable_video: Enable video receive pipeline (default: False)
 
         Returns:
-            True if session created
+            tuple[bool, Optional[int]]: (success, video_port)
+                - success: True if session created
+                - video_port: UDP port for video stream if video enabled, None otherwise
         """
         if not self._stub:
             self.logger.error("gRPC stub not initialized")
-            return False
+            return False, None
+
+        # Allocate video port if video enabled
+        video_port = None
+        video_host = ""
+        if enable_video:
+            try:
+                video_manager = VideoStreamManager()
+                video_port = video_manager.allocate_video_port()
+                video_host = VideoStreamManager.VIDEO_IP
+                self._video_managers[session_id] = video_manager
+                self.logger.info(f"Allocated video port {video_port} for session {session_id}")
+            except Exception as e:
+                self.logger.error(f"Failed to allocate video port: {e}")
+                return False, None
 
         # Format device labels for logging (show both display name and ID for disambiguation)
         if microphone_display_name and microphone_device:
@@ -570,7 +592,10 @@ class CallBridge:
             echo_suppression_level=echo_suppression_level,
             noise_suppression=noise_suppression,
             noise_suppression_level=noise_suppression_level,
-            gain_control=gain_control
+            gain_control=gain_control,
+            enable_video_receive=enable_video,
+            video_udp_host=video_host,
+            video_udp_port=video_port or 0
         )
 
         response = await self._stub.CreateSession(request)
@@ -581,10 +606,14 @@ class CallBridge:
             # Start event streaming for this session
             await self._start_event_stream(session_id)
 
-            return True
+            return True, video_port
         else:
             self.logger.error(f"Failed to create session: {response.error}")
-            return False
+            # Cleanup video manager on failure
+            if session_id in self._video_managers:
+                self._video_managers[session_id].cleanup()
+                del self._video_managers[session_id]
+            return False, None
 
     async def create_offer(self, session_id: str) -> str:
         """
@@ -763,6 +792,22 @@ class CallBridge:
         await self._stub.SetMute(request)
         self.logger.info(f"Mute state set for session {session_id}")
 
+    def get_video_url(self, session_id: str) -> Optional[str]:
+        """
+        Get VLC-compatible UDP URL for video playback.
+
+        Args:
+            session_id: Session ID
+
+        Returns:
+            UDP URL string (e.g., "udp://@:12345") or None if no video
+        """
+        video_manager = self._video_managers.get(session_id)
+        if not video_manager or not video_manager.video_port:
+            return None
+
+        return f"udp://@:{video_manager.video_port}"
+
     async def end_session(self, session_id: str):
         """
         End call session.
@@ -772,6 +817,12 @@ class CallBridge:
         """
         # Stop event stream first
         await self._stop_event_stream(session_id)
+
+        # Cleanup video manager if exists
+        if session_id in self._video_managers:
+            self._video_managers[session_id].cleanup()
+            del self._video_managers[session_id]
+            self.logger.debug(f"Cleaned up video manager for session {session_id}")
 
         if not self._stub:
             self.logger.warning("gRPC stub not initialized, cannot end session")
