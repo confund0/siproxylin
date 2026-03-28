@@ -276,48 +276,52 @@ class MenuManager:
         calls_action.triggered.connect(self.on_view_call_log)
         self.view_menu.addAction(calls_action)
 
-        self.view_menu.addSeparator()
+        # View -> Logs (only visible when Admin Tools is enabled)
+        admin_tools_enabled = self.db.get_setting('admin_tools_enabled', default='false')
 
-        # View -> Logs (reorganized submenu)
-        logs_menu = self.view_menu.addMenu("&Logs")
+        if admin_tools_enabled.lower() in ('true', '1', 'yes'):
+            self.view_menu.addSeparator()
 
-        # View -> Logs -> Main Log
-        main_log_action = QAction("&Main Log...", self.main_window)
-        main_log_action.triggered.connect(self.on_view_main_log)
-        logs_menu.addAction(main_log_action)
+            # View -> Logs (reorganized submenu)
+            logs_menu = self.view_menu.addMenu("&Logs")
 
-        # View -> Logs -> XML Protocol Log
-        xml_log_action = QAction("&XML Protocol Log...", self.main_window)
-        xml_log_action.triggered.connect(self.on_view_xml_log)
-        logs_menu.addAction(xml_log_action)
+            # View -> Logs -> Main Log
+            main_log_action = QAction("&Main Log...", self.main_window)
+            main_log_action.triggered.connect(self.on_view_main_log)
+            logs_menu.addAction(main_log_action)
 
-        logs_menu.addSeparator()
+            # View -> Logs -> XML Protocol Log
+            xml_log_action = QAction("&XML Protocol Log...", self.main_window)
+            xml_log_action.triggered.connect(self.on_view_xml_log)
+            logs_menu.addAction(xml_log_action)
 
-        # View -> Logs -> Accounts (submenu)
-        accounts_log_menu = logs_menu.addMenu("&Accounts")
+            logs_menu.addSeparator()
 
-        # Get all accounts from database
-        accounts = self.db.fetchall("SELECT id, bare_jid, nickname FROM account ORDER BY id")
+            # View -> Logs -> Accounts (submenu)
+            accounts_log_menu = logs_menu.addMenu("&Accounts")
 
-        if not accounts:
-            # No accounts yet
-            no_accounts_action = QAction("(No accounts)", self.main_window)
-            no_accounts_action.setEnabled(False)
-            accounts_log_menu.addAction(no_accounts_action)
-        else:
-            # Add app log entry for each account
-            for account in accounts:
-                account_id = account['id']
-                account_label = account['nickname'] or account['bare_jid']
+            # Get all accounts from database
+            accounts = self.db.fetchall("SELECT id, bare_jid, nickname FROM account ORDER BY id")
 
-                # View -> Logs -> Accounts -> {account_label}
-                app_log_action = QAction(f"{account_label}", self.main_window)
-                app_log_action.triggered.connect(
-                    lambda checked, aid=account_id: self.on_view_app_log(aid)
-                )
-                accounts_log_menu.addAction(app_log_action)
+            if not accounts:
+                # No accounts yet
+                no_accounts_action = QAction("(No accounts)", self.main_window)
+                no_accounts_action.setEnabled(False)
+                accounts_log_menu.addAction(no_accounts_action)
+            else:
+                # Add app log entry for each account
+                for account in accounts:
+                    account_id = account['id']
+                    account_label = account['nickname'] or account['bare_jid']
 
-        logger.debug(f"View menu populated with {len(accounts)} accounts")
+                    # View -> Logs -> Accounts -> {account_label}
+                    app_log_action = QAction(f"{account_label}", self.main_window)
+                    app_log_action.triggered.connect(
+                        lambda checked, aid=account_id: self.on_view_app_log(aid)
+                    )
+                    accounts_log_menu.addAction(app_log_action)
+
+        logger.debug("View menu populated")
 
     def populate_tools_menu(self):
         """Populate Tools menu with admin tools."""

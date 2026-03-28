@@ -48,7 +48,7 @@ class ThemeManager:
             return False
 
         try:
-            with open(theme_path, 'r') as f:
+            with open(theme_path, 'r', encoding='utf-8') as f:
                 stylesheet = f.read()
 
             # Replace font size placeholders with scaled values
@@ -143,7 +143,7 @@ class ThemeManager:
             return
 
         try:
-            with open(self.config_file, 'r') as f:
+            with open(self.config_file, 'r', encoding='utf-8') as f:
                 prefs = json.load(f)
 
             self.current_theme = prefs.get('theme', 'dark')

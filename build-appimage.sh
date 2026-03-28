@@ -67,6 +67,7 @@ export PYTHONPATH="$APPDIR/usr/lib/python3.11:$APPDIR/usr/lib/python3.11/site-pa
 export LD_LIBRARY_PATH="$APPDIR/usr/lib/x86_64-linux-gnu:$APPDIR/usr/lib:$APPDIR/lib/x86_64-linux-gnu"
 export GST_PLUGIN_PATH="$APPDIR/usr/lib/x86_64-linux-gnu/gstreamer-1.0"
 export GST_PLUGIN_SYSTEM_PATH="$APPDIR/usr/lib/x86_64-linux-gnu/gstreamer-1.0"
+export VLC_PLUGIN_PATH="$APPDIR/usr/lib/x86_64-linux-gnu/vlc/plugins"
 export PULSE_SYSTEM="0"
 export SIPROXYLIN_PATH_MODE="dot"
 
@@ -422,6 +423,8 @@ main() {
     remove_unnecessary_sounds "$APPDIR"
     remove_unused_locales "$APPDIR"
     remove_unused_pyside6_modules "$APPDIR"
+    remove_unused_video_encoders "$APPDIR"
+    remove_flite_tts "$APPDIR"
     # strip_binaries "$APPDIR"  # DISABLED: Breaks appimage-builder's ELF patching
     log_info "Skipping strip (breaks patched binaries)"
     print_separator

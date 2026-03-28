@@ -98,14 +98,24 @@ class MAMMixin:
                 mam_result = result_msg['mam_result']
                 forwarded = mam_result['forwarded']
 
+                # Get MAM archive result ID early (for logging even if we skip)
+                archive_id = mam_result.get('id', None)
+
                 if forwarded is None:
-                    self.logger.warning("MAM result had no forwarded stanza")
+                    self.logger.warning(f"MAM result had no forwarded stanza [archive_id={archive_id}]")
                     continue
 
                 archived_msg = forwarded['stanza']
                 if archived_msg is None:
-                    self.logger.warning("Forwarded stanza was empty")
+                    self.logger.warning(f"Forwarded stanza was empty [archive_id={archive_id}]")
                     continue
+
+                # Extract message IDs early (for logging even if we skip)
+                message_id = archived_msg.get('id')
+                try:
+                    origin_id = archived_msg['origin_id']['id'] if archived_msg['origin_id']['id'] else None
+                except (KeyError, TypeError):
+                    origin_id = None
 
                 # Get timestamp from delay element
                 delay = forwarded['delay']
@@ -126,7 +136,7 @@ class MAMMixin:
                 # If we process them again from MAM, we'd create duplicate "[Failed to decrypt...]"
                 # messages for corrections we couldn't decrypt.
                 if archived_msg['replace']['id']:
-                    self.logger.debug(f"Skipping MAM correction (replace id: {archived_msg['replace']['id']}) from {from_jid}")
+                    self.logger.debug(f"Skipping MAM correction (replace id: {archived_msg['replace']['id']}) from {from_jid} [archive_id={archive_id}, origin_id={origin_id}, message_id={message_id}]")
                     continue
 
                 # Check if message is OMEMO encrypted and decrypt if needed
@@ -168,7 +178,7 @@ class MAMMixin:
                                     is_reflection = (not nick or (our_nick and nick == our_nick))
 
                                 if is_reflection:
-                                    self.logger.debug(f"Skipping MAM reflection (own encrypted message) in {jid}")
+                                    self.logger.debug(f"Skipping MAM reflection (own encrypted message) in {jid} [archive_id={archive_id}, origin_id={origin_id}, message_id={message_id}, occupant_id={msg_occupant_id}]")
                                     continue
                             else:
                                 # Filter out 1-1 carbons with failed decryption (same principle as MUC reflections)
@@ -177,15 +187,17 @@ class MAMMixin:
                                 # Since we already have the sent version (direction=1), skip these to
                                 # avoid duplicates showing "[Failed to decrypt...]"
                                 if sender_bare == self.boundjid.bare:
-                                    self.logger.debug(f"Skipping MAM carbon (own encrypted message) from {from_jid}")
+                                    self.logger.debug(f"Skipping MAM carbon (own encrypted message) from {from_jid} [archive_id={archive_id}, origin_id={origin_id}, message_id={message_id}]")
                                     continue
 
                 # Skip empty messages
                 if not body:
+                    self.logger.debug(f"Skipping MAM message with empty body from {from_jid} [archive_id={archive_id}, origin_id={origin_id}, message_id={message_id}, encrypted={is_encrypted}]")
                     continue
 
-                # Get MAM archive result ID (this becomes server_id when stored)
-                archive_id = mam_result.get('id', archived_msg.get('id'))
+                # archive_id was already extracted earlier (for logging), fallback to message_id if needed
+                if not archive_id:
+                    archive_id = message_id
 
                 # Extract occupant-id if available (XEP-0421)
                 occupant_id = archived_msg['occupant-id']['id'] or None  # Empty string -> None

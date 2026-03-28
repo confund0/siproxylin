@@ -45,9 +45,9 @@
 - See: `siproxylin/utils/logger.py`
 
 ### 7. Codec Parameter Negotiation (Calls)
-- **DO**: Parse `a=fmtp:` from Pion's SDP answer → convert to Jingle `<parameter>` elements
+- **DO**: Parse `a=fmtp:` from GStreamer webrtcbin's SDP answer → convert to Jingle `<parameter>` elements
 - **DON'T**: Hardcode codec parameters
-- **Why**: Pion handles codec negotiation - Python just translates SDP ↔ Jingle
+- **Why**: GStreamer webrtcbin handles codec negotiation - Python just translates SDP ↔ Jingle
 - See: `drunk_call_hook/protocol/jingle.py`
 
 ### 8. MUC Message Direction (XEP-0421)
@@ -65,6 +65,13 @@
 - NEVER create new SQLite connections
 - See: `app/db/database.py`
 
+### 11. Call State Coordination
+- **Python owns**: Signaling state machine (proposed, ringing, connecting, active, ended)
+- **C++ reports**: Media/ICE states via gRPC (ice-connection-state, gathering-state)
+- **Critical**: NEVER let layers get out of sync - always bidirectional cleanup
+- **Termination**: All paths (user hangup, network failure, remote hangup) must synchronize both layers
+- See: `docs/CALLS.md` for detailed state machine
+
 ---
 
 ## Quick Reference
@@ -78,7 +85,7 @@
 | Callbacks | Must be `async` | No blocking in callbacks |
 | Error handling | Specific exceptions, logger + traceback | Never bare `except:` |
 | DB migrations | Create `.sql` in `siproxylin/db/migrations/` | Auto-runs on startup |
-| Calls (media) | Go service via gRPC | Python = signaling, Go = media |
+| Calls (media) | C++ service via gRPC | Python = signaling, C++ = media |
 
 **Development Paths** (from project root):
 - **Database**: `sip_dev_paths/data/siproxylin.db`
@@ -119,19 +126,15 @@
 
 ## Calls Architecture
 
-### Encryption Layers
+### Encryption
 
-1. **DTLS-SRTP** (Base - Always On) - Standard WebRTC encryption, universal
-2. **OMEMO Fingerprint** (Verification - Optional) - Conversations.im requirement, not universal
-3. **SDES-SRTP** (Legacy) - Deprecated, ignore if DTLS-SRTP present
-
-**Key**: Calls are always encrypted (DTLS). OMEMO adds verification, not encryption.
+**DTLS-SRTP** (Always On) - Standard WebRTC encryption for all calls, handled automatically by GStreamer webrtcbin.
 
 ### Components
 
 ```
 main_window.py
-    ├─ GoCallService (Go process, app lifetime)
+    ├─ CallService (C++ process, app lifetime)
     └─ AccountManager (per-account)
            ├─ CallBridge (gRPC client)
            └─ JingleAdapter (Jingle ↔ SDP)
@@ -142,8 +145,7 @@ main_window.py
 **Key Directories:**
 - `drunk_xmpp/calls/` - XEP-0353 Jingle Message Initiation (STABLE)
 - `drunk_call_hook/` - Python → C++ bridge (gRPC)
-- `drunk_call_service/` - C++ service (GStreamer webrtcbin) [REWRITE IN PROGRESS]
-  - Old Go/Pion service: main branch - `drunk_call_service/`
+- `drunk_call_service/` - C++ service (GStreamer webrtcbin)
 
 **Per-Account Isolation**: Separate CallBridge + JingleAdapter per account, no shared state.
 
@@ -151,7 +153,7 @@ main_window.py
 - **Proxy enforcement**: MUST support SOCKS5/HTTP proxy for all network traffic (STUN/TURN)
 - **Leak prevention**: MUST fail calls if proxy configured but unavailable (no fallback to direct)
 - **Privacy modes**: relay-only ICE (no host/srflx candidates exposed) ✅ implemented
-- See: `docs/CALLS/START.md` for implementation requirements
+- See: `docs/CALLS.md` for architecture details
 
 ---
 

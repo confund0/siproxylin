@@ -268,6 +268,11 @@ class JingleAdapter:
         # Set initial state for incoming call (enables buffering of transport-info)
         self.trickle_ice.set_incoming_state(sid, IncomingCallState.HAVE_OFFER)
 
+        # Always call on_incoming_call to store SDP (required for accept_call to work)
+        # This matches the working Conversations.im flow where SDP is stored immediately
+        if self.on_incoming_call:
+            await self.on_incoming_call(sid, peer_jid, sdp_offer, media_types)
+
         # Check if this is a trickle-only offer (0 candidates)
         if self.trickle_ice.should_defer_answer(sdp_offer):
             # Defer answer creation until candidates arrive via transport-info
@@ -277,11 +282,6 @@ class JingleAdapter:
                     await self.on_candidates_ready(session_id)
 
             self.trickle_ice.defer_answer(sid, sdp_offer, peer_jid, media_types, on_timeout)
-            # Don't call on_incoming_call yet - wait for candidates
-        else:
-            # Normal offer with candidates - proceed immediately
-            if self.on_incoming_call:
-                await self.on_incoming_call(sid, peer_jid, sdp_offer, media_types)
 
     async def _handle_session_accept(self, iq: Iq, jingle, sid: str):
         """Handle call acceptance (session-accept)."""

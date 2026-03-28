@@ -10,6 +10,22 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QTabWidget, QWidget,
     QHeaderView
 )
+from PySide6.QtCore import Qt
+
+
+def create_selectable_label(text):
+    """
+    Create a QLabel with selectable text.
+
+    Args:
+        text: Label text (supports HTML)
+
+    Returns:
+        QLabel with text selection enabled
+    """
+    label = QLabel(text)
+    label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    return label
 
 
 def show_message_info_dialog(parent, info_data, db, current_account_id):
@@ -59,18 +75,18 @@ def show_message_info_dialog(parent, info_data, db, current_account_id):
     direction_text = "Sent" if direction == 1 else "Received"
     if is_carbon:
         direction_text += " (from another device)"
-    metadata_layout.addWidget(QLabel(f"<b>Direction:</b> {direction_text}"))
+    metadata_layout.addWidget(create_selectable_label(f"<b>Direction:</b> {direction_text}"))
 
     # Type
     type_text = "Group Chat" if msg_type == 1 else "Direct Message"
-    metadata_layout.addWidget(QLabel(f"<b>Type:</b> {type_text}"))
+    metadata_layout.addWidget(create_selectable_label(f"<b>Type:</b> {type_text}"))
 
     # Timestamp
-    metadata_layout.addWidget(QLabel(f"<b>Timestamp:</b> {timestamp}"))
+    metadata_layout.addWidget(create_selectable_label(f"<b>Timestamp:</b> {timestamp}"))
 
     # Encryption
     encryption_text = "Yes (OMEMO)" if encrypted else "No"
-    metadata_layout.addWidget(QLabel(f"<b>Encrypted:</b> {encryption_text}"))
+    metadata_layout.addWidget(create_selectable_label(f"<b>Encrypted:</b> {encryption_text}"))
 
     # Delivery status
     if direction == 1:
@@ -79,9 +95,9 @@ def show_message_info_dialog(parent, info_data, db, current_account_id):
 
         # Style error status in red
         if marked == 8:
-            status_label = QLabel(f"<b>Status:</b> <span style='color: #c0392b;'>{status_text}</span>")
+            status_label = create_selectable_label(f"<b>Status:</b> <span style='color: #c0392b;'>{status_text}</span>")
         else:
-            status_label = QLabel(f"<b>Status:</b> {status_text}")
+            status_label = create_selectable_label(f"<b>Status:</b> {status_text}")
         metadata_layout.addWidget(status_label)
 
         # Show error details if message failed
@@ -100,29 +116,29 @@ def show_message_info_dialog(parent, info_data, db, current_account_id):
                     error_text = msg_row['error_text']
 
             if error_text:
-                error_label = QLabel(f"<b>Error Details:</b> <span style='color: #c0392b;'>{error_text}</span>")
+                error_label = create_selectable_label(f"<b>Error Details:</b> <span style='color: #c0392b;'>{error_text}</span>")
                 metadata_layout.addWidget(error_label)
 
     # Message IDs section
-    metadata_layout.addWidget(QLabel("<b>Message IDs:</b>"))
+    metadata_layout.addWidget(create_selectable_label("<b>Message IDs:</b>"))
 
     # Origin ID (XEP-0359 - client-generated, stable across edits)
     if origin_id:
-        metadata_layout.addWidget(QLabel(f"  • <b>Origin ID:</b> <span style='font-family: monospace;'>{origin_id}</span>"))
+        metadata_layout.addWidget(create_selectable_label(f"  • <b>Origin ID:</b> <span style='font-family: monospace;'>{origin_id}</span>"))
     else:
-        metadata_layout.addWidget(QLabel("  • <b>Origin ID:</b> <span style='color: #7f8c8d;'>Not set</span>"))
+        metadata_layout.addWidget(create_selectable_label("  • <b>Origin ID:</b> <span style='color: #7f8c8d;'>Not set</span>"))
 
     # Stanza ID (XEP-0359 - server-assigned, used for MUC reactions)
     if stanza_id:
-        metadata_layout.addWidget(QLabel(f"  • <b>Stanza ID:</b> <span style='font-family: monospace;'>{stanza_id}</span>"))
+        metadata_layout.addWidget(create_selectable_label(f"  • <b>Stanza ID:</b> <span style='font-family: monospace;'>{stanza_id}</span>"))
     else:
-        metadata_layout.addWidget(QLabel("  • <b>Stanza ID:</b> <span style='color: #7f8c8d;'>Not set</span>"))
+        metadata_layout.addWidget(create_selectable_label("  • <b>Stanza ID:</b> <span style='color: #7f8c8d;'>Not set</span>"))
 
     # Message ID (from 'id' attribute in stanza)
     if db_message_id:
-        metadata_layout.addWidget(QLabel(f"  • <b>Message ID:</b> <span style='font-family: monospace;'>{db_message_id}</span>"))
+        metadata_layout.addWidget(create_selectable_label(f"  • <b>Message ID:</b> <span style='font-family: monospace;'>{db_message_id}</span>"))
     else:
-        metadata_layout.addWidget(QLabel("  • <b>Message ID:</b> <span style='color: #7f8c8d;'>Not set</span>"))
+        metadata_layout.addWidget(create_selectable_label("  • <b>Message ID:</b> <span style='color: #7f8c8d;'>Not set</span>"))
 
     # Show which ID is being used for reactions (the "selected" ID)
     if message_id:
@@ -134,21 +150,21 @@ def show_message_info_dialog(parent, info_data, db, current_account_id):
         elif message_id == db_message_id:
             id_type = "Message ID"
 
-        metadata_layout.addWidget(QLabel(f"  • <b>Used for reactions:</b> {id_type}"))
+        metadata_layout.addWidget(create_selectable_label(f"  • <b>Used for reactions:</b> {id_type}"))
 
     # Content Item ID
     if content_item_id:
-        metadata_layout.addWidget(QLabel(f"<b>Content Item ID:</b> {content_item_id}"))
+        metadata_layout.addWidget(create_selectable_label(f"<b>Content Item ID:</b> {content_item_id}"))
 
     # File info if applicable
     if file_path:
-        metadata_layout.addWidget(QLabel(f"<b>File Name:</b> {file_name}"))
-        metadata_layout.addWidget(QLabel(f"<b>MIME Type:</b> {mime_type}"))
+        metadata_layout.addWidget(create_selectable_label(f"<b>File Name:</b> {file_name}"))
+        metadata_layout.addWidget(create_selectable_label(f"<b>MIME Type:</b> {mime_type}"))
 
     # Message body (truncated if too long)
     if body:
         display_body = body if len(body) < 200 else body[:200] + "..."
-        metadata_layout.addWidget(QLabel(f"<b>Body:</b><br>{display_body}"))
+        metadata_layout.addWidget(create_selectable_label(f"<b>Body:</b><br>{display_body}"))
 
     metadata_layout.addStretch()
     tabs.addTab(metadata_widget, "Metadata")
@@ -214,7 +230,7 @@ def show_message_info_dialog(parent, info_data, db, current_account_id):
 
         reactions_layout.addWidget(table)
     else:
-        reactions_layout.addWidget(QLabel("No reactions yet"))
+        reactions_layout.addWidget(create_selectable_label("No reactions yet"))
 
     reactions_layout.addStretch()
     tabs.addTab(reactions_widget, f"Reactions ({len(reactions)})")

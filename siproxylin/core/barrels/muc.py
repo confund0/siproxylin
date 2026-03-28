@@ -625,6 +625,67 @@ class MucBarrel:
                 import traceback
                 self.logger.error(traceback.format_exc())
 
+    async def catchup_muc_rooms(self, max_messages_per_room: Optional[int] = None):
+        """
+        Catch up on missed MUC messages via MAM (XEP-0313).
+        Called on session start to retrieve messages sent while offline.
+
+        Similar to catchup_private_chats(), but for MUC rooms.
+        MAM returns raw archived messages, not live messages, so we INSERT directly.
+
+        Args:
+            max_messages_per_room: Maximum messages to retrieve per room (None = unlimited)
+        """
+        if not self.client:
+            return
+
+        if self.logger:
+            self.logger.info("Catching up on MUC messages via MAM...")
+
+        try:
+            # Get all bookmarked MUC rooms (rooms the user has joined)
+            rooms = self.db.fetchall("""
+                SELECT j.bare_jid, MAX(m.time) as latest_time
+                FROM bookmark b
+                JOIN jid j ON b.jid_id = j.id
+                LEFT JOIN message m ON m.counterpart_id = j.id AND m.account_id = ?
+                WHERE b.account_id = ?
+                GROUP BY j.bare_jid
+            """, (self.account_id, self.account_id))
+
+            if not rooms:
+                if self.logger:
+                    self.logger.debug("No MUC rooms found for MAM catchup")
+                return
+
+            if self.logger:
+                self.logger.info(f"Found {len(rooms)} MUC rooms for MAM catchup")
+
+            for room in rooms:
+                room_jid = room['bare_jid']
+
+                # Skip if room is not currently joined
+                # (MAM catchup should only run for active room sessions)
+                if room_jid not in self.client.rooms:
+                    if self.logger:
+                        self.logger.debug(f"Skipping {room_jid} - not currently joined")
+                    continue
+
+                try:
+                    await self._retrieve_muc_history(room_jid, max_messages_per_room)
+                except Exception as e:
+                    if self.logger:
+                        self.logger.warning(f"Failed to catch up messages for {room_jid}: {e}")
+
+            if self.logger:
+                self.logger.info("MUC MAM catchup completed")
+
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to catch up MUC rooms: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
+
     async def auto_join_bookmarked_rooms(self):
         """
         Auto-join rooms marked for autojoin in database.

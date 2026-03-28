@@ -1,6 +1,7 @@
 # Build & Packaging Documentation
 
-> **Last Updated:** 2026-03-07
+> **Last Updated:** 2026-03-13
+> **Platforms:** Linux (primary), Windows 10/11, macOS (experimental)
 
 ---
 
@@ -44,13 +45,28 @@ python main.py
 
 **Build targets:**
 ```bash
-make           # Release build (optimized, 1.2MB)
-make debug     # Debug build (with sanitizers, 59MB)
+make           # Build release version (Linux/macOS)
+make release   # Build optimized release binary (Linux/macOS)
+make debug     # Build with debug symbols and sanitizers (Linux/macOS)
+make winrel    # Build optimized release binary (Windows/MSVC)
+make windbg    # Build debug binary (Windows/MSVC)
 make test      # Run unit tests
 make clean     # Remove build artifacts
+make install   # Install binary to bin/
+make check-deps # Verify all build dependencies (Linux/macOS)
+make help      # Show all available targets
 ```
 
-**Binary location:** `drunk_call_service/bin/drunk-call-service-linux`
+**Binary location:** `drunk_call_service/bin/drunk-call-service-{linux|windows|darwin}`
+
+**Windows builds:**
+```bash
+# Default (assumes vcpkg in C:/vcpkg)
+make winrel
+
+# Custom vcpkg location
+make winrel VCPKG_ROOT=D:/vcpkg
+```
 
 ---
 
@@ -238,7 +254,92 @@ git push origin v0.0.4
 
 ---
 
-## Future Packaging
+---
 
-- Windows installer (NSIS/WiX)
-- macOS package or Homebrew
+## Windows Build
+
+**See also:** `docs/WINDOWS.md` for complete guide
+
+### Quick Start (Installer)
+
+```cmd
+REM 1. Build C++ service
+cd drunk_call_service
+make winrel VCPKG_ROOT=C:/vcpkg
+
+REM 2. Prepare installer dependencies
+cd ..\windows-installer
+prepare-windows-installer.bat
+
+REM 3. Build installer
+build-installer-bundled.bat
+```
+
+**Output:**
+- Installer: `dist/Siproxylin-Setup-v{VERSION}-bundled.exe` (~100 MB)
+- Self-contained with Python + GStreamer + vcpkg DLLs bundled
+
+### Prerequisites
+
+See `docs/WINDOWS.md` for complete setup instructions.
+
+**Summary:**
+- Visual Studio 2019/2022 (C++ workload)
+- vcpkg (grpc, protobuf, spdlog, glib)
+- GStreamer 1.x MSVC build (for development only)
+- Python 3.11.9
+- Inno Setup 6.x (for installer)
+
+### Troubleshooting
+
+See `docs/WINDOWS.md` for detailed troubleshooting guide.
+
+---
+
+## macOS Build (Experimental)
+
+**Status:** Code is cross-platform ready, untested on macOS.
+
+### Prerequisites
+
+```bash
+# Install Homebrew
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Install dependencies
+brew install cmake pkg-config python@3.11
+brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad
+brew install grpc protobuf spdlog glib
+```
+
+### Build
+
+```bash
+cd drunk_call_service
+make release
+```
+
+**Expected output:** `bin/drunk-call-service-darwin`
+
+**Audio:** Uses CoreAudio (`osxaudiosrc`/`osxaudiosink`)
+
+**Packaging:** Not yet implemented (would use .app bundle or .dmg)
+
+---
+
+## Packaging Status
+
+**Linux:**
+- ✅ AppImage (production-ready)
+
+**Windows:**
+- ✅ Inno Setup installer (production-ready)
+  - Self-contained with Python + GStreamer + vcpkg bundled
+  - Installer size: ~100 MB
+  - Downloads pip packages during install (~760 MB, internet required)
+  - See `docs/WINDOWS.md` for details
+
+**macOS:**
+- Code is cross-platform ready, untested
+
+---

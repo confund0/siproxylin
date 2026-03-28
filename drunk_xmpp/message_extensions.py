@@ -2,6 +2,7 @@
 Message Extensions module for DrunkXMPP.
 
 XEP-0308: Last Message Correction (message editing)
+XEP-0428: Message Fallback Indication
 XEP-0444: Message Reactions
 XEP-0461: Message Replies
 
@@ -10,6 +11,7 @@ Provides methods for replying to messages, reacting to messages, and editing mes
 
 from typing import Optional, Set
 from slixmpp.jid import JID
+from . import xep_0428
 
 
 class MessageExtensionsMixin:
@@ -53,15 +55,28 @@ class MessageExtensionsMixin:
         # Determine message type (MUC or private chat)
         msg_type = self._get_message_type(to_jid)
 
-        # Create reply stanza using xep_0461
-        msg = self['xep_0461'].make_reply(
-            reply_to=JID(to_jid),
-            reply_id=reply_to_id,
-            fallback=fallback_body,
-            mto=to_jid,
-            mbody=reply_body,
-            mtype=msg_type
-        )
+        # Create base message stanza
+        msg = self.make_message(mto=to_jid, mtype=msg_type)
+
+        # Add XEP-0461 reply element
+        msg['reply']['to'] = to_jid
+        msg['reply']['id'] = reply_to_id
+
+        # Format body using our custom function (single source of truth)
+        # This ensures consistency between sending and optimistic storage
+        if fallback_body:
+            # Use format_reply_with_fallback as the canonical formatter
+            # This handles nested quotes correctly: ">> " not "> > "
+            full_body, fallback_marker = xep_0428.format_reply_with_fallback(reply_body, fallback_body)
+            msg['body'] = full_body
+
+            # Add XEP-0428 fallback marker
+            xep_0428.add_fallback_to_stanza(msg, fallback_marker)
+
+            self.logger.debug(f"Added fallback marker: chars 0-{fallback_marker.to_char}")
+        else:
+            # No fallback - just the reply body
+            msg['body'] = reply_body
 
         # Request delivery receipt (XEP-0184)
         msg['request_receipt'] = True
@@ -220,12 +235,20 @@ class MessageExtensionsMixin:
 
         if not encrypt:
             # Send plaintext correction
-            correction = self['xep_0308'].build_correction(
-                id_to_replace=message_id,
-                mto=jid,
-                mtype=msg_type,
-                mbody=new_body
-            )
+            # Compatibility: build_correction() added in slixmpp 1.9.0
+            if hasattr(self['xep_0308'], 'build_correction'):
+                correction = self['xep_0308'].build_correction(
+                    id_to_replace=message_id,
+                    mto=jid,
+                    mtype=msg_type,
+                    mbody=new_body
+                )
+            else:
+                # Fallback for slixmpp < 1.9.0 (manual stanza building)
+                correction = self.make_message(mto=jid, mtype=msg_type)
+                correction['body'] = new_body
+                correction['replace']['id'] = message_id
+
             # Add origin-id for message tracking (XEP-0359)
             correction['origin_id']['id'] = correction['id']
             correction.send()

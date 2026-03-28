@@ -21,7 +21,6 @@ from typing import Optional, Dict, Any, Callable
 
 import grpc
 from .proto import call_pb2, call_pb2_grpc
-from .video_manager import VideoStreamManager
 
 # Import paths utility for proper log directory handling (dev + XDG modes)
 import sys
@@ -71,32 +70,110 @@ class GoCallService:
 
             # Start Go process with proper logging
             # Use proper path system (respects both dev mode and XDG mode)
-            log_dir = get_paths().log_dir
-            go_log_file = log_dir / "drunk-call-service.log"
-            go_err_file = log_dir / "drunk-call-service.err"
+            paths = get_paths()
+            go_log_file = paths.call_service_log_path()
+            go_stdout_file = paths.call_service_stdout_log_path()
+            go_err_file = paths.call_service_stderr_log_path()
 
             self.logger.info(f"Starting Go service: {binary_path}")
             self.logger.info(f"Go logs -> {go_log_file}")
-            self.logger.info(f"Go stderr (panics/crashes) -> {go_err_file}")
+            self.logger.info(f"Go stdout (libnice) -> {go_stdout_file}")
+            self.logger.info(f"Go stderr (GStreamer/panics) -> {go_err_file}")
 
-            # Redirect stderr for panics/crashes
-            # Go writes structured logs to file via -log-path (stdout disabled in Go logger)
+            # Redirect stderr for GStreamer debug output and panics/crashes
+            # Go writes structured logs to file via -log-path
             stderr_file = open(go_err_file, 'w')
 
             # Enable GStreamer debug logging for webrtcbin
             import os
+            import json
             env = os.environ.copy()
-            # env['GST_DEBUG'] = 'rtpbin:5,appsrc:5,rtpopusdepay:5,opusdec:5,basesrc:4'
-            # env['GST_DEBUG'] = 'rtpbin:5,appsrc:5,rtpopusdepay:5,opusdec:5,basesrc:4,opusenc:5,rtpopuspay:5,pulsesrc:5'
-            # env['GST_DEBUG'] = 'webrtcbin:7,rtpbin:5,dtlsdec:5,dtlsenc:5,srtpdec:5,srtpenc:5,appsrc:5,rtpopusdepay:5,opusdec:5,basesrc:4,opusenc:5,rtpopuspay:5,pulsesrc:5'
-            env['GST_DEBUG'] = 'webrtcbin:5,webmmux:6,rtpvp8depay:5'
-            env['G_MESSAGES_DEBUG'] = 'libnice,libnice-stun,libnice-socket,libnice-pseudotcp'
-            env['NICE_DEBUG'] = 'all'
 
-            stdout_file = open(go_log_file.parent / "drunk-call-service-stdout.log", 'a')
+            # Load GStreamer debug settings from config file
+            gstreamer_config_path = get_paths().config_dir / 'gstreamer.json'
+            gstreamer_settings = {}
+
+            if gstreamer_config_path.exists():
+                try:
+                    with open(gstreamer_config_path, 'r') as f:
+                        gstreamer_settings = json.load(f)
+                    self.logger.info(f"Loaded GStreamer debug settings from {gstreamer_config_path}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to load GStreamer settings from {gstreamer_config_path}: {e}")
+
+            # Apply settings (empty by default - user must configure if needed)
+            env['GST_DEBUG'] = gstreamer_settings.get('GST_DEBUG', '')
+            env['G_MESSAGES_DEBUG'] = gstreamer_settings.get('G_MESSAGES_DEBUG', '')
+            env['NICE_DEBUG'] = gstreamer_settings.get('NICE_DEBUG', '')
+
+            self.logger.info(f"GStreamer debug settings: GST_DEBUG={env['GST_DEBUG']}")
+            self.logger.info(f"GStreamer debug settings: G_MESSAGES_DEBUG={env['G_MESSAGES_DEBUG']}")
+            self.logger.info(f"GStreamer debug settings: NICE_DEBUG={env['NICE_DEBUG']}")
+
+            # Windows-specific: Add bundled GStreamer and vcpkg DLLs to PATH
+            if platform.system() == "Windows":
+                # Get absolute path to project root (relative to this file)
+                bridge_dir = Path(__file__).parent  # drunk_call_hook/
+                project_root = bridge_dir.parent     # siproxylin/
+
+                # Bundled dependency paths
+                gstreamer_bin = project_root / "drunk_call_service" / "lib" / "gstreamer" / "bin"
+                gstreamer_plugins = project_root / "drunk_call_service" / "lib" / "gstreamer" / "lib" / "gstreamer-1.0"
+                service_bin = project_root / "drunk_call_service" / "bin"
+
+                # Build PATH with components that exist
+                path_components = []
+                existing_path = env.get("PATH", "")
+
+                # Check bundled GStreamer
+                if gstreamer_bin.exists():
+                    path_components.append(str(gstreamer_bin.resolve()))
+                    self.logger.info(f"Found bundled GStreamer at: {gstreamer_bin}")
+
+                    # Set GStreamer plugin path
+                    if gstreamer_plugins.exists():
+                        env["GST_PLUGIN_PATH"] = str(gstreamer_plugins)
+                        env["GST_PLUGIN_SYSTEM_PATH"] = str(gstreamer_plugins)
+                        self.logger.info(f"GStreamer plugin path: {gstreamer_plugins}")
+                    else:
+                        self.logger.warning(f"GStreamer plugins not found at {gstreamer_plugins}")
+                else:
+                    self.logger.error(f"Bundled GStreamer not found at {gstreamer_bin}")
+                    self.logger.error("Download siproxylin-windows-gst-deps-vX.zip from GitHub releases")
+                    self.logger.error("Extract to drunk_call_service/lib/gstreamer/")
+
+                # Add vcpkg DLLs (should always exist after build)
+                if service_bin.exists():
+                    path_components.append(str(service_bin.resolve()))
+                    self.logger.info(f"Found vcpkg DLLs and service binary at: {service_bin}")
+                else:
+                    self.logger.error(f"Service binaries not found at {service_bin}")
+                    self.logger.error("Build with: cd drunk_call_service && make winrel")
+
+                # Update PATH if we have components to add
+                if path_components:
+                    env["PATH"] = ";".join(path_components) + ";" + existing_path
+                    self.logger.debug(f"Windows PATH updated with {len(path_components)} components")
+                    self.logger.debug(f"Full PATH: {env['PATH']}")
+                else:
+                    self.logger.error("No valid paths to add - call service will not start")
+
+            # Load log level from logging settings
+            logging_config_path = paths.config_dir / 'logging.json'
+            log_level = 'INFO'  # Default
+            if logging_config_path.exists():
+                try:
+                    with open(logging_config_path, 'r') as f:
+                        logging_settings = json.load(f)
+                        log_level = logging_settings.get('call_service_log_level', 'INFO')
+                    self.logger.info(f"Loaded call service log level from {logging_config_path}: {log_level}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to load logging settings from {logging_config_path}: {e}")
+
+            stdout_file = open(go_stdout_file, 'a')
 
             self._process = subprocess.Popen(
-                [binary_path, "--log-level", "DEBUG", "--log-path", str(go_log_file)],
+                [binary_path, "--log-level", log_level, "--log-path", str(go_log_file)],
                 stdout=stdout_file,  # Capture libnice debug output!
                 stderr=stderr_file,
                 env=env,
@@ -344,9 +421,6 @@ class CallBridge:
         self._event_streams: Dict[str, asyncio.Task] = {}
         self._stream_lock = asyncio.Lock()
 
-        # Video stream managers per session
-        self._video_managers: Dict[str, VideoStreamManager] = {}
-
     async def connect(self) -> bool:
         """
         Connect to Go service via gRPC.
@@ -415,8 +489,7 @@ class CallBridge:
                              turn_password: str = "",
                              echo_cancel: bool = True, echo_suppression_level: int = 1,
                              noise_suppression: bool = True, noise_suppression_level: int = 1,
-                             gain_control: bool = True,
-                             enable_video: bool = False) -> tuple[bool, Optional[int]]:
+                             gain_control: bool = True) -> bool:
         """
         Create new call session.
 
@@ -440,26 +513,13 @@ class CallBridge:
             noise_suppression: Enable noise suppression (default: True)
             noise_suppression_level: Noise suppression level 0-3 (low/moderate/high/very-high, default: 1)
             gain_control: Enable automatic gain control (default: True)
-            enable_video: Enable video receive pipeline (default: False)
 
         Returns:
-            tuple[bool, Optional[int]]: (success, video_port) - video_port is None if video disabled
+            True if session created
         """
         if not self._stub:
             self.logger.error("gRPC stub not initialized")
-            return (False, None)
-
-        # Allocate video port if video is enabled
-        video_port = None
-        if enable_video:
-            try:
-                video_mgr = VideoStreamManager()
-                video_port = video_mgr.allocate_video_port()
-                self._video_managers[session_id] = video_mgr
-                self.logger.info(f"Allocated video port {video_port} for session {session_id}")
-            except Exception as e:
-                self.logger.error(f"Failed to allocate video port: {e}")
-                return (False, None)
+            return False
 
         # Format device labels for logging (show both display name and ID for disambiguation)
         if microphone_display_name and microphone_device:
@@ -510,10 +570,7 @@ class CallBridge:
             echo_suppression_level=echo_suppression_level,
             noise_suppression=noise_suppression,
             noise_suppression_level=noise_suppression_level,
-            gain_control=gain_control,
-            enable_video_receive=enable_video,
-            video_udp_host=VideoStreamManager.VIDEO_IP if enable_video else "",
-            video_udp_port=video_port if video_port else 0
+            gain_control=gain_control
         )
 
         response = await self._stub.CreateSession(request)
@@ -524,14 +581,10 @@ class CallBridge:
             # Start event streaming for this session
             await self._start_event_stream(session_id)
 
-            return (True, video_port)
+            return True
         else:
             self.logger.error(f"Failed to create session: {response.error}")
-            # Clean up video manager if session creation failed
-            if session_id in self._video_managers:
-                self._video_managers[session_id].cleanup()
-                del self._video_managers[session_id]
-            return (False, None)
+            return False
 
     async def create_offer(self, session_id: str) -> str:
         """
@@ -710,44 +763,6 @@ class CallBridge:
         await self._stub.SetMute(request)
         self.logger.info(f"Mute state set for session {session_id}")
 
-    def generate_video_sdp(self, session_id: str, codec: str = "VP8") -> Optional[str]:
-        """
-        Generate SDP file for VLC RTP playback.
-
-        Args:
-            session_id: Session ID
-            codec: Video codec ("VP8", "VP9", or "H264"), default VP8
-
-        Returns:
-            str: Absolute path to SDP file, or None if video not enabled
-
-        Raises:
-            ValueError: If video port not allocated for this session
-        """
-        if session_id in self._video_managers:
-            try:
-                sdp_path = self._video_managers[session_id].write_sdp_file(session_id, codec)
-                self.logger.info(f"Generated SDP for session {session_id}: {sdp_path}")
-                return sdp_path
-            except Exception as e:
-                self.logger.error(f"Failed to generate SDP for session {session_id}: {e}")
-                raise
-        return None
-
-    def get_video_sdp_path(self, session_id: str) -> Optional[str]:
-        """
-        Get path to SDP file for video playback (if already generated).
-
-        Args:
-            session_id: Session ID
-
-        Returns:
-            str: Absolute path to SDP file, or None if not generated yet
-        """
-        if session_id in self._video_managers:
-            return self._video_managers[session_id].get_sdp_path()
-        return None
-
     async def end_session(self, session_id: str):
         """
         End call session.
@@ -766,12 +781,6 @@ class CallBridge:
 
         request = call_pb2.EndSessionRequest(session_id=session_id)
         await self._stub.EndSession(request)
-
-        # Clean up video manager if exists
-        if session_id in self._video_managers:
-            self._video_managers[session_id].cleanup()
-            del self._video_managers[session_id]
-            self.logger.info(f"Cleaned up video resources for session {session_id}")
 
         self.logger.info(f"Session {session_id} ended")
 

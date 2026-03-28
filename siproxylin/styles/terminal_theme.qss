@@ -14,6 +14,7 @@ QWidget {
     color: #33ff33;
     font-family: "Courier New", "Consolas", monospace;
     font-size: {{BASE_FONT_SIZE}}pt;
+    alternate-background-color: #404040;
 }
 
 QMainWindow {
@@ -85,6 +86,7 @@ ContactListWidget QToolButton#settingsButton {
     border: 1px solid #1a4d1a;
     border-radius: 4px;
     font-size: 18pt;
+    font-family: "Courier New", "Consolas", "DejaVu Sans Mono", "Noto Color Emoji", "Apple Color Emoji", monospace;
     padding: 0px;
 }
 
@@ -130,6 +132,7 @@ ChatViewWidget QToolButton#spellCheckButton {
     border: 1px solid #1a4d1a;
     border-radius: 4px;
     font-size: 18pt;
+    font-family: "Courier New", "Consolas", "DejaVu Sans Mono", "Noto Color Emoji", "Apple Color Emoji", monospace;
     padding: 0px;
 }
 
@@ -149,6 +152,7 @@ ChatViewWidget QToolButton#headerEncryptionButton {
     border: 1px solid #1a4d1a;
     border-radius: 4px;
     font-size: 18pt;
+    font-family: "Courier New", "Consolas", "DejaVu Sans Mono", "Noto Color Emoji", "Apple Color Emoji", monospace;
     padding: 0px;
 }
 
@@ -173,10 +177,29 @@ ChatViewWidget QToolButton#infoButton {
     border-radius: 4px;
     color: #66ff66;
     font-size: 14pt;
+    font-family: "Courier New", "Consolas", "DejaVu Sans Mono", "Noto Color Emoji", "Apple Color Emoji", monospace;
     padding: 4px;
 }
 
 ChatViewWidget QToolButton#infoButton:hover {
+    background-color: #2a2a2a;
+    border-color: #2a6d2a;
+}
+
+/* Audio/Video call buttons in header */
+ChatViewWidget QToolButton#audioCallButton,
+ChatViewWidget QToolButton#videoCallButton {
+    background-color: #1a1a1a;
+    border: 1px solid #1a4d1a;
+    border-radius: 4px;
+    color: #66ff66;
+    font-size: 16pt;
+    font-family: "Courier New", "Consolas", "DejaVu Sans Mono", "Noto Color Emoji", "Apple Color Emoji", monospace;
+    padding: 2px;
+}
+
+ChatViewWidget QToolButton#audioCallButton:hover,
+ChatViewWidget QToolButton#videoCallButton:hover {
     background-color: #2a2a2a;
     border-color: #2a6d2a;
 }
@@ -213,6 +236,7 @@ ChatViewWidget QTextEdit#inputField {
     padding: 8px;
     color: #33ff33;
     font-size: {{BASE_FONT_SIZE}}pt;
+    font-family: "Courier New", "Consolas", "DejaVu Sans Mono", "Noto Color Emoji", "Apple Color Emoji", monospace;
 }
 
 ChatViewWidget QTextEdit#inputField:focus {
@@ -268,6 +292,7 @@ ChatViewWidget QToolButton#attachButton {
     border-radius: 4px;
     color: #66ff66;
     font-size: 16pt;
+    font-family: "Courier New", "Consolas", "DejaVu Sans Mono", "Noto Color Emoji", "Apple Color Emoji", monospace;
     padding: 8px 4px;
     min-width: 40px;
 }
@@ -290,6 +315,7 @@ ChatViewWidget QToolButton#emojiButton {
     border: none;
     border-radius: 4px;
     font-size: 18pt;
+    font-family: "Courier New", "Consolas", "DejaVu Sans Mono", "Noto Color Emoji", "Apple Color Emoji", monospace;
     padding: 0px;
     min-width: 40px;
 }
@@ -413,6 +439,7 @@ QPushButton {
     color: #33ff33;
     padding: 6px 16px;
     font-size: {{BASE_FONT_SIZE}}pt;
+    font-family: "Courier New", "Consolas", "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", monospace;
 }
 
 QPushButton:hover {

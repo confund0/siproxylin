@@ -457,6 +457,10 @@ class XMPPAccount(QObject):
         # This retrieves messages from contacts similar to how MUC rooms catch up
         await self.messages.catchup_private_chats()
 
+        # Phase 7: Catch up MUC room messages from MAM (messages sent while offline)
+        # This retrieves MUC history for all joined rooms
+        await self.muc.catchup_muc_rooms()
+
     async def _on_session_resumed(self, event):
         """Handle XMPP session resumption (XEP-0198)."""
         self.connected = True
@@ -469,6 +473,9 @@ class XMPPAccount(QObject):
         # IMPORTANT: Catch up on messages sent while connection was down
         # Session resume means stream was temporarily interrupted - we may have missed messages
         await self.messages.catchup_private_chats()
+
+        # Also catch up MUC messages
+        await self.muc.catchup_muc_rooms()
 
     async def _on_session_start(self, event):
         """Handle successful XMPP session start."""

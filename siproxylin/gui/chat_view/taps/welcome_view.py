@@ -117,7 +117,7 @@ class WelcomeView(QWidget):
         )
 
         try:
-            with open(template_path, 'r') as f:
+            with open(template_path, 'r', encoding='utf-8') as f:
                 template = f.read()
         except FileNotFoundError:
             return "<center><h1 style='color: red;'>Welcome template not found</h1></center>"
@@ -151,7 +151,7 @@ class WelcomeView(QWidget):
         )
 
         try:
-            with open(template_path, 'r') as f:
+            with open(template_path, 'r', encoding='utf-8') as f:
                 template = f.read()
         except FileNotFoundError:
             return "<pre style='color: red;'>Heart template not found</pre>"

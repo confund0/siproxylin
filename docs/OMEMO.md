@@ -246,13 +246,7 @@ Shows your own OMEMO devices (all logged-in instances).
 
 The OMEMO implementation is functional but has some limitations:
 
-**Trust Management:**
-- Trust changes in Contact Details Dialog update GUI table only
-- Changes do NOT sync back to OMEMO library's internal storage
-- Workaround: Trust state may not affect encryption until restart
-
 **Device Management:**
-- No "Refresh" button (must close/reopen dialog to see new devices)
 - Cannot remove old/lost devices from list
 - No bulk trust operations (must verify each device individually)
 
@@ -262,7 +256,7 @@ The OMEMO implementation is functional but has some limitations:
 - No automated fingerprint exchange
 
 **Settings:**
-- BTBV checkbox exists but setting is hardcoded to enabled in code
+- BTBV checkbox exists and saves to database, but DrunkXMPP `_btbv_enabled()` is hardcoded to `return True` (drunk_xmpp/client.py:247, omemo_support.py:98)
 - "required" OMEMO mode not fully enforced
 
 ### Known Issues

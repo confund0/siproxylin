@@ -89,7 +89,9 @@ grpc::Status CallServiceImpl::CreateSession(
 
         // Audio processing
         config.echo_cancel = request->echo_cancel();
+        config.echo_suppression_level = request->echo_suppression_level();
         config.noise_suppression = request->noise_suppression();
+        config.noise_suppression_level = request->noise_suppression_level();
         config.gain_control = request->gain_control();
 
         // Video configuration

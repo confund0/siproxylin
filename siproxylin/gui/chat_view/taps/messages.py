@@ -96,6 +96,7 @@ class MessageDisplayWidget(QObject):
         self.current_jid = None
         self.current_conversation_id = None
         self.current_is_muc = False
+        self.current_omemo_capable = False  # Whether current chat supports OMEMO
 
         # Scroll manager will be set later (after message_container is created)
         self.scroll_manager = None
@@ -143,6 +144,13 @@ class MessageDisplayWidget(QObject):
         # Connect scrollbar to detect when user scrolls to top (infinite scroll)
         scrollbar = self.message_area.verticalScrollBar()
         scrollbar.valueChanged.connect(self._on_scroll_changed)
+
+        # Connect click handler for image viewing
+        self.message_area.clicked.connect(self._on_message_clicked)
+
+        # Enable mouse tracking for cursor changes over images
+        self.message_area.setMouseTracking(True)
+        self.message_area.viewport().installEventFilter(self)
 
     def set_scroll_manager(self, scroll_manager):
         """Set the scroll manager (must be called after initialization)."""
@@ -260,6 +268,49 @@ class MessageDisplayWidget(QObject):
 
         jid_id = jid_row['id']
         # logger.debug(f"_load_messages: Loading messages for jid_id={jid_id}, account={self.current_account_id}")
+
+        # Check if this chat supports OMEMO
+        # Different logic for MUC vs 1-1 chats
+        if self.current_is_muc:
+            # MUC: Check if room is non-anonymous AND members-only (OMEMO requirement)
+            # Use disco_cache from client (in-memory, always fresh)
+            self.current_omemo_capable = False
+            account = self.account_manager.get_account(self.current_account_id) if self.account_manager else None
+            if account and account.client and hasattr(account.client, 'disco_cache'):
+                disco_info = account.client.disco_cache.get(self.current_jid, {})
+                nonanonymous = disco_info.get('muc_nonanonymous', False)
+                membersonly = disco_info.get('muc_membersonly', False)
+                self.current_omemo_capable = nonanonymous and membersonly
+                logger.debug(f"MUC OMEMO capability for {self.current_jid}: nonanonymous={nonanonymous}, membersonly={membersonly}, capable={self.current_omemo_capable}")
+            else:
+                logger.debug(f"MUC OMEMO capability for {self.current_jid}: False (disco_cache not available)")
+        else:
+            # 1-1 chat: Check if we've ever sent/received encrypted messages
+            # If encrypted messages exist, OMEMO is supported and we should warn about unencrypted ones
+            encrypted_msg_check = self.db.fetchone("""
+                SELECT 1
+                FROM message m
+                WHERE m.account_id = ?
+                  AND m.counterpart_id = ?
+                  AND m.encryption = 1
+                LIMIT 1
+            """, (self.current_account_id, jid_id))
+
+            # Also check file transfers (they can be OMEMO encrypted too)
+            if not encrypted_msg_check:
+                encrypted_file_check = self.db.fetchone("""
+                    SELECT 1
+                    FROM file_transfer ft
+                    WHERE ft.account_id = ?
+                      AND ft.counterpart_id = ?
+                      AND ft.encryption = 1
+                    LIMIT 1
+                """, (self.current_account_id, jid_id))
+                self.current_omemo_capable = bool(encrypted_file_check)
+            else:
+                self.current_omemo_capable = True
+
+            logger.debug(f"1-1 chat OMEMO capability for {self.current_jid}: {self.current_omemo_capable} (based on encrypted message history)")
 
         # Get conversation ID (type=0 for chat, type=1 for MUC)
         conv_type = 1 if self.current_is_muc else 0
@@ -595,6 +646,9 @@ class MessageDisplayWidget(QObject):
                     continue
 
                 direction = row['msg_direction']
+                # TODO: Implement visual quote box rendering (like Dino)
+                # For now, show full body with "> " prefixes until visual rendering is implemented
+                # body = self.db.get_message_body_without_fallback(row['msg_id']) if row['msg_id'] else (row['body'] or '')
                 body = row['body'] or ''
                 timestamp = get_bubble_timestamp(row_timestamp)
                 encrypted = bool(row['msg_encryption'])
@@ -626,6 +680,7 @@ class MessageDisplayWidget(QObject):
                 item.setData(message_id, MessageBubbleDelegate.ROLE_MESSAGE_ID)
                 item.setData(quoted_body, MessageBubbleDelegate.ROLE_QUOTED_BODY)
                 item.setData(content_item_id, MessageBubbleDelegate.ROLE_CONTENT_ITEM_ID)
+                item.setData(self.current_omemo_capable, MessageBubbleDelegate.ROLE_OMEMO_CAPABLE)
 
                 # Add to model (prepend if loading more, append if initial load)
                 if insert_at_top:
@@ -678,6 +733,7 @@ class MessageDisplayWidget(QObject):
                 item.setData(is_carbon, MessageBubbleDelegate.ROLE_IS_CARBON)
                 item.setData(message_id, MessageBubbleDelegate.ROLE_MESSAGE_ID)
                 item.setData(content_item_id, MessageBubbleDelegate.ROLE_CONTENT_ITEM_ID)
+                item.setData(self.current_omemo_capable, MessageBubbleDelegate.ROLE_OMEMO_CAPABLE)
 
                 # Add to model (prepend if loading more, append if initial load)
                 if insert_at_top:
@@ -711,6 +767,7 @@ class MessageDisplayWidget(QObject):
                 item.setData(duration, MessageBubbleDelegate.ROLE_CALL_DURATION)
                 item.setData(call_type, MessageBubbleDelegate.ROLE_CALL_TYPE)
                 item.setData(content_item_id, MessageBubbleDelegate.ROLE_CONTENT_ITEM_ID)
+                item.setData(self.current_omemo_capable, MessageBubbleDelegate.ROLE_OMEMO_CAPABLE)
                 # Mark as call by setting body to None (differentiate from messages/files)
                 item.setData(None, MessageBubbleDelegate.ROLE_BODY)
                 item.setData(None, MessageBubbleDelegate.ROLE_FILE_PATH)
@@ -1124,12 +1181,80 @@ class MessageDisplayWidget(QObject):
         self.message_area.scrollToBottom()
         logger.info("Jumped back to live zone")
 
-    def eventFilter(self, obj, event):
-        """Event filter to catch ESC and mouse clicks for clearing highlight."""
-        from PySide6.QtCore import QEvent
-        from PySide6.QtGui import QKeyEvent
+    def _on_message_clicked(self, index):
+        """
+        Handle message item click.
 
-        # Only process if we have an active highlight
+        Opens image viewer for image attachments or video viewer for video attachments.
+
+        Args:
+            index: QModelIndex of clicked item
+        """
+        if not index.isValid():
+            return
+
+        # Check if this is an image or video file
+        file_path = index.data(MessageBubbleDelegate.ROLE_FILE_PATH)
+        mime_type = index.data(MessageBubbleDelegate.ROLE_MIME_TYPE)
+
+        # Handle image files
+        if file_path and mime_type and mime_type.startswith('image/'):
+            from pathlib import Path
+
+            # Verify file exists
+            if Path(file_path).exists():
+                logger.info(f"Opening image viewer for: {file_path}")
+
+                # Import and show image viewer
+                from ...dialogs import ImageViewerDialog
+                dialog = ImageViewerDialog(file_path, self.parent)
+                dialog.setAttribute(Qt.WA_DeleteOnClose)
+                dialog.show()
+            else:
+                logger.warning(f"Image file not found: {file_path}")
+
+        # Handle video files
+        elif file_path and mime_type and mime_type.startswith('video/'):
+            from pathlib import Path
+
+            # Verify file exists
+            if Path(file_path).exists():
+                logger.info(f"Opening video viewer for: {file_path}")
+
+                # Import and show video viewer
+                from ...dialogs import VideoViewerDialog
+                dialog = VideoViewerDialog(file_path, self.parent)
+                dialog.setAttribute(Qt.WA_DeleteOnClose)
+                dialog.show()
+            else:
+                logger.warning(f"Video file not found: {file_path}")
+
+    def eventFilter(self, obj, event):
+        """Event filter to catch ESC, mouse clicks for clearing highlight, and cursor changes over images."""
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QKeyEvent, QCursor
+
+        # Handle mouse move over viewport to change cursor for images
+        if obj == self.message_area.viewport() and event.type() == QEvent.MouseMove:
+            pos = event.pos()
+            index = self.message_area.indexAt(pos)
+
+            if index.isValid():
+                # Check if this item has an image
+                mime_type = index.data(MessageBubbleDelegate.ROLE_MIME_TYPE)
+                file_path = index.data(MessageBubbleDelegate.ROLE_FILE_PATH)
+
+                if mime_type and (mime_type.startswith('image/') or mime_type.startswith('video/')) and file_path:
+                    # Set pointing hand cursor for images and videos
+                    self.message_area.viewport().setCursor(QCursor(Qt.PointingHandCursor))
+                else:
+                    # Reset to default cursor
+                    self.message_area.viewport().setCursor(QCursor(Qt.ArrowCursor))
+            else:
+                # Reset to default cursor
+                self.message_area.viewport().setCursor(QCursor(Qt.ArrowCursor))
+
+        # Only process highlight-related events if we have an active highlight
         if self.message_delegate.highlighted_index is None:
             return False
 

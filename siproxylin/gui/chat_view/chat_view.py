@@ -59,7 +59,6 @@ class ChatViewWidget(QWidget):
         self.current_conversation_id = None  # Track conversation ID for settings
         self.current_is_muc = False  # Track if current conversation is MUC
         self.selected_file_path = None  # Track selected file for attachment
-        self.temp_pasted_files = []  # Track temporary files from image paste (for cleanup)
 
         # Track input buffer per conversation (privacy: isolate drafts between chats)
         # Memory-only (privacy-first approach): drafts lost on app restart, prioritizes privacy over usability
@@ -405,6 +404,9 @@ class ChatViewWidget(QWidget):
         # Load messages from database using message widget
         self.message_widget.load_messages(account_id, jid, self.current_is_muc, self.current_conversation_id)
 
+        # Update input placeholder with shield indicator (after OMEMO capability is determined)
+        self._update_input_placeholder()
+
         # Send displayed markers for received messages (chat opened)
         self.message_widget._send_displayed_markers()
 
@@ -455,9 +457,6 @@ class ChatViewWidget(QWidget):
 
     def clear(self):
         """Clear the chat view."""
-        # Clean up any temporary pasted image files
-        self._cleanup_all_temp_files()
-
         # Switch to empty state (Page 0)
         self.stack.setCurrentIndex(0)
 
@@ -467,24 +466,36 @@ class ChatViewWidget(QWidget):
         self.message_widget.clear()
         self._set_input_enabled(False)
 
-    def _cleanup_all_temp_files(self):
-        """Clean up all temporary pasted image files."""
-        import os
-        for file_path in list(self.temp_pasted_files):  # Copy list to avoid modification during iteration
-            try:
-                if os.path.exists(file_path):
-                    os.unlink(file_path)
-                    logger.debug(f"Cleaned up temp pasted image: {file_path}")
-            except Exception as e:
-                logger.warning(f"Failed to clean up temp file {file_path}: {e}")
-        self.temp_pasted_files.clear()
-
     def _set_input_enabled(self, enabled: bool):
         """Enable or disable message input."""
         self.input_field.setEnabled(enabled)
         self.emoji_button.setEnabled(enabled)
         self.send_button.setEnabled(enabled)
         # OMEMO button is now in header, not in input area
+
+    def _update_input_placeholder(self):
+        """
+        Update input field placeholder text with shield indicator.
+
+        Shows:
+        - 🛡️ Type a message... - OMEMO available AND enabled
+        - 🛡️❌ Type a message... - OMEMO not supported OR disabled
+        """
+        # Get OMEMO capability from message widget (set during load_messages)
+        omemo_capable = getattr(self.message_widget, 'current_omemo_capable', False)
+
+        # Get encryption toggle state
+        encryption_enabled = getattr(self, 'encryption_enabled', False)
+
+        # Determine shield indicator
+        if omemo_capable and encryption_enabled:
+            shield = "🛡️🔒 "
+        else:
+            shield = "🛡️❌ "
+
+        # Update placeholder (preserve "Type a message..." text)
+        self.input_field.setPlaceholderText(f"{shield}Type a message... (Shift+Enter for new line)")
+        logger.debug(f"Updated input placeholder: omemo_capable={omemo_capable}, encryption_enabled={encryption_enabled}, shield={shield.strip()}")
 
     def _update_muc_input_state(self, account_id: int, room_jid: str):
         """
@@ -645,6 +656,9 @@ class ChatViewWidget(QWidget):
         self.encryption_enabled = enabled
         logger.debug(f"Encryption toggled: {enabled}")
 
+        # Update input placeholder to reflect new encryption state
+        self._update_input_placeholder()
+
     def _handle_info_click(self):
         """Handle info button click from header - opens contact details or MUC settings."""
         if not self.current_account_id or not self.current_jid:
@@ -788,9 +802,9 @@ class ChatViewWidget(QWidget):
         if self.selected_file_path:
             self._clear_file_selection()
 
-        import tempfile
         import os
         from datetime import datetime
+        from ...utils.paths import get_paths, _mkdir_secure
 
         # Detect image format from MIME data
         # Common formats: image/png, image/jpeg, image/webp, image/bmp, image/gif
@@ -823,38 +837,36 @@ class ChatViewWidget(QWidget):
 
         logger.debug(f"Detected clipboard image format: {format_name} (extension: {file_ext})")
 
-        # Create temp file with timestamp and detected format
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        temp_file = tempfile.NamedTemporaryFile(
-            prefix=f"pasted_image_{timestamp}_",
-            suffix=file_ext,
-            delete=False  # We'll delete manually after send
-        )
-        temp_path = temp_file.name
-        temp_file.close()  # Close file handle, we'll write with QImage
+        # Save directly to permanent attachments folder (same pattern as received files)
+        paths = get_paths()
+        attachments_base = paths.data_dir / 'attachments'
+        jid_dir = attachments_base / str(self.current_account_id) / self.current_jid
+        _mkdir_secure(jid_dir, parents=True)
 
-        # Save image to temp file (Qt's save() automatically strips EXIF data for all formats)
+        # Generate timestamped filename
+        timestamp_str = datetime.now().strftime('%Y-%m-%d_%H%M%S')
+        filename = f'{timestamp_str}{file_ext}'
+        permanent_path = str(jid_dir / filename)
+
+        # Save image to permanent location (Qt's save() automatically strips EXIF data for all formats)
         # Quality parameter for lossy formats (JPEG): 95 = high quality with minimal compression
         save_quality = 95 if format_name == "JPEG" else -1  # -1 = use Qt default for lossless formats
 
-        if not qimage.save(temp_path, format_name, save_quality):
-            logger.error(f"Failed to save pasted image to {temp_path}")
+        if not qimage.save(permanent_path, format_name, save_quality):
+            logger.error(f"Failed to save pasted image to {permanent_path}")
             try:
-                os.unlink(temp_path)
+                os.unlink(permanent_path)
             except:
                 pass
             return
 
-        logger.info(f"Pasted image saved to temp file: {temp_path} (format={format_name}, EXIF data stripped)")
-
-        # Track temp file for cleanup
-        self.temp_pasted_files.append(temp_path)
+        logger.info(f"Pasted image saved to permanent location: {permanent_path} (format={format_name}, EXIF data stripped)")
 
         # Set as selected file and show indicator (reuse existing UI logic)
-        self.selected_file_path = temp_path
-        self._show_file_attachment_indicator(temp_path)
+        self.selected_file_path = permanent_path
+        self._show_file_attachment_indicator(permanent_path)
 
-        logger.debug(f"Image paste ready to send: {temp_path}")
+        logger.debug(f"Image paste ready to send: {permanent_path}")
 
     def _on_attach_file_clicked(self):
         """Handle file attachment button click."""
@@ -875,39 +887,21 @@ class ChatViewWidget(QWidget):
             self._show_file_attachment_indicator(file_path)
             logger.debug(f"File selected: {file_path}")
 
-    def _clear_file_selection(self, cleanup_temp=True):
-        """
-        Clear selected file and reset UI.
-
-        Args:
-            cleanup_temp: If False, don't delete temp file yet (used when sending)
-        """
-        # Clean up temp file if it was a pasted image
-        # BUT only if cleanup_temp=True (not during send, only on cancel)
-        if cleanup_temp and self.selected_file_path and self.selected_file_path in self.temp_pasted_files:
-            self._cleanup_temp_file(self.selected_file_path)
+    def _clear_file_selection(self):
+        """Clear selected file and reset UI."""
+        from PySide6.QtGui import QTextCharFormat
 
         self.selected_file_path = None
         self.input_field.clear()
+
+        # Reset text format to default (remove red color)
+        cursor = self.input_field.textCursor()
+        default_format = QTextCharFormat()
+        cursor.setCharFormat(default_format)
+        self.input_field.setTextCursor(cursor)
+
         self.input_field.setReadOnly(False)  # Re-enable input
-        self.input_field.setPlaceholderText("Type a message...")
-
-    def _cleanup_temp_file(self, file_path):
-        """
-        Clean up a temporary pasted image file.
-
-        Args:
-            file_path: Path to temp file to delete
-        """
-        import os
-        try:
-            if os.path.exists(file_path):
-                os.unlink(file_path)
-                logger.debug(f"Cleaned up temp pasted image: {file_path}")
-            if file_path in self.temp_pasted_files:
-                self.temp_pasted_files.remove(file_path)
-        except Exception as e:
-            logger.warning(f"Failed to clean up temp file {file_path}: {e}")
+        self._update_input_placeholder()
 
     def _on_send_clicked(self):
         """Handle Send button click (or Enter key) - sends new message, reply, or saves edit."""

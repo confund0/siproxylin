@@ -18,6 +18,8 @@ BUBBLE_THEMES = {
         'marker_read': '#0088cc',       # Blue for read markers
         'unencrypted_sent_bg': '#ffcccc',     # Light red (warning)
         'unencrypted_received_bg': '#ffe0e0', # Very light red
+        'url_sent': '#0066cc',          # Medium blue - classic hyperlink
+        'url_received': '#1976d2',      # Material blue
     },
 
     'light_gray': {
@@ -29,6 +31,8 @@ BUBBLE_THEMES = {
         'marker_read': '#4a7a4a',       # Darker green for read markers
         'unencrypted_sent_bg': '#d4a8a8',     # Muted red-gray
         'unencrypted_received_bg': '#d0a8a8', # Lighter red-gray
+        'url_sent': '#0055aa',          # Darker blue - better contrast
+        'url_received': '#1565c0',      # Darker material blue
     },
 
     'dark': {
@@ -40,6 +44,8 @@ BUBBLE_THEMES = {
         'marker_read': '#66ff66',       # Bright green for read markers
         'unencrypted_sent_bg': '#6b3d3d',     # Dark red
         'unencrypted_received_bg': '#4a2828', # Darker red
+        'url_sent': '#66b3ff',          # Light blue - readable on dark green
+        'url_received': '#64b5f6',      # Material light blue
     },
 
     'terminal': {
@@ -51,6 +57,8 @@ BUBBLE_THEMES = {
         'marker_read': '#00ff00',       # Extra bright green for read markers
         'unencrypted_sent_bg': '#4d1a1a',     # Dark terminal red
         'unencrypted_received_bg': '#1a0a0a', # Subtle dark background
+        'url_sent': '#00ffff',          # Cyan - classic terminal link color
+        'url_received': '#00aaff',      # Bright cyan-blue
     },
 
     'gruvbox': {
@@ -62,6 +70,8 @@ BUBBLE_THEMES = {
         'marker_read': '#b8bb26',       # Gruvbox bright green for read markers
         'unencrypted_sent_bg': '#504040',     # Gruvbox gray with red tint
         'unencrypted_received_bg': '#3c1f1e', # Gruvbox dark with red tint
+        'url_sent': '#83a598',          # Gruvbox bright blue
+        'url_received': '#8ec07c',      # Gruvbox bright aqua
     },
 }
 
@@ -88,4 +98,6 @@ def get_bubble_colors(theme_name: str) -> dict:
         'marker_read': QColor(colors['marker_read']),
         'unencrypted_sent_bg': QColor(colors['unencrypted_sent_bg']),
         'unencrypted_received_bg': QColor(colors['unencrypted_received_bg']),
+        'url_sent': QColor(colors['url_sent']),
+        'url_received': QColor(colors['url_received']),
     }

@@ -731,6 +731,66 @@ remove_unused_pyside6_modules() {
     return 0
 }
 
+remove_unused_video_encoders() {
+    local dest_dir="$1"
+    local lib_dir="$dest_dir/usr/lib/x86_64-linux-gnu"
+
+    log_step "OPTIMIZE" "Removing unused video encoders..."
+
+    if [ ! -d "$lib_dir" ]; then
+        log_warning "Library directory not found, skipping"
+        return 0
+    fi
+
+    # Remove H.265/HEVC encoder (not used in WebRTC)
+    rm -f "$lib_dir/libx265"* 2>/dev/null || true
+
+    # Remove speech codec for amateur radio (completely unrelated)
+    rm -f "$lib_dir/libcodec2"* 2>/dev/null || true
+
+    # Remove Intel hardware encoders (not used)
+    rm -f "$lib_dir/libmfxhw64"* 2>/dev/null || true
+    rm -f "$lib_dir/libmfx-tracer"* 2>/dev/null || true
+    rm -rf "$lib_dir/mfx" 2>/dev/null || true
+
+    # Remove AV1 encoders (not used in WebRTC, VP8/VP9 already available)
+    rm -f "$lib_dir/libSvtAv1Enc"* 2>/dev/null || true
+    rm -f "$lib_dir/libaom"* 2>/dev/null || true
+
+    # IMPORTANT: Keep these codecs (needed for WebRTC)
+    # - libopenh264* (H.264 codec)
+    # - libx264* (x264 encoder, may be needed)
+    # - libvpx* (VP8/VP9 codec)
+    # - libavcodec*, libavformat* (FFmpeg, used by GStreamer)
+
+    log_success "Unused video encoders removed (~60MB saved)"
+    return 0
+}
+
+remove_flite_tts() {
+    local dest_dir="$1"
+    local lib_dir="$dest_dir/usr/lib/x86_64-linux-gnu"
+
+    log_step "OPTIMIZE" "Removing Flite text-to-speech libraries..."
+
+    if [ ! -d "$lib_dir" ]; then
+        log_warning "Library directory not found, skipping"
+        return 0
+    fi
+
+    # Remove all Flite text-to-speech libraries
+    # These are pulled in as dependencies but not used by Siproxylin
+    rm -f "$lib_dir/libflite"*.so* 2>/dev/null || true
+
+    # Also remove lintian overrides if present
+    if [ -d "$dest_dir/usr/share/lintian/overrides" ]; then
+        rm -f "$dest_dir/usr/share/lintian/overrides/libflite"* 2>/dev/null || true
+    fi
+
+    log_success "Flite TTS libraries removed (~25MB saved)"
+    return 0
+}
+
 calculate_size() {
     local path="$1"
 

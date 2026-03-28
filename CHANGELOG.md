@@ -4,7 +4,343 @@ All notable changes to Siproxylin are documented in this file.
 
 ---
 
+## [0.0.28 - Firewater] - 2026-03-26
+
+> (eef90be15c)
+
+    Releasing first version which supports Windows
+
+> (80a74d559c)
+
+    Merging branch "win" into "main"
+    
+    - Updated C++ call service code to compile under MS Windows.
+    - Fixed paths of app data to use Windows standard locations.
+    - Cherry-picked required GStreamer libraries.
+    - Cherry-picked required VCPKG libraries.
+    - Created a separate release of dependencies (bunch of zipped dll
+      files).
+    - Created code which generates bundled Inno (ISS) installer, with
+      embedded GST/VCPKG libraries and Python.
+    - Lots of small bugfixes.
+    
+    Status:
+    
+    - Application seems to be functional on MS Windows.
+    - Release to GitHub process still requires manual actions.
+    
+    TODO: Automate Windows builds work with GitHub actions.
+
+## [deps-v0.0.27 - Fermented] - 2026-03-13
+
+> (dc9527d2ba)
+
+    Update README.md
+
+> (722fa50035)
+
+    Update README.md
+
+> (75c78afdd9)
+
+    Update WINDOWS.md
+
+> (d3d81e8ebf)
+
+    Create docs/WINDOWS.md
+
+## [0.0.27 - Fermented] - 2026-03-11
+
+> (767e6c784f)
+
+    VLC player fixes and AppImage debloat (removed some unnecessary libs)
+
+> (0d57d4f093)
+
+    VLC fixes
+
+> (0e2d8f17d8)
+
+    Release: add python3-vlc (fix attachments), multi-line code blocks, URL handling
+
+> (b183cc2213)
+
+    Add clickable URLs and multi-line code blocks
+    
+    Major improvements to message rendering:
+    
+    - Replace QSyntaxHighlighter with direct HTML conversion for synchronous rendering
+    - Add clickable URL detection with theme-aware colors
+    - Implement URL context menu (Open Link, Copy Link Address)
+    - Support inline code spans (`code`) with gray background
+    - Add multi-line code block support (```language\n...\n```)
+    - Preserve whitespace (spaces and tabs) in code blocks
+    - Apply XEP-0393 formatting: *bold*, _italic_, ~strikethrough~, `monospace`
+    - Fix bubble width calculation to account for monospace font width
+    - Protect URLs inside code blocks from being converted to links
+    
+    All message formatting is now rendered synchronously via HTML,
+    eliminating async rendering issues and bubble overflow.
+
+## [0.0.26 - Fermented] - 2026-03-11
+
+> (ac6170b06c)
+
+    Added video player, GStreamer settings tab, improved logging settings
+
+> (64ad3d5971)
+
+    Add video thumbnail with play button overlay
+    
+    - VLC-based thumbnail generation at 1 second mark
+    - Aspect ratio preserved (320px width, proportional height)
+    - Play button drawn with QPainter for cross-platform reliability
+    - Thumbnails cached in ~/.siproxylin/cache/video_thumbnails/
+    - Tested on Wayland (Sway)
+    - Should work on X11, Windows, macOS
+
+> (46405d4022)
+
+    Adding a video player for view video attachments
+
+> (934399d405)
+
+    Default log level WARNING and logs menus
+    
+    Reduce default logging verbosity to minimize disk usage and improve
+    performance for regular users. Logs are now behind the Admin Tools
+    setting to keep the UI clean for non-technical users.
+    
+    Logging Changes:
+    - Set default log level to WARNING for all logs (main, call service)
+    - Disable XMPP protocol log by default (xml_log_enabled: false)
+    - Reduces INFO-level noise while preserving warnings and errors
+    
+    UI Changes:
+    - Hide View → Logs menu and separator when Admin Tools is disabled
+    
+    Default behavior:
+    - Main log: enabled, WARNING level
+    - XMPP protocol log: disabled
+    - Call service log: WARNING level
+    - Logs menu: hidden (unless admin tools enabled)
+    
+    Users can still access full logging by enabling Admin Tools in settings.
+
+> (1fc55cc3cf)
+
+    Add GStreamer debug tab with configurable logging
+    
+    Add a new "GStreamer" tab to the settings dialog allowing advanced users
+    to configure GStreamer/libnice debug environment variables for call
+    troubleshooting. The tab provides input validation and some
+    category hints.
+    
+    Settings Dialog Changes:
+    - Add GStreamer tab with inputs for GST_DEBUG, G_MESSAGES_DEBUG, NICE_DEBUG
+    - Add Video tab placeholder (disabled) for future camera settings
+    - Add call service log level configuration in Logging tab
+    
+    Path Management:
+    - Add call_service_log_path(), call_service_stdout_log_path(),
+      call_service_stderr_log_path() methods to paths.py
+    - Centralize all call service log paths for consistency
+    
+    Call Bridge Integration:
+    - Read GStreamer debug settings from gstreamer.json config file
+    - Read call service log level from logging.json config file
+    - Replace hardcoded calls "DEBUG" log level with configurable setting
+    
+    Input Validation:
+    - GST_DEBUG: validates category:level format (levels 0-9)
+    - G_MESSAGES_DEBUG: validates comma-separated categories or "all"
+    - NICE_DEBUG: validates "all" or empty
+    - Real-time validation with visual feedback (red border on error)
+    - Spaces automatically removed before validation
+
+## [0.0.25 - Single malt] - 2026-03-10
+
+> (ef94cca263)
+
+    Adding python3-gi / gir1.2-glib-2.0 / libgirepository-1.0-1 to the AppImage (dependencies for GIO file operations)
+
+> (bccb221d7e)
+
+    Release:
+    
+    - Add image viewer and "Open With" for attachments
+    - Message info dialog now allows copy-paste message properties
+    - Look and feel improvements
+    - Added libxcb-cursor0 to AppImage to reduce OS dependencies
+
+> (4315d95183)
+
+    Add image viewer and OS-native file operations
+    
+    Features:
+    - Image viewer dialog with zoom controls (in/out/fit/actual size)
+    - Click images in chat to open viewer (pointer cursor on hover)
+    - Ctrl+scroll and Ctrl+/-/0 keyboard shortcuts for zoom
+    
+    Context menu improvements:
+    - Reorganized image context menu with separators
+    - Added "Open With..." for OS-native app chooser
+      - Windows: Native "Open With" dialog
+      - macOS: Reveal in Finder
+      - Linux: Custom GIO-based application chooser dialog
+    
+    Refactoring:
+    - Centralized file operations in utils/file_utils.py
+      - open_file_with_external_app() for "Open With" functionality
+      - save_file_as() for file save dialog + copy
+    - Removed code duplication between viewer and context menu
+    
+    Technical:
+    - Linux: Uses GIO (PyGObject) for application discovery by MIME type
+    - Requires system python3-gi (already present for GStreamer)
+    - Non-blocking viewer dialog (can open multiple simultaneously)
+    - Proper cleanup with Qt.WA_DeleteOnClose
+
+> (03a9d47256)
+
+    Adding libxcb-cursor0 to AppImage (depencency library for Qt)
+
+> (8b88cd64b0)
+
+    Look and feel improvements
+    
+    - Picture copy/paste (e.g. screenshot) does not dissapear with cleanup
+    - Picture copy/paste resets the input field styling (kept the red font)
+    - Unencrypted messages only displayed with pink background where OMEMO
+      is available and not used. In OMEMO incapable chats colours remain
+    default
+    - Input field got 🛡️🔒 and 🛡️❌  markers respectively to warn user about
+      unavailable / disabled OMEMO
+
+> (f596137de5)
+
+    Message info dialog now allows copy-paste message properties
+
+> (df1676a1ef)
+
+    DST debug vars set
+
+> (d9fe93a590)
+
+    Updated docs
+
+## [0.0.24 - Oak barrel] - 2026-03-10
+
+> (ea3a981b7a)
+
+    Release: fixed echo/noise/auto_gain controls, fixed Jingle issue of SP->SP calls, fixed call window mute button and network stastics
+
+> (b66d32f0af)
+
+    Wired echo/noise/auto_gain controls to the call service
+
+> (aaaf2936f0)
+
+    Updated Jingle issue causing Siproxylin->Siproxylin call connection issues
+
+> (71dff8a7d4)
+
+    Fix call window stats and mute button
+    
+    After migration from Go Pion to C++ GStreamer we faced a limitation of
+    incomplete cnnectivity data exposed by API. As we are trying to keep
+    this app as privacy oriented we want to be able to show all call candidates
+    exposed during a call negotation.
+    
+    Issues fixed:
+    1. Mute button non-functional - added volume element to audio pipelines
+    2. Connection state stuck on "new" - moved ICE state retrieval before parse_stats
+    3. Incomplete peer IPs - now shows all received candidates (not just tested ones)
+    4. "Connected via" showing "--" - added candidate collection and matching system
+    
+    Implementation:
+    - Added CollectedCandidate struct to store all ICE candidates as they arrive
+    - Implemented parse_ice_candidate() to parse RFC 5245 candidate strings
+    - Modified on_ice_candidate() to collect local candidates during ICE gathering
+    - Modified add_remote_ice_candidate() to collect remote candidates as received
+    - Rewrote parse_stats() with two-pass approach:
+      * Pass 1: Collect stats data from webrtcbin (may be incomplete)
+      * Pass 2: Use our collected candidates for complete display
+    - Added fallback matching by IP when candidate ID mismatch occurs
+    - Added volume element to both answerer/offerer audio pipeline chains
+
+## [0.0.23 - Sober morning] - 2026-03-10
+
+> (dc2e6cc9b6)
+
+    Release: MAM for MUC fixes, nicer background colors in dark theme tables, improved reply handling
+
+> (bb74b960d0)
+
+    Quick update to use slixmpp XEP-0428
+
+> (a0ea417b30)
+
+    Add XEP-0428 replies and fix message error logging
+    
+    Implements XEP-0428 to properly handle reply fallback text using
+    character position markers instead of string parsing. This fixes
+    nested reply chains and enables future visual quote rendering.
+    
+    Also fixes spurious warning logs for auto-response failures.
+    
+    XEP-0428 Implementation:
+    - Add drunk_xmpp/xep_0428.py implementing XEP-0428 spec
+    - Store fallback markers in new database table (migration v16→v17)
+    - Extract markers from incoming stanzas (MUC, private, carbons)
+    - Format outgoing replies with proper nested quoting (>> not > >)
+    - Fix quote detection to work with any quote level (not just "> ")
+    - Use format_reply_with_fallback as single source of truth
+    - Fix format mismatch between slixmpp and custom formatter
+    
+    Message Error Logging Fix:
+    - Downgrade auto-response errors to DEBUG level
+    - slixmpp auto-acks chat state notifications (XEP-0184)
+    - When remote session ends, receipt fails with "User session not found"
+    - This is expected behavior - not a real error
+    - Errors without origin-id are auto-responses, not user messages
+    - Clean logs: only show warnings for actual message failures
+    
+    Key features:
+    - Nested quotes work correctly: ">> " instead of "> > "
+    - Marker positions accurate for fallback stripping
+    - Consistent formatting between GUI storage and XMPP sending
+    - Backward compatible with legacy clients
+    - Clean logs without spurious warnings
+    
+    Related: XEP-0461 (Message Replies), XEP-0184 (Delivery Receipts), XEP-0085 (Chat States)
+    Database: Schema version 16 → 17
+
+> (d4857c82f6)
+
+    Fixing MAM retrieval for MUC. Adding message IDs to logging of MAM message processing
+
+> (d789003aa6)
+
+    Added alternate background color property to QSS for darker themes to avoid snowy white contrast
+
+> (6b2837d7d2)
+
+    Update README.md
+
+> (8b3e0369d6)
+
+    Update README.md
+
+> (9ae0d06641)
+
+    Update README.md
+
 ## [0.0.22 - Acetaldehyde] - 2026-03-07
+
+> (84515e5af8)
+
+    Improved handling audio devices
 
 > (91a26e3b8d)
 

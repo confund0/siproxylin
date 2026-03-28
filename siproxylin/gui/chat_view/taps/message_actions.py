@@ -70,10 +70,11 @@ class MessageActionsManager:
             # The quoted text ends with "\n", so we split on that
             lines = self.input_field.toPlainText().split('\n')
 
-            # Find where quoted text ends (lines starting with "> ")
+            # Find where quoted text ends (lines starting with ">")
+            # Must check for ">" (any quote level), not just "> " (first level)
             reply_start_idx = 0
             for i, line in enumerate(lines):
-                if not line.startswith('> '):
+                if not line.startswith('>'):
                     reply_start_idx = i
                     break
 
@@ -142,8 +143,8 @@ class MessageActionsManager:
             # Emit signal for main window to handle file sending
             self.parent.send_file.emit(current_account_id, current_jid, self.parent.selected_file_path, encrypted)
 
-            # Clear file selection (but don't delete temp file yet - message_manager will clean it up after send)
-            self.parent._clear_file_selection(cleanup_temp=False)
+            # Clear file selection (file is already in permanent location, no cleanup needed)
+            self.parent._clear_file_selection()
 
             # Also clear text if any (though typically not used with file)
             self.input_field.clear()
@@ -241,8 +242,8 @@ class MessageActionsManager:
         # Clear input
         self.input_field.clear()
 
-        # Restore UI
-        self.input_field.setPlaceholderText("Type a message...")
+        # Restore UI with shield indicator
+        self.parent._update_input_placeholder()
         self.parent.send_button.setText("Send")
         # Encryption button in header is always enabled
 
@@ -265,8 +266,18 @@ class MessageActionsManager:
         self.replying_to_body = quoted_body
 
         # Format quoted text with "> " prefix (each line)
+        # For lines already starting with ">", add ">" (no space) to increase quote level
+        # For other lines, add "> " (with space) to start quoting
         quoted_lines = quoted_body.split('\n')
-        quoted_text = '\n'.join(f"> {line}" for line in quoted_lines)
+        formatted_lines = []
+        for line in quoted_lines:
+            if line.startswith('>'):
+                # Already quoted - add another level without space: ">> " not "> > "
+                formatted_lines.append(f">{line}")
+            else:
+                # Not quoted yet - add first level with space
+                formatted_lines.append(f"> {line}")
+        quoted_text = '\n'.join(formatted_lines)
 
         # Load into input field with cursor after the quoted text + newline
         self.input_field.setPlainText(f"{quoted_text}\n")
@@ -293,8 +304,8 @@ class MessageActionsManager:
         # Clear input
         self.input_field.clear()
 
-        # Restore UI
-        self.input_field.setPlaceholderText("Type a message...")
+        # Restore UI with shield indicator
+        self.parent._update_input_placeholder()
         self.parent.send_button.setText("Send")
 
         logger.debug("Cancelled reply mode")

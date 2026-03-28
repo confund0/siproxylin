@@ -6,6 +6,15 @@
 
 ## Breaking News!
 
+**2026-03-26 first version, containing an installer for Windows, has been released (v0.0.28)**
+
+It took an eternity to cherry-pick GStreamer and VCPKG dll files one by one to make the package as small as possible. Installer contains bundled libraries including base Python. During installation Python pulls a lot of dependencies, be aware of disk space. All libraries are installed inside of the app directory itself, so should not interfere with any system libs.
+
+**2026-03-13, at 13:13, we confirmed that Siproxylin installation makes successful calls on Windows**
+
+Same code base compiled with GStreamer, gRPC amd Glib works perfectly fine. It is still in the branch, being carefully prepared for a release. The build of C++ part with dependencies on 8 cores and 16GB of RAM takes approximately 4-5h; I will package it to avoid this really complex task.
+
+
 **Since v0.0.21 incoming calls from Conversations.im started working.**
 
 The change was switching from Go Pion to C++, however I believe that Pion could have worked either, it was more of a bug on my code side than Pion issues. Anyway, now the AppImage shrank as C++ binary is significanlty smaller, so I plan to stick with C++ and keep Go code just for historical reasons.
@@ -15,21 +24,20 @@ The change was switching from Go Pion to C++, however I believe that Pion could 
 ## Quick Start
 
 ```bash
-# Install go 1.24:
-# https://go.dev/dl/
 
 # Install GStreamer libraries:
-# gir1.2-gstreamer-1.0, gstreamer1.0-alsa, gstreamer1.0-gl, gstreamer1.0-gtk3, gstreamer1.0-libav, gstreamer1.0-nice, gstreamer1.0-pipewire, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly, gstreamer1.0-pulseaudio, gstreamer1.0-tools, gstreamer1.0-x, gstreamer1.0-x, libgstreamer-gl1.0-0, libgstreamer-plugins-bad1.0-0, libgstreamer-plugins-base1.0-0, libgstreamer-plugins-base1.0-0, libgstreamer-plugins-base1.0-dev, libgstreamer1.0-0, libgstreamer1.0-0, libgstreamer1.0-dev, libgtk-4-media-gstreamer, qtgstreamer-plugins-qt5
+# gir1.2-gstreamer-1.0, gstreamer1.0-alsa, gstreamer1.0-gl, gstreamer1.0-gtk3, gstreamer1.0-libav, gstreamer1.0-nice, gstreamer1.0-pipewire, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly, gstreamer1.0-pulseaudio, gstreamer1.0-tools, gstreamer1.0-x, gstreamer1.0-x, libgstreamer-gl1.0-0, libgstreamer-plugins-bad1.0-0, libgstreamer-plugins-base1.0-0, libgstreamer-plugins-base1.0-0, libgstreamer-plugins-base1.0-dev, libgstreamer1.0-0, libgstreamer1.0-0, libgstreamer1.0-dev, libgtk-4-media-gstreamer, qtgstreamer-plugins-qt5, libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev libgrpc++ 
 
 # Install Qt6:
 # libqt6*
 
 # Install hunspell if you want the spell checker
 
-# Build Go call service
+# Build C++ call service
 cd drunk_call_service
-./install-tools.sh 
-./build.sh
+make clean
+make
+make install
 cd -
 
 # Get Python dependencies
@@ -65,7 +73,7 @@ chmod +x Siproxylin-*.AppImage
 - ✅ **Themes** - Multiple color schemes (matters at night!)
 - ⏳ **Video calls** - In progress
 - ⏳ **Screen sharing** - Planned
-- ⏳ **Windows/macOS** - Linux-only for now
+- ⏳ **macOS** - Linux and Windows already working
 
 ---
 
@@ -192,6 +200,8 @@ For production, two command-line parameters are available:
 
 ## Proxies
 
+**Beware of potential leaks during the calls!** After migration from Go / Pion to C++ / GStreamer I noticed that proxies are not applied on all sockets. The work is ongoing an the issues will be fixed.
+
 Siproxylin supports **proxies per account**. Even the **registration wizard** asks if you'd like to use a proxy. SOCKS5 and HTTP are both supported, and if you register an account using a proxy, it's automatically saved with that account's settings.
 
 ### Use Cases
@@ -200,8 +210,8 @@ Siproxylin supports **proxies per account**. Even the **registration wizard** as
 2. **Sensitive group chats** - Joining a group about stuff like flat earth, alcoholism or BDSM for beginers? Install Tor and point Siproxylin to its SOCKS5 socket.
 3. **Corporate network** - Only way out is via Squid proxy? Route your account through the HTTP proxy and enjoy texts and calls.
 
-**Leak testing:** I tested with tcpdump and found **zero IP leaks** — it seems to be solid.
-That includes the calls, proxy settings are passed via gRPC and applied in the Go code.
+**Leak testing:** ~~I tested with tcpdump and found **zero IP leaks** — it seems to be solid~~
+~~That includes the calls, proxy settings are passed via gRPC and applied in the Go code~~
 
 ---
 
@@ -284,3 +294,7 @@ Found a bug? Have a feature request? [Open an issue](https://github.com/confund0
 - cryptography - BSD-3-Clause/Apache-2.0
 
 All dependencies are compatible with AGPL-3.0.
+
+## Contact
+
+As this is a side solo project there is no offcial support, however you can try your luck in a channel siproxylin@conference.conversations.im.

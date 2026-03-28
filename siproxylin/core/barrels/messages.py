@@ -465,7 +465,8 @@ class MessageBarrel:
                     stanza_id=stanza_id,
                     counterpart_resource=nick,  # MUC nickname
                     reply_to_id=metadata.reply_to_id,
-                    reply_to_jid=metadata.reply_to_jid
+                    reply_to_jid=metadata.reply_to_jid,
+                    fallbacks=metadata.fallbacks if metadata.fallbacks else None
                 )
 
                 if result == (None, None):
@@ -586,7 +587,8 @@ class MessageBarrel:
                     origin_id=origin_id,
                     stanza_id=stanza_id,
                     reply_to_id=metadata.reply_to_id,
-                    reply_to_jid=metadata.reply_to_jid
+                    reply_to_jid=metadata.reply_to_jid,
+                    fallbacks=metadata.fallbacks if metadata.fallbacks else None
                 )
 
                 if result == (None, None):
@@ -673,8 +675,11 @@ class MessageBarrel:
         """
         try:
             if not origin_id:
+                # No origin-id means this error is for an auto-generated response
+                # (like auto-ack receipts for chat state notifications)
+                # These failures are expected and not user-visible - log at debug level
                 if self.logger:
-                    self.logger.warning(f"Message error from {from_jid} but no origin-id to match: {error_text}")
+                    self.logger.debug(f"Message error from {from_jid} for auto-response (no origin-id): {error_text}")
                 return
 
             # Find message in database by origin_id

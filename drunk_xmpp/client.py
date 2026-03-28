@@ -82,6 +82,7 @@ from .file_uploads import FileUploadMixin
 from .message_extensions import MessageExtensionsMixin
 from .avatar import AvatarMixin
 from .external_services import ExternalServicesMixin
+from . import xep_0428
 
 
 @dataclass
@@ -140,6 +141,9 @@ class MessageMetadata:
     is_reply: bool = False
     reply_to_id: Optional[str] = None
     reply_to_jid: Optional[str] = None
+
+    # XEP-0428: Message Fallback Indication
+    fallbacks: List[Dict[str, Any]] = field(default_factory=list)  # List of {ns_uri, from_char, to_char}
 
     # XEP-0308: Last Message Correction
     is_correction: bool = False
@@ -1316,6 +1320,11 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         except (KeyError, TypeError):
             pass
 
+        # Extract fallback markers (XEP-0428)
+        fallback_markers = xep_0428.extract_fallbacks_from_stanza(msg)
+        if fallback_markers:
+            metadata.fallbacks = [fb.to_dict() for fb in fallback_markers]
+
         # Check for file attachment (XEP-0066)
         try:
             file_url = msg['oob']['url']
@@ -1466,6 +1475,11 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                     metadata.reply_to_jid = msg['reply']['to']
             except (KeyError, TypeError):
                 pass
+
+            # Extract fallback markers (XEP-0428)
+            fallback_markers = xep_0428.extract_fallbacks_from_stanza(msg)
+            if fallback_markers:
+                metadata.fallbacks = [fb.to_dict() for fb in fallback_markers]
 
             # Check for file attachment (XEP-0066)
             try:
@@ -1625,9 +1639,18 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         else:
             friendly_error = error_messages.get(error_condition, error_condition)
 
-        self.logger.warning(
-            f"Message error from {from_jid}: {error_type}/{error_condition} - {friendly_error}"
-        )
+        # Determine log level: errors without origin-id are usually auto-responses (receipts, etc.)
+        # These failures are expected when the other client changes resources/sessions
+        if origin_id:
+            # Real message failure - log as warning
+            self.logger.warning(
+                f"Message error from {from_jid}: {error_type}/{error_condition} - {friendly_error}"
+            )
+        else:
+            # Auto-response failure (receipt, marker, etc.) - log as debug
+            self.logger.debug(
+                f"Message error from {from_jid} (auto-response): {error_type}/{error_condition} - {friendly_error}"
+            )
 
         # Call callback if registered
         if self.on_message_error_callback:
@@ -1761,6 +1784,11 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                 metadata.reply_to_jid = actual_msg['reply']['to']
         except (KeyError, TypeError):
             pass
+
+        # Extract fallback markers (XEP-0428)
+        fallback_markers = xep_0428.extract_fallbacks_from_stanza(actual_msg)
+        if fallback_markers:
+            metadata.fallbacks = [fb.to_dict() for fb in fallback_markers]
 
         # Check for file attachment (XEP-0066)
         try:
@@ -1932,6 +1960,11 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                 metadata.reply_to_jid = actual_msg['reply']['to']
         except (KeyError, TypeError):
             pass
+
+        # Extract fallback markers (XEP-0428)
+        fallback_markers = xep_0428.extract_fallbacks_from_stanza(actual_msg)
+        if fallback_markers:
+            metadata.fallbacks = [fb.to_dict() for fb in fallback_markers]
 
         # Check for file attachment (XEP-0066)
         try:

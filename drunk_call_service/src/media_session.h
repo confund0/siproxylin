@@ -172,7 +172,9 @@ struct SessionConfig {
 
     // Audio processing (WebRTC DSP)
     bool echo_cancel;
+    int echo_suppression_level;        // 0=low, 1=moderate, 2=high
     bool noise_suppression;
+    int noise_suppression_level;       // 0=low, 1=moderate, 2=high, 3=very-high
     bool gain_control;
 
     // Proxy settings

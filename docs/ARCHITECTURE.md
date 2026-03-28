@@ -36,8 +36,8 @@ Siproxylin tries to follow a modular architecture that separates concerns betwee
                   │ Network I/O
                   ▼
 ┌─────────────────────────────────────────────────────┐
-│              Media Layer (Go + GStreamer)           │
-│  - Audio/Video Calls (Pion WebRTC)                  │
+│            Media Layer (C++ + GStreamer)            │
+│  - Audio/Video Calls (GStreamer WebRTC)             │
 │  - Media Processing (GStreamer pipelines)           │
 │  - gRPC bridge to Python                            │
 └─────────────────────────────────────────────────────┘
@@ -82,8 +82,8 @@ Siproxylin tries to follow a modular architecture that separates concerns betwee
 │   ├── file_uploads.py     # XEP-0363 uploads
 │   └── calls/              # XEP-0353 Jingle
 │
-├── drunk_call_hook/        # Python-Go bridge (gRPC)
-├── drunk_call_service/     # Go media service (Pion)
+├── drunk_call_hook/        # Python-C++ bridge (gRPC)
+├── drunk_call_service/     # C++ media service (GStreamer)
 └── main.py                 # Application entry point
 ```
 
@@ -115,7 +115,7 @@ Each "barrel" handles one feature domain:
 | **MessageBarrel** | Send/receive messages, receipts, markers | XEP-0184, 0333 |
 | **PresenceBarrel** | Roster, subscriptions, presence | RFC 6121 |
 | **OmemoBarrel** | E2E encryption device management | XEP-0384 |
-| **CallBarrel** | Audio/video calls via Go service | XEP-0353, 0166 |
+| **CallBarrel** | Audio/video calls via C++ media service | XEP-0353, 0166 |
 | **FileBarrel** | File uploads and attachments | XEP-0363, 0454 |
 | **AvatarBarrel** | Avatar fetching and caching | XEP-0084, 0153 |
 | **MucBarrel** | Multi-user chat rooms | XEP-0045, 0402 |
@@ -154,28 +154,31 @@ Each "barrel" handles one feature domain:
 
 ### Call Architecture
 
-Calls use a hybrid Python + Go architecture:
+Calls use a hybrid Python + C++ architecture:
 
 ```
-Python (Signaling)              Go (Media)
-┌─────────────────┐            ┌──────────────────┐
-│  CallBarrel     │            │  Pion WebRTC     │
-│  (Jingle)       │ ◄─ gRPC ─► │  (RTP/ICE/DTLS)  │
-│                 │            │                  │
-│  JingleAdapter  │            │  GStreamer       │
-│  (SDP ↔ Jingle) │            │  (audio I/O)     │
-└─────────────────┘            └──────────────────┘
+Python (Signaling)              C++ (Media)
+┌─────────────────┐            ┌──────────────────────┐
+│  CallBarrel     │            │  GStreamer WebRTC    │
+│  (Jingle)       │ ◄─ gRPC ─► │  (RTP/ICE/DTLS)      │
+│                 │            │                      │
+│  JingleAdapter  │            │  webrtcbin           │
+│  (SDP ↔ Jingle) │            │  (audio/video I/O)   │
+└─────────────────┘            └──────────────────────┘
 ```
 
-**Why Go?**:
-- Pion WebRTC provides battle-tested RTP/ICE/DTLS stack
-- GStreamer bindings more mature in Go
-- Better performance for real-time media
+**Why C++/GStreamer?**:
+- GStreamer webrtcbin provides battle-tested WebRTC stack
+- Better codec flexibility and device handling
+- Smaller binary size and better cross-platform support
+- Native GStreamer integration
 
-**Why not all Go?**:
+**Why hybrid architecture?**:
 - Python ecosystem for XMPP is richer (slixmpp, omemo)
 - Qt GUI bindings better in Python
 - Separation of concerns: signaling vs media
+
+See `docs/CALLS.md` for detailed call system architecture.
 
 ## Data Flow Patterns
 
@@ -226,7 +229,7 @@ Messages follow Dino-compatible state model:
 ### DTLS-SRTP (Calls)
 - Standard WebRTC encryption (always on)
 - Protects audio streams in transit
-- Pion handles automatically
+- GStreamer webrtcbin handles automatically
 
 ### OMEMO (Messages)
 - End-to-end encryption for messages and files
@@ -238,7 +241,7 @@ Messages follow Dino-compatible state model:
 
 - **Main Thread**: Qt event loop (GUI)
 - **XMPP Thread**: asyncio event loop (networking)
-- **Go Service**: Separate process (media)
+- **C++ Media Service**: Separate process (GStreamer webrtcbin)
 
 **Bridge**: Qt signals are thread-safe and cross thread boundaries
 
@@ -246,11 +249,16 @@ Messages follow Dino-compatible state model:
 
 ### Path Modes
 
-| Mode | Flag | Data Location |
-|------|------|---------------|
-| dev | (none) | `./sip_dev_paths/` |
-| xdg | `--xdg` | `~/.config/`, `~/.local/share/`, `~/.cache/` |
-| dot | `--dot-data-dir` | `~/.siproxylin/` (AppImage default) |
+| Mode | Flag | Linux | Windows |
+|------|------|-------|---------|
+| dev | (none) | `./sip_dev_paths/` | `.\sip_dev_paths\` |
+| xdg | `--xdg` | `~/.config/siproxylin/`<br>`~/.local/share/siproxylin/`<br>`~/.cache/siproxylin/` | N/A |
+| dot | `--dot-data-dir` | `~/.siproxylin/` | `%APPDATA%\Siproxylin\` (config)<br>`%LOCALAPPDATA%\Siproxylin\` (data/cache/logs) |
+
+**Defaults:**
+- Linux dev: `dev` mode
+- Linux AppImage: `dot` mode (launcher passes `--dot-data-dir`)
+- Windows installer: `dot` mode (launcher passes `--dot-data-dir`)
 
 ### Per-Account Settings
 
@@ -291,16 +299,17 @@ Messages follow Dino-compatible state model:
 - **PySide6**: Qt6 GUI framework (LGPL-3.0)
 - **slixmpp**: XMPP client library (MIT)
 - **python-omemo**: OMEMO encryption (LGPL-3.0)
-- **grpcio**: Python-Go bridge (Apache-2.0)
+- **grpcio**: Python-C++ bridge (Apache-2.0)
 
 ### System Libraries
-- **GStreamer 1.0**: Audio processing (LGPL-2.1+)
+- **GStreamer 1.0**: WebRTC and media processing (LGPL-2.1+)
 - **Qt6**: GUI toolkit (LGPL-3.0)
 - **hunspell**: Spell checking dictionaries (LGPL-2.1)
 
-### Go Dependencies
-- **Pion WebRTC**: Media stack (MIT)
-- **gRPC-Go**: RPC framework (Apache-2.0)
+### C++ Dependencies
+- **GStreamer webrtcbin**: WebRTC implementation (LGPL-2.1+)
+- **gRPC C++**: RPC framework (Apache-2.0)
+- **spdlog**: Logging library (MIT)
 
 All dependencies are AGPL-3.0 compatible.
 

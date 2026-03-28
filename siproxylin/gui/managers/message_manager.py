@@ -294,10 +294,6 @@ class MessageManager:
 
             logger.debug(f"✓ File '{filename}' sent to {jid} (id={file_transfer_id}, origin_id={message_id})")
 
-            # Clean up temp file if it was a pasted image
-            if file_path in self.chat_view.temp_pasted_files:
-                self.chat_view._cleanup_temp_file(file_path)
-
             # Refresh to update state indicator
             QTimer.singleShot(0, lambda: self.chat_view.refresh(send_markers=False))
 
@@ -312,10 +308,6 @@ class MessageManager:
                 UPDATE file_transfer SET state = ? WHERE id = ?
             """, (3, file_transfer_id))  # state=3 (failed)
             self.db.commit()
-
-            # Clean up temp file if it was a pasted image (even on failure)
-            if file_path in self.chat_view.temp_pasted_files:
-                self.chat_view._cleanup_temp_file(file_path)
 
             # Refresh to show error state
             QTimer.singleShot(0, lambda: self.chat_view.refresh(send_markers=False))
@@ -460,8 +452,16 @@ class MessageManager:
             cursor = self.db.execute("INSERT INTO jid (bare_jid) VALUES (?)", (jid,))
             jid_id = cursor.lastrowid
 
-        # Build full message body (quoted + reply) for display
-        full_body = f"> {fallback_body}\n{reply_body}" if fallback_body else reply_body
+        # Build full message body (quoted + reply) using shared formatting function
+        from drunk_xmpp import xep_0428
+
+        fallback_markers = None
+        if fallback_body:
+            # Use shared function (single source of truth for XEP-0461 formatting)
+            full_body, fallback_marker = xep_0428.format_reply_with_fallback(reply_body, fallback_body)
+            fallback_markers = [fallback_marker.to_dict()]
+        else:
+            full_body = reply_body
 
         # Store message in DB FIRST (optimistic - shows in UI immediately)
         timestamp = int(datetime.now().timestamp())
@@ -482,7 +482,8 @@ class MessageManager:
             is_carbon=0,  # User's own new message, not a carbon
             origin_id=temp_origin_id,  # Temporary ID until reflection comes back
             reply_to_id=reply_to_id,
-            reply_to_jid=jid
+            reply_to_jid=jid,
+            fallbacks=fallback_markers  # XEP-0428 markers for stripping quoted text
         )
 
         db_message_id, _ = result  # Should never be (None, None) for new messages

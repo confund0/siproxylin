@@ -273,7 +273,7 @@ class CallBarrel:
         try:
             settings_path = get_paths().config_dir / 'calls.json'
             if settings_path.exists():
-                with open(settings_path, 'r') as f:
+                with open(settings_path, 'r', encoding='utf-8') as f:
                     settings = json.load(f)
 
                     # Handle both dict (new format) and string (old format) for backward compatibility
