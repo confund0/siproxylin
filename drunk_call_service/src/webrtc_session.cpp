@@ -2342,6 +2342,100 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
             return;
         }
 
+        // ========================================================================
+        // DETERMINE MEDIA TYPE: Check pad caps to detect audio vs video
+        // ========================================================================
+        GstCaps *caps = gst_pad_get_current_caps(pad);
+        if (!caps) {
+            // Fallback to template caps if negotiation hasn't completed yet
+            caps = gst_pad_get_pad_template_caps(pad);
+        }
+
+        bool is_video = false;
+        if (caps) {
+            GstStructure *structure = gst_caps_get_structure(caps, 0);
+            const gchar *media = gst_structure_get_string(structure, "media");
+            if (media && g_strcmp0(media, "video") == 0) {
+                is_video = true;
+                LOG_INFO("[WebRTCSession] Detected INCOMING VIDEO stream");
+            } else {
+                LOG_INFO("[WebRTCSession] Detected INCOMING AUDIO stream");
+            }
+            gst_caps_unref(caps);
+        } else {
+            LOG_WARN("[WebRTCSession] Could not determine media type from caps, assuming audio");
+        }
+
+        // ========================================================================
+        // HANDLE VIDEO RECEIVE PIPELINE
+        // ========================================================================
+        if (is_video) {
+            // Create video receive chain: rtpvp8depay → vp8dec → videoconvert → autovideosink
+            GstElement *depay = gst_element_factory_make("rtpvp8depay", "video_depay");
+            GstElement *decoder = gst_element_factory_make("vp8dec", "video_decoder");
+            GstElement *convert = gst_element_factory_make("videoconvert", "video_convert");
+            GstElement *sink = gst_element_factory_make("autovideosink", "video_sink");
+
+            if (!depay || !decoder || !convert || !sink) {
+                LOG_ERROR("[WebRTCSession] Failed to create video sink elements");
+                if (depay) gst_object_unref(depay);
+                if (decoder) gst_object_unref(decoder);
+                if (convert) gst_object_unref(convert);
+                if (sink) gst_object_unref(sink);
+                return;
+            }
+
+            // Configure video sink for A/V sync
+            g_object_set(sink, "sync", TRUE, nullptr);  // Sync to clock for smooth playback
+
+            LOG_INFO("[WebRTCSession] ✓ Created video receive pipeline (using autovideosink)");
+
+            // Add elements to pipeline
+            gst_bin_add_many(GST_BIN(pipeline_), depay, decoder, convert, sink, nullptr);
+
+            // Link elements: depay → decoder → convert → sink
+            if (!gst_element_link_many(depay, decoder, convert, sink, nullptr)) {
+                LOG_ERROR("[WebRTCSession] Failed to link video sink chain");
+                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, sink, nullptr);
+                gst_object_unref(depay);
+                gst_object_unref(decoder);
+                gst_object_unref(convert);
+                gst_object_unref(sink);
+                return;
+            }
+
+            // Sync state with parent
+            gst_element_sync_state_with_parent(depay);
+            gst_element_sync_state_with_parent(decoder);
+            gst_element_sync_state_with_parent(convert);
+            gst_element_sync_state_with_parent(sink);
+
+            // Link webrtcbin pad to depay
+            GstPad *sink_pad = gst_element_get_static_pad(depay, "sink");
+            GstPadLinkReturn link_ret = gst_pad_link(pad, sink_pad);
+            gst_object_unref(sink_pad);
+
+            if (link_ret != GST_PAD_LINK_OK) {
+                LOG_ERROR("[WebRTCSession] Failed to link incoming video pad to depay: {}", static_cast<int>(link_ret));
+                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, sink, nullptr);
+                gst_element_set_state(depay, GST_STATE_NULL);
+                gst_object_unref(depay);
+                gst_element_set_state(decoder, GST_STATE_NULL);
+                gst_object_unref(decoder);
+                gst_element_set_state(convert, GST_STATE_NULL);
+                gst_object_unref(convert);
+                gst_element_set_state(sink, GST_STATE_NULL);
+                gst_object_unref(sink);
+                return;
+            }
+
+            LOG_INFO("[WebRTCSession] ✓ Incoming video stream linked successfully");
+            return;  // Done handling video
+        }
+
+        // ========================================================================
+        // HANDLE AUDIO RECEIVE PIPELINE (original code)
+        // ========================================================================
         // Create audio sink chain: rtpopusdepay → opusdec → queue → (echoprobe_) → autoaudiosink
         // Note: echoprobe_ was already created during pipeline initialization
         GstElement *depay = gst_element_factory_make("rtpopusdepay", "depay");
