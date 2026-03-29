@@ -251,12 +251,12 @@ class CallBarrel:
     # Call Functionality (DrunkCALL Integration)
     # =========================================================================
 
-    def _load_audio_settings(self) -> tuple[str, str, str, str, dict]:
+    def _load_audio_settings(self) -> tuple[str, str, str, str, str, str, dict]:
         """
-        Load audio device and processing settings from calls.json.
+        Load audio/video device and processing settings from calls.json.
 
         Returns:
-            Tuple of (microphone_device_id, microphone_display_name, speakers_device_id, speakers_display_name, audio_processing_settings).
+            Tuple of (microphone_device_id, microphone_display_name, speakers_device_id, speakers_display_name, camera_device_id, camera_display_name, audio_processing_settings).
             Empty strings = system default.
             audio_processing_settings is a dict with: echo_cancel, echo_suppression_level,
             noise_suppression, noise_suppression_level, gain_control
@@ -279,6 +279,7 @@ class CallBarrel:
                     # Handle both dict (new format) and string (old format) for backward compatibility
                     mic_setting = settings.get('microphone_device', '')
                     speakers_setting = settings.get('speakers_device', '')
+                    camera_setting = settings.get('camera_device', '')
 
                     if isinstance(mic_setting, dict):
                         mic_id = mic_setting.get('device_id', '')
@@ -294,18 +295,25 @@ class CallBarrel:
                         speakers_id = speakers_setting  # Old format (string)
                         speakers_display = ''
 
+                    if isinstance(camera_setting, dict):
+                        camera_id = camera_setting.get('device_id', '')
+                        camera_display = camera_setting.get('display_name', '')
+                    else:
+                        camera_id = camera_setting  # Old format (string)
+                        camera_display = ''
+
                     # Load audio processing settings if present
                     if 'audio_processing' in settings:
                         audio_processing.update(settings['audio_processing'])
 
                     if self.logger:
-                        self.logger.debug(f"Loaded audio settings: mic={mic_id or 'default'}, speakers={speakers_id or 'default'}, processing={audio_processing}")
-                    return mic_id, mic_display, speakers_id, speakers_display, audio_processing
+                        self.logger.debug(f"Loaded device settings: mic={mic_id or 'default'}, speakers={speakers_id or 'default'}, camera={camera_id or 'default'}, processing={audio_processing}")
+                    return mic_id, mic_display, speakers_id, speakers_display, camera_id, camera_display, audio_processing
         except Exception as e:
             if self.logger:
-                self.logger.error(f"Failed to load audio settings: {e}")
+                self.logger.error(f"Failed to load device settings: {e}")
 
-        return '', '', '', '', audio_processing  # Default to system defaults
+        return '', '', '', '', '', '', audio_processing  # Default to system defaults
 
     async def _setup_call_functionality(self):
         """
@@ -516,14 +524,15 @@ class CallBarrel:
                 if self.logger:
                     self.logger.warning(f"Failed to query XEP-0215: {e}, will use Jami TURN")
 
-            # Load audio device and processing settings
-            mic_device, mic_display, speakers_device, speakers_display, audio_proc = self._load_audio_settings()
+            # Load audio/video device and processing settings
+            mic_device, mic_display, speakers_device, speakers_display, camera_device, camera_display, audio_proc = self._load_audio_settings()
 
             # Create CallBridge session (WebRTC peer connection)
             result = await self.call_bridge.create_session(
-                peer_jid, session_id, mic_device, speakers_device,
+                peer_jid, session_id, mic_device, speakers_device, camera_device,
                 microphone_display_name=mic_display,
                 speakers_display_name=speakers_display,
+                camera_display_name=camera_display,
                 proxy_host=self.proxy_host or "",
                 proxy_port=self.proxy_port or 0,
                 proxy_username=self.proxy_username or "",
@@ -777,8 +786,8 @@ class CallBarrel:
                 if self.logger:
                     self.logger.warning(f"Failed to query XEP-0215: {e}, will use Jami TURN")
 
-            # Load audio device and processing settings
-            mic_device, mic_display, speakers_device, speakers_display, audio_proc = self._load_audio_settings()
+            # Load audio/video device and processing settings
+            mic_device, mic_display, speakers_device, speakers_display, camera_device, camera_display, audio_proc = self._load_audio_settings()
 
             # State transition: Resources (TURN credentials + devices) ready
             self.jingle_adapter.trickle_ice.set_incoming_state(session_id, IncomingCallState.RESOURCES_READY)
@@ -790,8 +799,10 @@ class CallBarrel:
                 session_id,
                 mic_device,
                 speakers_device,
+                camera_device,
                 microphone_display_name=mic_display,
                 speakers_display_name=speakers_display,
+                camera_display_name=camera_display,
                 proxy_host=self.proxy_host or "",
                 proxy_port=self.proxy_port or 0,
                 proxy_username=self.proxy_username or "",
@@ -974,14 +985,15 @@ class CallBarrel:
             if self.logger:
                 self.logger.warning(f"Failed to query XEP-0215: {e}, will use Jami TURN")
 
-        # Load audio device and processing settings
-        mic_device, mic_display, speakers_device, speakers_display, audio_proc = self._load_audio_settings()
+        # Load audio/video device and processing settings
+        mic_device, mic_display, speakers_device, speakers_display, camera_device, camera_display, audio_proc = self._load_audio_settings()
 
         # Create WebRTC session
         result = await self.call_bridge.create_session(
-            peer_jid, session_id, mic_device, speakers_device,
+            peer_jid, session_id, mic_device, speakers_device, camera_device,
             microphone_display_name=mic_display,
             speakers_display_name=speakers_display,
+            camera_display_name=camera_display,
             proxy_host=self.proxy_host or "",
             proxy_port=self.proxy_port or 0,
             proxy_username=self.proxy_username or "",

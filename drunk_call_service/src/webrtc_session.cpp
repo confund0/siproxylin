@@ -1293,6 +1293,14 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         }
         LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Using v4l2src (Linux V4L2 camera access)");
 
+        // Set camera device if specified (e.g., "/dev/video0")
+        if (!config_.camera_device.empty()) {
+            g_object_set(video_src_, "device", config_.camera_device.c_str(), nullptr);
+            LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Using camera device: {}", config_.camera_device);
+        } else {
+            LOG_INFO("[WebRTCSession] [ANSWERER] Using default camera device");
+        }
+
         // CRITICAL: Enable do-timestamp for proper timestamps
         g_object_set(video_src_, "do-timestamp", TRUE, nullptr);
         LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Set do-timestamp=TRUE on video source");
@@ -1606,6 +1614,14 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
             return false;
         }
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Using v4l2src (Linux V4L2 camera access)");
+
+        // Set camera device if specified (e.g., "/dev/video0")
+        if (!config_.camera_device.empty()) {
+            g_object_set(video_src_, "device", config_.camera_device.c_str(), nullptr);
+            LOG_INFO("[WebRTCSession] [OFFERER] ✓ Using camera device: {}", config_.camera_device);
+        } else {
+            LOG_INFO("[WebRTCSession] [OFFERER] Using default camera device");
+        }
 
         // CRITICAL: Enable do-timestamp for proper timestamps
         g_object_set(video_src_, "do-timestamp", TRUE, nullptr);

@@ -485,7 +485,9 @@ class CallBridge:
 
     async def create_session(self, peer_jid: str, session_id: str,
                              microphone_device: str = "", speakers_device: str = "",
+                             camera_device: str = "",
                              microphone_display_name: str = "", speakers_display_name: str = "",
+                             camera_display_name: str = "",
                              proxy_host: str = "", proxy_port: int = 0,
                              proxy_username: str = "", proxy_password: str = "",
                              proxy_type: str = "",
@@ -503,8 +505,10 @@ class CallBridge:
             session_id: Jingle session ID
             microphone_device: Microphone device ID (empty = default)
             speakers_device: Speakers device ID (empty = default)
+            camera_device: Camera device path (e.g., "/dev/video0", empty = default)
             microphone_display_name: Human-readable microphone name (for logging only)
             speakers_display_name: Human-readable speakers name (for logging only)
+            camera_display_name: Human-readable camera name (for logging only)
             proxy_host: Proxy hostname/IP (empty = no proxy)
             proxy_port: Proxy port (e.g., 9050 for Tor, 3128 for HTTP)
             proxy_username: Proxy authentication username (optional)
@@ -558,6 +562,13 @@ class CallBridge:
         else:
             speakers_label = "default"
 
+        if camera_display_name and camera_device:
+            camera_label = f"{camera_display_name} ({camera_device})"
+        elif camera_device:
+            camera_label = camera_device
+        else:
+            camera_label = "default"
+
         # Log proxy settings (mask password for security)
         proxy_info = f"no proxy"
         if proxy_host and proxy_type:
@@ -572,13 +583,15 @@ class CallBridge:
             if turn_username:
                 turn_info += f" (user: {turn_username})"
 
-        self.logger.info(f"Creating session {session_id} with {peer_jid}, mic={mic_label}, speakers={speakers_label}, {proxy_info}, TURN={turn_info}")
+        video_info = f", camera={camera_label}" if enable_video else ""
+        self.logger.info(f"Creating session {session_id} with {peer_jid}, mic={mic_label}, speakers={speakers_label}{video_info}, {proxy_info}, TURN={turn_info}")
 
         request = call_pb2.CreateSessionRequest(
             session_id=session_id,
             peer_jid=peer_jid,
             microphone_device=microphone_device,
             speakers_device=speakers_device,
+            camera_device=camera_device,
             proxy_host=proxy_host,
             proxy_port=proxy_port,
             proxy_username=proxy_username,
@@ -769,6 +782,35 @@ class CallBridge:
             return devices
         except Exception as e:
             self.logger.error(f"Failed to list audio devices: {e}")
+            return []
+
+    async def list_video_devices(self) -> list:
+        """
+        List available video devices (cameras).
+
+        Returns:
+            List of dicts with keys: device (device path), name (friendly name), driver (driver name)
+        """
+        if not self._stub:
+            self.logger.error("gRPC stub not initialized")
+            return []
+
+        try:
+            request = call_pb2.Empty()
+            response = await self._stub.ListVideoDevices(request)
+
+            devices = []
+            for device in response.devices:
+                devices.append({
+                    'device': device.device,
+                    'name': device.name,
+                    'driver': device.driver
+                })
+
+            self.logger.info(f"Listed {len(devices)} video devices")
+            return devices
+        except Exception as e:
+            self.logger.error(f"Failed to list video devices: {e}")
             return []
 
     async def set_mute(self, session_id: str, muted: bool):

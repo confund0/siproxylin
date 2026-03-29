@@ -90,6 +90,11 @@ class CallServiceStub(object):
                 request_serializer=call__pb2.Empty.SerializeToString,
                 response_deserializer=call__pb2.ListAudioDevicesResponse.FromString,
                 _registered_method=True)
+        self.ListVideoDevices = channel.unary_unary(
+                '/call.CallService/ListVideoDevices',
+                request_serializer=call__pb2.Empty.SerializeToString,
+                response_deserializer=call__pb2.ListVideoDevicesResponse.FromString,
+                _registered_method=True)
         self.SetMute = channel.unary_unary(
                 '/call.CallService/SetMute',
                 request_serializer=call__pb2.SetMuteRequest.SerializeToString,
@@ -178,6 +183,13 @@ class CallServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListVideoDevices(self, request, context):
+        """List available video devices
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def SetMute(self, request, context):
         """Set microphone mute state for a session
         """
@@ -242,6 +254,11 @@ def add_CallServiceServicer_to_server(servicer, server):
                     servicer.ListAudioDevices,
                     request_deserializer=call__pb2.Empty.FromString,
                     response_serializer=call__pb2.ListAudioDevicesResponse.SerializeToString,
+            ),
+            'ListVideoDevices': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListVideoDevices,
+                    request_deserializer=call__pb2.Empty.FromString,
+                    response_serializer=call__pb2.ListVideoDevicesResponse.SerializeToString,
             ),
             'SetMute': grpc.unary_unary_rpc_method_handler(
                     servicer.SetMute,
@@ -547,6 +564,33 @@ class CallService(object):
             '/call.CallService/ListAudioDevices',
             call__pb2.Empty.SerializeToString,
             call__pb2.ListAudioDevicesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListVideoDevices(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/call.CallService/ListVideoDevices',
+            call__pb2.Empty.SerializeToString,
+            call__pb2.ListVideoDevicesResponse.FromString,
             options,
             channel_credentials,
             insecure,

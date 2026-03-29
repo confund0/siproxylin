@@ -39,6 +39,9 @@ service CallService {
   // List available audio devices
   rpc ListAudioDevices(Empty) returns (ListAudioDevicesResponse);
 
+  // List available video devices
+  rpc ListVideoDevices(Empty) returns (ListVideoDevicesResponse);
+
   // Set microphone mute state for a session
   rpc SetMute(SetMuteRequest) returns (Empty);
 }
@@ -50,6 +53,7 @@ message CreateSessionRequest {
   string peer_jid = 2;
   string microphone_device = 3;  // Device name (e.g., "alsa_input.pci-0000_05_00.6.analog-stereo"), empty = default
   string speakers_device = 4;    // Device name (e.g., "alsa_output.pci-0000_05_00.6.analog-stereo"), empty = default
+  string camera_device = 22;     // Camera device path (e.g., "/dev/video0"), empty = default
 
   // Proxy configuration (for routing TURN connections through SOCKS5/HTTP proxy)
   string proxy_host = 5;         // Proxy hostname/IP, empty = no proxy
@@ -188,4 +192,16 @@ message ListAudioDevicesResponse {
 message SetMuteRequest {
   string session_id = 1;
   bool muted = 2;  // true = mute microphone, false = unmute
+}
+
+// Video device enumeration messages
+
+message VideoDevice {
+  string device = 1;       // Device path (e.g., "/dev/video0")
+  string name = 2;         // User-friendly name (e.g., "HD Pro Webcam C920")
+  string driver = 3;       // Driver name (e.g., "uvcvideo")
+}
+
+message ListVideoDevicesResponse {
+  repeated VideoDevice devices = 1;
 }

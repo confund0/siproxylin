@@ -87,6 +87,12 @@ public:
         const call::Empty* request,
         call::ListAudioDevicesResponse* response) override;
 
+    // Video device management
+    grpc::Status ListVideoDevices(
+        grpc::ServerContext* context,
+        const call::Empty* request,
+        call::ListVideoDevicesResponse* response) override;
+
     grpc::Status SetMute(
         grpc::ServerContext* context,
         const call::SetMuteRequest* request,
