@@ -2,7 +2,7 @@
 
 **Last Updated**: 2026-03-29
 **Branch**: `video`
-**Status**: Mostly Working - One Issue Remains
+**Status**: ✅ **ALL WORKING** - Ready for Windows Testing
 
 ---
 
@@ -15,25 +15,31 @@
 | SP → Conversations | Mobile | ✅ Works perfectly both ways |
 | SP → Dino | Desktop | ✅ Works both ways (slow window start ~15s) |
 | Dino → SP | Desktop | ✅ Works both ways (slow window start ~15s) |
-| Conversations → SP | Mobile | ⚠️ **Video one-way only** (phone→SP works, SP→phone missing) |
+| Conversations → SP | Mobile | ✅ **FIXED** - Works both ways now! |
 
 **Configuration**:
 - OFFERER: bundle-policy=BALANCED (adapts to peer)
 - ANSWERER: bundle-policy=MAX_COMPAT (matches peer's offer)
+- Dynamic pad request order (detects m-line order from SDP)
+- Dynamic video payload type (parsed from SDP offer)
 
-### Known Issues
+### Features ✅
 
-**1. Conversations → SP: One-Way Video** 🐛
-- **Symptom**: Incoming from Conversations shows video one-way
-- **Status**: Phone sees our video ✗, we see phone's video ✓
-- **Likely Cause**: Transceiver direction or video send pipeline issue in answerer mode with bundled offers
-- **Not Bundle-Policy**: Source research shows Conversations uses libwebrtc default (BALANCED), Dino uses GStreamer default (NONE)
+**Device Selection** (2026-03-29)
+- Audio: Microphone and speaker selection in Settings → Calls
+- Video: Camera selection in Settings → Video
+- Cross-platform enumeration (V4L2/KsVideo/AVFoundation via GStreamer)
+- Settings saved in `~/.config/siproxylin/calls.json`
+- **Future**: Hot-swap devices during active call (post-release)
 
-**2. Dino: Incoming Video Window Delay** ⏱️
+### Known Issues (Minor)
+
+**1. Dino: Incoming Video Window Delay** ⏱️
 - **Symptom**: GStreamer autovideosink window takes 15-18 seconds to appear (Wayland/Sway)
 - **Impact**: Video works fine once window appears
 - **Cause**: GStreamer PAUSED→PLAYING state transition slow on compositor
 - **Workaround**: None - wait for window
+- **Priority**: Low (cosmetic, does not affect functionality)
 
 ---
 
@@ -315,6 +321,98 @@ webrtcbin → rtpvp8depay → webmmux(streamable) → udpsink(127.0.0.1:port)
 - ✅ Let webrtcbin assign mid values automatically
 - ✅ Use correct bundle-policy for your role
 - ✅ Trust webrtcbin's transceiver mapping
+
+### 7. Transceiver Order Mismatch (Session 6, FIXED ✅)
+
+**Problem**: Hardcoded pad request order assumed audio-first
+- **Code**: Always requested audio pad first (sink_0), video pad second (sink_1)
+- **Assumption**: All peers send audio=m-line 0, video=m-line 1
+
+**But Conversations sends**:
+- m-line 0 = VIDEO (VP8)
+- m-line 1 = AUDIO (OPUS)
+
+**Result**: Transceiver mismatch
+- Our audio transceiver (sink_0) → Conversations' video m-line (0) ❌
+- Our video transceiver (sink_1) → Conversations' audio m-line (1) ❌
+- Phone received audio on video stream, video on audio stream
+- Caused one-way video (phone couldn't display our video)
+
+**Why Dino Worked**: Dino sends audio=m-line 0, video=m-line 1 (matched old hardcoded order)
+
+**The Fix** (Commit: Current):
+1. Parse m-line order from SDP offer in `set_remote_description()`
+2. Set `video_first_mline_` flag based on which media type is at m-line 0
+3. Request pads in same order as SDP m-lines in `on_offer_set_for_answer()`:
+   - If video-first: Request VIDEO pad first, AUDIO pad second
+   - If audio-first: Request AUDIO pad first, VIDEO pad second
+4. Assign to correct variables based on media type, not request order
+
+**Key Insight**: webrtcbin assigns transceivers sequentially
+- First `request_pad_simple("sink_%u")` → sink_0 → m-line 0
+- Second `request_pad_simple("sink_%u")` → sink_1 → m-line 1
+- **MUST request in same order as SDP m-lines!**
+
+**Files Modified**:
+- `drunk_call_service/src/webrtc_session.h` (added `video_first_mline_`)
+- `drunk_call_service/src/webrtc_session.cpp` (parse + dynamic pad ordering)
+
+**Key Learning**: Never assume m-line order. Parse from SDP and adapt.
+
+**DO NOT**:
+- ❌ Hardcode pad request order
+- ❌ Assume audio is always m-line 0
+- ❌ Ignore SDP m-line ordering
+
+**DO**:
+- ✅ Parse m-line order from SDP offer
+- ✅ Request pads in same order as m-lines
+- ✅ Support both audio-first (Dino) and video-first (Conversations) peers
+
+### 8. Video Payload Type Mismatch (Session 6, FIXED ✅)
+
+**Problem**: Hardcoded `payload=98` in answerer video pipeline
+- **Code**: `setup_answerer_video_pipeline()` line 1321: `int payload = 98;`
+- **Dino's offer**: Uses PT=98 for VP8 ✓
+- **Conversations' offer**: Uses PT=96 for VP8 ✗
+
+**Result**: PAYLOAD MISMATCH with Conversations
+- Our SDP answer advertised: `m=video 9 UDP/TLS/RTP/SAVPF 96` (from codec-preferences)
+- But we actually sent: RTP packets with `payload=98`
+- Phone received PT=98 when expecting PT=96 per SDP
+- Phone couldn't decode → **BLACK SCREEN**
+
+**Why Offerer Mode Worked**: Different code path in `setup_offerer_video_pipeline()` doesn't have this bug
+
+**Key Clue**: "if Siproxylin calls Conversations - then video works fine in both directions" (offerer mode)
+- This revealed answerer-mode specific bug
+
+**The Fix** (Commit: Current):
+1. Added `int negotiated_video_payload_` to `webrtc_session.h`
+2. Modified `parse_video_codec_from_offer()` to return payload via output parameter
+3. Store parsed payload in `set_remote_description()`
+4. Use negotiated payload in `setup_answerer_video_pipeline()` instead of hardcoded 98
+
+**Result**:
+- Conversations incoming: Now use PT=96 (parsed from offer) ✓
+- Dino incoming: Continue using PT=98 (parsed from offer) ✓
+- SDP answer and actual RTP transmission match!
+
+**Files Modified**:
+- `drunk_call_service/src/webrtc_session.h` (added `negotiated_video_payload_`)
+- `drunk_call_service/src/webrtc_session.cpp` (parse + store + use payload)
+
+**Key Learning**: Never hardcode RTP payload types. Always negotiate from SDP.
+
+**DO NOT**:
+- ❌ Hardcode RTP payload types
+- ❌ Assume all peers use same payload for same codec
+- ❌ Ignore payload-type from SDP offer
+
+**DO**:
+- ✅ Parse payload type from SDP offer
+- ✅ Use negotiated payload in RTP capsfilter
+- ✅ Verify SDP answer matches actual pipeline config
 
 ---
 
