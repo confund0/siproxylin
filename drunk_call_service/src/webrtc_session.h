@@ -76,10 +76,12 @@ private:
     GstCaps* offer_codec_caps_;  // Audio codec caps parsed from remote offer (answerer only)
     GstPad* negotiated_video_pad_;  // Video pad used for SDP negotiation (answerer only)
     GstCaps* offer_video_codec_caps_;  // Video codec caps parsed from remote offer (answerer only)
+    bool video_first_mline_;  // true if video is m-line 0 (Conversations), false if audio is m-line 0 (Dino)
 
     // Negotiated codec parameters from answer SDP (used to configure audio pipeline)
     int negotiated_payload_;   // RTP payload type from answer (e.g., 111)
     int negotiated_channels_;  // Audio channels from answer (e.g., 2 for stereo)
+    int negotiated_video_payload_;  // Video RTP payload type from offer (e.g., 96 or 98)
 
     // Media mid mapping: mline index → mid value (from SDP a=mid:)
     // Extracted from our offer SDP to populate sdpMid in ICE candidates
