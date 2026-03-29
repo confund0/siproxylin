@@ -425,6 +425,10 @@ void WebRTCSession::create_offer(SDPCallback callback) {
 
         LOG_INFO("[WebRTCSession] Creating offer...");
 
+        // Set bundle-policy for OFFERER: BALANCED adapts to peer's preference
+        g_object_set(webrtc_, "bundle-policy", GST_WEBRTC_BUNDLE_POLICY_BALANCED, nullptr);
+        LOG_INFO("[WebRTCSession] OFFERER: Set bundle-policy to BALANCED");
+
         // CRITICAL: For offerers, create audio source pipeline BEFORE create-offer
         // request_pad_simple() will automatically create the transceiver
         LOG_INFO("[WebRTCSession] Offerer mode: Creating audio source pipeline...");
@@ -451,10 +455,6 @@ void WebRTCSession::create_offer(SDPCallback callback) {
             GstWebRTCRTPTransceiver *trans = GST_WEBRTC_RTP_TRANSCEIVER(g_value_get_object(&val));
 
             if (trans) {
-                // Set explicit mid for audio transceiver to ensure proper transport stream mapping
-                g_object_set(trans, "mid", "audio0", nullptr);
-                LOG_INFO("[WebRTCSession] ✓ Set audio transceiver mid=audio0");
-
                 // Create codec-preferences: OPUS only, payload=111, stereo
                 GstCaps *codec_prefs = gst_caps_new_simple("application/x-rtp",
                     "media", G_TYPE_STRING, "audio",
@@ -506,10 +506,6 @@ void WebRTCSession::create_offer(SDPCallback callback) {
                 GstWebRTCRTPTransceiver *trans = GST_WEBRTC_RTP_TRANSCEIVER(g_value_get_object(&val));
 
                 if (trans) {
-                    // Set explicit mid for video transceiver to ensure proper transport stream mapping
-                    g_object_set(trans, "mid", "video1", nullptr);
-                    LOG_INFO("[WebRTCSession] ✓ Set video transceiver mid=video1");
-
                     // Create codec-preferences: VP8 only, payload=96
                     GstCaps *codec_prefs = gst_caps_new_simple("application/x-rtp",
                         "media", G_TYPE_STRING, "video",
@@ -561,6 +557,10 @@ void WebRTCSession::create_answer(const SDPMessage &remote_offer, SDPCallback ca
         sdp_callback_ = callback;
 
         LOG_INFO("[WebRTCSession] Creating answer... (set is_outgoing_=false)");
+
+        // Set bundle-policy for ANSWERER: MAX_COMPAT to handle Dino's separate transports
+        g_object_set(webrtc_, "bundle-policy", GST_WEBRTC_BUNDLE_POLICY_MAX_COMPAT, nullptr);
+        LOG_INFO("[WebRTCSession] ANSWERER: Set bundle-policy to MAX_COMPAT");
 
         // Follow official GStreamer pattern: Let webrtcbin auto-create transceiver
         // from the remote offer. No manual transceiver manipulation needed.
@@ -1565,18 +1565,9 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
     try {
         LOG_DEBUG("[WebRTCSession] [OFFERER] Creating video source pipeline...");
 
-        // CRITICAL: Pause pipeline before adding elements to avoid FLUSHING state
-        GstState current_state, pending_state;
-        gst_element_get_state(pipeline_, &current_state, &pending_state, 0);
-        LOG_INFO("[WebRTCSession] [OFFERER] Pipeline state before pause: current={}, pending={}",
-                 gst_element_state_get_name(current_state),
-                 gst_element_state_get_name(pending_state));
-
-        LOG_DEBUG("[WebRTCSession] [OFFERER] Pausing pipeline to add video elements...");
-        GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PAUSED);
-        LOG_DEBUG("[WebRTCSession] [OFFERER] Pause state change result: {}", static_cast<int>(ret));
-        gst_element_get_state(pipeline_, &current_state, nullptr, GST_CLOCK_TIME_NONE);
-        LOG_INFO("[WebRTCSession] [OFFERER] Pipeline state after pause: {}", gst_element_state_get_name(current_state));
+        // Add video elements to running pipeline without pausing
+        // Use gst_element_sync_state_with_parent() to let GStreamer manage state transitions
+        LOG_INFO("[WebRTCSession] [OFFERER] Adding video elements to running pipeline...");
 
         // Create video source - use v4l2src on Linux (works reliably with /dev/video*)
         // TODO: Use platform detection for Windows (ksvideosrc) and macOS (avfvideosrc)
@@ -1630,8 +1621,9 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         gst_caps_unref(rtp_caps);
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Set RTP caps: application/x-rtp,media=video,encoding-name=VP8,payload=96");
 
-        // Add all elements to pipeline
+        // Add all elements to pipeline (they will be in PAUSED state, not PLAYING yet)
         gst_bin_add_many(GST_BIN(pipeline_), video_src_, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr);
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Added video elements to pipeline in PAUSED state");
 
         // Link video chain (src→convert→queue→encoder→payloader→queue→capsfilter)
         if (!gst_element_link_many(video_src_, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr)) {
@@ -1680,12 +1672,16 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         gst_object_unref(caps_src);
         gst_object_unref(webrtc_sink);
 
-        // Resume pipeline to PLAYING
-        LOG_DEBUG("[WebRTCSession] [OFFERER] Resuming pipeline to PLAYING...");
-        ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
-        LOG_DEBUG("[WebRTCSession] [OFFERER] Resume state change result: {}", static_cast<int>(ret));
-        gst_element_get_state(pipeline_, &current_state, nullptr, GST_CLOCK_TIME_NONE);
-        LOG_INFO("[WebRTCSession] [OFFERER] Pipeline state after resume: {}", gst_element_state_get_name(current_state));
+        // NOW sync all elements to PLAYING state - AFTER all linking is complete
+        // This ensures v4l2src only starts capturing when pipeline is fully ready
+        gst_element_sync_state_with_parent(video_src_);
+        gst_element_sync_state_with_parent(convert);
+        gst_element_sync_state_with_parent(queue1);
+        gst_element_sync_state_with_parent(encoder);
+        gst_element_sync_state_with_parent(payloader);
+        gst_element_sync_state_with_parent(queue2);
+        gst_element_sync_state_with_parent(capsfilter);
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Synced video elements to PLAYING (after all linking complete)");
 
         LOG_INFO("[WebRTCSession] [OFFERER] Video source pipeline created and linked");
         return true;
@@ -1704,9 +1700,10 @@ bool WebRTCSession::configure_webrtcbin() {
     try {
         LOG_DEBUG("[WebRTCSession] Configuring webrtcbin...");
 
-        // Set bundle policy to max-compat (separate ICE transport per media stream)
-        // Dino sends separate ICE credentials per media (audio + video), so we must match
-        g_object_set(webrtc_, "bundle-policy", GST_WEBRTC_BUNDLE_POLICY_MAX_COMPAT, nullptr);
+        // Bundle-policy is set dynamically based on role:
+        // - OFFERER (create_offer): Uses BALANCED to adapt to peer
+        // - ANSWERER (create_answer): Uses MAX_COMPAT to match Dino's separate transports
+        LOG_INFO("[WebRTCSession] Bundle-policy will be set based on call direction");
 
         // Set ICE transport policy
         if (config_.relay_only) {
