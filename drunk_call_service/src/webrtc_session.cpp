@@ -280,6 +280,8 @@ WebRTCSession::WebRTCSession()
     , echoprobe_(nullptr)
     , video_src_(nullptr)
     , video_sink_(nullptr)
+    , video_tee_(nullptr)
+    , compositor_(nullptr)
     , is_muted_(false)
     , is_outgoing_(false)
     , negotiated_pad_(nullptr)
@@ -1316,7 +1318,20 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         g_object_set(video_src_, "do-timestamp", TRUE, nullptr);
         LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Set do-timestamp=TRUE on video source");
 
+        // Create tee to split camera feed (one branch for encoding, one for self-view PiP)
+        video_tee_ = gst_element_factory_make("tee", "video_tee");
+        if (!video_tee_) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to create tee element");
+            return false;
+        }
+
+        // CRITICAL: Set allow-not-linked=TRUE to allow encoder branch to work
+        // even if self-view branch isn't connected yet (compositor created on incoming video)
+        g_object_set(video_tee_, "allow-not-linked", TRUE, nullptr);
+        LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Created tee for camera feed splitting (PiP self-view, allow-not-linked=TRUE)");
+
         // Create rest of pipeline elements
+        GstElement *tee_queue = gst_element_factory_make("queue", "tee_queue_encode");
         GstElement *convert = gst_element_factory_make("videoconvert", "videoconvert");
         GstElement *queue1 = gst_element_factory_make("queue", "queue_pre_encode");
         GstElement *encoder = gst_element_factory_make("vp8enc", "vp8enc");
@@ -1324,7 +1339,7 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         GstElement *queue2 = gst_element_factory_make("queue", "queue_post_pay");
         GstElement *capsfilter = gst_element_factory_make("capsfilter", "rtp_video_caps");
 
-        if (!convert || !queue1 || !encoder || !payloader || !queue2 || !capsfilter) {
+        if (!tee_queue || !convert || !queue1 || !encoder || !payloader || !queue2 || !capsfilter) {
             LOG_ERROR("[WebRTCSession] Failed to create video elements");
             return false;
         }
@@ -1364,14 +1379,39 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         LOG_INFO("[WebRTCSession] ✓ Set RTP caps: application/x-rtp,media=video,encoding-name=VP8,payload={}", payload);
 
         // Add all elements to pipeline
-        gst_bin_add_many(GST_BIN(pipeline_), video_src_, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr);
+        gst_bin_add_many(GST_BIN(pipeline_), video_src_, video_tee_, tee_queue, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr);
 
-        // Link video chain (src→convert→queue→encoder→payloader→queue→capsfilter)
-        if (!gst_element_link_many(video_src_, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr)) {
-            LOG_ERROR("[WebRTCSession] Failed to link video chain");
+        // Link camera source to tee
+        if (!gst_element_link(video_src_, video_tee_)) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to link video_src → tee");
             return false;
         }
-        LOG_INFO("[WebRTCSession] ✓ Linked video chain: src→videoconvert→queue→vp8enc→rtpvp8pay→queue→capsfilter");
+        LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Linked camera source to tee");
+
+        // Request tee source pad for encoder branch
+        GstPad *tee_encode_pad = gst_element_request_pad_simple(video_tee_, "src_%u");
+        if (!tee_encode_pad) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to request tee source pad");
+            return false;
+        }
+        LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Requested tee source pad for encoder branch");
+
+        // Link tee encoder branch: tee→queue→convert→queue→encoder→payloader→queue→capsfilter
+        GstPad *tee_queue_sink = gst_element_get_static_pad(tee_queue, "sink");
+        if (gst_pad_link(tee_encode_pad, tee_queue_sink) != GST_PAD_LINK_OK) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to link tee pad to queue");
+            gst_object_unref(tee_encode_pad);
+            gst_object_unref(tee_queue_sink);
+            return false;
+        }
+        gst_object_unref(tee_encode_pad);
+        gst_object_unref(tee_queue_sink);
+
+        if (!gst_element_link_many(tee_queue, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr)) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to link video encoder chain");
+            return false;
+        }
+        LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Linked encoder chain: tee→queue→convert→queue→vp8enc→rtpvp8pay→queue→capsfilter");
 
         // Get webrtcbin sink pad - ANSWERER MODE
         // Reuse the pad we created during set-remote-description
@@ -1394,6 +1434,19 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         LOG_INFO("[WebRTCSession] ✓ Linked video capsfilter to negotiated webrtcbin pad");
 
         gst_object_unref(caps_src);
+
+        // NOW sync all elements to PLAYING state - AFTER all linking is complete
+        // This ensures v4l2src only starts capturing when pipeline is fully ready
+        gst_element_sync_state_with_parent(video_src_);
+        gst_element_sync_state_with_parent(video_tee_);
+        gst_element_sync_state_with_parent(tee_queue);
+        gst_element_sync_state_with_parent(convert);
+        gst_element_sync_state_with_parent(queue1);
+        gst_element_sync_state_with_parent(encoder);
+        gst_element_sync_state_with_parent(payloader);
+        gst_element_sync_state_with_parent(queue2);
+        gst_element_sync_state_with_parent(capsfilter);
+        LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Synced video elements (incl. tee) to PLAYING (after all linking complete)");
 
         // Resume pipeline to PLAYING
         LOG_DEBUG("[WebRTCSession] Resuming pipeline to PLAYING...");
@@ -1638,7 +1691,20 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         g_object_set(video_src_, "do-timestamp", TRUE, nullptr);
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Set do-timestamp=TRUE on video source");
 
+        // Create tee to split camera feed (one branch for encoding, one for self-view PiP)
+        video_tee_ = gst_element_factory_make("tee", "video_tee");
+        if (!video_tee_) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create tee element");
+            return false;
+        }
+
+        // CRITICAL: Set allow-not-linked=TRUE to allow encoder branch to work
+        // even if self-view branch isn't connected yet (compositor created on incoming video)
+        g_object_set(video_tee_, "allow-not-linked", TRUE, nullptr);
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Created tee for camera feed splitting (PiP self-view, allow-not-linked=TRUE)");
+
         // Create rest of pipeline elements
+        GstElement *tee_queue = gst_element_factory_make("queue", "tee_queue_encode");
         GstElement *convert = gst_element_factory_make("videoconvert", "videoconvert");
         GstElement *queue1 = gst_element_factory_make("queue", "queue_pre_encode");
         GstElement *encoder = gst_element_factory_make("vp8enc", "vp8enc");
@@ -1646,7 +1712,7 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         GstElement *queue2 = gst_element_factory_make("queue", "queue_post_pay");
         GstElement *capsfilter = gst_element_factory_make("capsfilter", "rtp_video_caps");
 
-        if (!convert || !queue1 || !encoder || !payloader || !queue2 || !capsfilter) {
+        if (!tee_queue || !convert || !queue1 || !encoder || !payloader || !queue2 || !capsfilter) {
             LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create video elements");
             return false;
         }
@@ -1678,15 +1744,40 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Set RTP caps: application/x-rtp,media=video,encoding-name=VP8,payload=96");
 
         // Add all elements to pipeline (they will be in PAUSED state, not PLAYING yet)
-        gst_bin_add_many(GST_BIN(pipeline_), video_src_, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr);
+        gst_bin_add_many(GST_BIN(pipeline_), video_src_, video_tee_, tee_queue, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr);
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Added video elements to pipeline in PAUSED state");
 
-        // Link video chain (src→convert→queue→encoder→payloader→queue→capsfilter)
-        if (!gst_element_link_many(video_src_, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr)) {
-            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link video chain");
+        // Link camera source to tee
+        if (!gst_element_link(video_src_, video_tee_)) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link video_src → tee");
             return false;
         }
-        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Linked video chain: src→videoconvert→queue→vp8enc→rtpvp8pay→queue→capsfilter");
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Linked camera source to tee");
+
+        // Request tee source pad for encoder branch
+        GstPad *tee_encode_pad = gst_element_request_pad_simple(video_tee_, "src_%u");
+        if (!tee_encode_pad) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to request tee source pad");
+            return false;
+        }
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Requested tee source pad for encoder branch");
+
+        // Link tee encoder branch: tee→queue→convert→queue→encoder→payloader→queue→capsfilter
+        GstPad *tee_queue_sink = gst_element_get_static_pad(tee_queue, "sink");
+        if (gst_pad_link(tee_encode_pad, tee_queue_sink) != GST_PAD_LINK_OK) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link tee pad to queue");
+            gst_object_unref(tee_encode_pad);
+            gst_object_unref(tee_queue_sink);
+            return false;
+        }
+        gst_object_unref(tee_encode_pad);
+        gst_object_unref(tee_queue_sink);
+
+        if (!gst_element_link_many(tee_queue, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr)) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link video encoder chain");
+            return false;
+        }
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Linked encoder chain: tee→queue→convert→queue→vp8enc→rtpvp8pay→queue→capsfilter");
 
         // Get webrtcbin sink pad - OFFERER MODE
         // Create new pad (will auto-create transceiver)
@@ -1731,13 +1822,15 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         // NOW sync all elements to PLAYING state - AFTER all linking is complete
         // This ensures v4l2src only starts capturing when pipeline is fully ready
         gst_element_sync_state_with_parent(video_src_);
+        gst_element_sync_state_with_parent(video_tee_);
+        gst_element_sync_state_with_parent(tee_queue);
         gst_element_sync_state_with_parent(convert);
         gst_element_sync_state_with_parent(queue1);
         gst_element_sync_state_with_parent(encoder);
         gst_element_sync_state_with_parent(payloader);
         gst_element_sync_state_with_parent(queue2);
         gst_element_sync_state_with_parent(capsfilter);
-        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Synced video elements to PLAYING (after all linking complete)");
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Synced video elements (incl. tee) to PLAYING (after all linking complete)");
 
         LOG_INFO("[WebRTCSession] [OFFERER] Video source pipeline created and linked");
         return true;
@@ -2680,40 +2773,82 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
         }
 
         // ========================================================================
-        // HANDLE VIDEO RECEIVE PIPELINE
+        // HANDLE VIDEO RECEIVE PIPELINE WITH PIP SELF-VIEW
         // ========================================================================
         if (is_video) {
-            // Create video receive chain: rtpvp8depay → vp8dec → videoconvert → autovideosink
+            // Create video receive chain: rtpvp8depay → vp8dec → videoconvert → compositor → autovideosink
+            // Compositor allows us to overlay self-view (PiP) on top of incoming video
             GstElement *depay = gst_element_factory_make("rtpvp8depay", "video_depay");
             GstElement *decoder = gst_element_factory_make("vp8dec", "video_decoder");
-            GstElement *convert = gst_element_factory_make("videoconvert", "video_convert");
+            GstElement *convert = gst_element_factory_make("videoconvert", "video_convert_recv");
+            compositor_ = gst_element_factory_make("compositor", "video_compositor");
             GstElement *sink = gst_element_factory_make("autovideosink", "video_sink");
 
-            if (!depay || !decoder || !convert || !sink) {
+            if (!depay || !decoder || !convert || !compositor_ || !sink) {
                 LOG_ERROR("[WebRTCSession] Failed to create video sink elements");
                 if (depay) gst_object_unref(depay);
                 if (decoder) gst_object_unref(decoder);
                 if (convert) gst_object_unref(convert);
+                if (compositor_) { gst_object_unref(compositor_); compositor_ = nullptr; }
                 if (sink) gst_object_unref(sink);
                 return;
             }
 
+            // Configure compositor: background is black (for smooth transitions)
+            g_object_set(compositor_, "background", 1, nullptr);  // 1 = black
+
             // Configure video sink for A/V sync
             g_object_set(sink, "sync", TRUE, nullptr);  // Sync to clock for smooth playback
 
-            LOG_INFO("[WebRTCSession] ✓ Created video receive pipeline (using autovideosink)");
+            LOG_INFO("[WebRTCSession] ✓ Created video receive pipeline with compositor (PiP ready)");
 
             // Add elements to pipeline
-            gst_bin_add_many(GST_BIN(pipeline_), depay, decoder, convert, sink, nullptr);
+            gst_bin_add_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink, nullptr);
 
-            // Link elements: depay → decoder → convert → sink
-            if (!gst_element_link_many(depay, decoder, convert, sink, nullptr)) {
-                LOG_ERROR("[WebRTCSession] Failed to link video sink chain");
-                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, sink, nullptr);
+            // Link incoming video chain: depay → decoder → convert → compositor (sink_0, layer 0 = background)
+            if (!gst_element_link_many(depay, decoder, convert, nullptr)) {
+                LOG_ERROR("[WebRTCSession] Failed to link video receive chain");
+                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink, nullptr);
                 gst_object_unref(depay);
                 gst_object_unref(decoder);
                 gst_object_unref(convert);
+                gst_object_unref(compositor_); compositor_ = nullptr;
                 gst_object_unref(sink);
+                return;
+            }
+
+            // Request compositor sink pad for incoming video (layer 0 = background, full screen)
+            GstPad *comp_sink0 = gst_element_request_pad_simple(compositor_, "sink_%u");
+            if (!comp_sink0) {
+                LOG_ERROR("[WebRTCSession] Failed to request compositor sink pad for incoming video");
+                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink, nullptr);
+                return;
+            }
+
+            // Configure layer 0: full screen background
+            g_object_set(comp_sink0,
+                "xpos", 0,
+                "ypos", 0,
+                "zorder", 0,  // Background layer
+                nullptr);
+
+            // Link convert → compositor sink_0
+            GstPad *convert_src = gst_element_get_static_pad(convert, "src");
+            GstPadLinkReturn link_ret = gst_pad_link(convert_src, comp_sink0);
+            gst_object_unref(convert_src);
+            gst_object_unref(comp_sink0);
+
+            if (link_ret != GST_PAD_LINK_OK) {
+                LOG_ERROR("[WebRTCSession] Failed to link convert → compositor");
+                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink, nullptr);
+                return;
+            }
+
+            // Link compositor → sink
+            if (!gst_element_link(compositor_, sink)) {
+                LOG_ERROR("[WebRTCSession] Failed to link compositor → sink");
+                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink, nullptr);
+                gst_object_unref(compositor_); compositor_ = nullptr;
                 return;
             }
 
@@ -2721,28 +2856,104 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
             gst_element_sync_state_with_parent(depay);
             gst_element_sync_state_with_parent(decoder);
             gst_element_sync_state_with_parent(convert);
+            gst_element_sync_state_with_parent(compositor_);
             gst_element_sync_state_with_parent(sink);
 
             // Link webrtcbin pad to depay
             GstPad *sink_pad = gst_element_get_static_pad(depay, "sink");
-            GstPadLinkReturn link_ret = gst_pad_link(pad, sink_pad);
+            link_ret = gst_pad_link(pad, sink_pad);
             gst_object_unref(sink_pad);
 
             if (link_ret != GST_PAD_LINK_OK) {
                 LOG_ERROR("[WebRTCSession] Failed to link incoming video pad to depay: {}", static_cast<int>(link_ret));
-                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, sink, nullptr);
-                gst_element_set_state(depay, GST_STATE_NULL);
-                gst_object_unref(depay);
-                gst_element_set_state(decoder, GST_STATE_NULL);
-                gst_object_unref(decoder);
-                gst_element_set_state(convert, GST_STATE_NULL);
-                gst_object_unref(convert);
-                gst_element_set_state(sink, GST_STATE_NULL);
-                gst_object_unref(sink);
+                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink, nullptr);
+                gst_object_unref(compositor_); compositor_ = nullptr;
                 return;
             }
 
-            LOG_INFO("[WebRTCSession] ✓ Incoming video stream linked successfully");
+            LOG_INFO("[WebRTCSession] ✓ Incoming video stream linked to compositor (layer 0)");
+
+            // Now link self-view branch if video_tee_ exists (camera pipeline already created)
+            if (video_tee_) {
+                LOG_INFO("[WebRTCSession] Linking self-view branch to compositor...");
+                // Create self-view overlay branch: tee → queue → videoconvert → videoscale → videoflip → compositor (layer 1)
+                GstElement *self_queue = gst_element_factory_make("queue", "self_view_queue");
+                GstElement *self_convert = gst_element_factory_make("videoconvert", "self_view_convert");
+                GstElement *self_scale = gst_element_factory_make("videoscale", "self_view_scale");
+                GstElement *self_flip = gst_element_factory_make("videoflip", "self_view_flip");
+
+                if (!self_queue || !self_convert || !self_scale || !self_flip) {
+                    LOG_ERROR("[WebRTCSession] Failed to create self-view elements");
+                    if (self_queue) gst_object_unref(self_queue);
+                    if (self_convert) gst_object_unref(self_convert);
+                    if (self_scale) gst_object_unref(self_scale);
+                    if (self_flip) gst_object_unref(self_flip);
+                } else {
+                    // Configure flip for mirror effect
+                    g_object_set(self_flip, "method", 4, nullptr);  // 4 = horizontal flip
+
+                    // Add self-view elements to pipeline
+                    gst_bin_add_many(GST_BIN(pipeline_), self_queue, self_convert, self_scale, self_flip, nullptr);
+
+                    // Link self-view chain
+                    if (!gst_element_link_many(self_queue, self_convert, self_scale, self_flip, nullptr)) {
+                        LOG_ERROR("[WebRTCSession] Failed to link self-view chain");
+                        gst_bin_remove_many(GST_BIN(pipeline_), self_queue, self_convert, self_scale, self_flip, nullptr);
+                    } else {
+                        // Request compositor sink pad for self-view (layer 1 = overlay, top-right corner)
+                        GstPad *comp_sink1 = gst_element_request_pad_simple(compositor_, "sink_%u");
+                        if (!comp_sink1) {
+                            LOG_ERROR("[WebRTCSession] Failed to request compositor sink pad for self-view");
+                            gst_bin_remove_many(GST_BIN(pipeline_), self_queue, self_convert, self_scale, self_flip, nullptr);
+                        } else {
+                            // Configure layer 1: 160x120 thumbnail in bottom-right corner
+                            // TODO: Make position/size configurable
+                            g_object_set(comp_sink1,
+                                "xpos", 480,    // Right side (assuming 640x480 base resolution)
+                                "ypos", 360,    // Bottom (480 - 120 = 360)
+                                "width", 160,   // Thumbnail width
+                                "height", 120,  // Thumbnail height
+                                "zorder", 1,    // Overlay on top
+                                nullptr);
+
+                            // Link tee → self_queue
+                            GstPad *tee_src = gst_element_request_pad_simple(video_tee_, "src_%u");
+                            GstPad *queue_sink = gst_element_get_static_pad(self_queue, "sink");
+                            link_ret = gst_pad_link(tee_src, queue_sink);
+                            gst_object_unref(tee_src);
+                            gst_object_unref(queue_sink);
+
+                            if (link_ret != GST_PAD_LINK_OK) {
+                                LOG_ERROR("[WebRTCSession] Failed to link tee → self_queue");
+                                gst_object_unref(comp_sink1);
+                                gst_bin_remove_many(GST_BIN(pipeline_), self_queue, self_convert, self_scale, self_flip, nullptr);
+                            } else {
+                                // Link self_flip → compositor sink_1
+                                GstPad *flip_src = gst_element_get_static_pad(self_flip, "src");
+                                link_ret = gst_pad_link(flip_src, comp_sink1);
+                                gst_object_unref(flip_src);
+                                gst_object_unref(comp_sink1);
+
+                                if (link_ret != GST_PAD_LINK_OK) {
+                                    LOG_ERROR("[WebRTCSession] Failed to link self_flip → compositor");
+                                    gst_bin_remove_many(GST_BIN(pipeline_), self_queue, self_convert, self_scale, self_flip, nullptr);
+                                } else {
+                                    // Sync state with parent
+                                    gst_element_sync_state_with_parent(self_queue);
+                                    gst_element_sync_state_with_parent(self_convert);
+                                    gst_element_sync_state_with_parent(self_scale);
+                                    gst_element_sync_state_with_parent(self_flip);
+
+                                    LOG_INFO("[WebRTCSession] ✓ Self-view PiP linked to compositor (layer 1, 160x120 at top-right)");
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                LOG_INFO("[WebRTCSession] No camera pipeline yet, self-view will be added when camera starts");
+            }
+
             return;  // Done handling video
         }
 

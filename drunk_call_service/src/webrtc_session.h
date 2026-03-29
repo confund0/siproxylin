@@ -63,6 +63,8 @@ private:
     GstElement *echoprobe_;   // WebRTC echo probe for echo cancellation
     GstElement *video_src_;   // Video source (v4l2src/autovideosrc)
     GstElement *video_sink_;  // Video sink (created dynamically on pad-added)
+    GstElement *video_tee_;   // Camera feed splitter for PiP self-view
+    GstElement *compositor_;  // Video compositor for PiP overlay
 
     // Configuration
     SessionConfig config_;
