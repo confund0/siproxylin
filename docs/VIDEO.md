@@ -32,6 +32,14 @@
 - Settings saved in `~/.config/siproxylin/calls.json`
 - **Future**: Hot-swap devices during active call (post-release)
 
+### Video Quality ✅
+
+**Incoming Video Quality** (2026-03-29)
+- RTCP feedback enabled (NACK-PLI, FIR, Transport-CC)
+- Phone can request keyframes on packet loss
+- Proper bandwidth adaptation via Transport-Wide Congestion Control
+- Fast recovery from network issues
+
 ### Known Issues (Minor)
 
 **1. Dino: Incoming Video Window Delay** ⏱️
@@ -413,6 +421,67 @@ webrtcbin → rtpvp8depay → webmmux(streamable) → udpsink(127.0.0.1:port)
 - ✅ Parse payload type from SDP offer
 - ✅ Use negotiated payload in RTP capsfilter
 - ✅ Verify SDP answer matches actual pipeline config
+
+### 9. Missing RTCP Feedback Capabilities (Session 6, FIXED ✅)
+
+**Problem**: No RTCP feedback capabilities in SDP answer
+- **Our answer**: `<payload-type id="96" name="VP8" clockrate="90000" />` (bare minimum)
+- **Conversations' offer**: Included `rtcp-fb` for NACK-PLI, FIR, Transport-CC, GOOG-REMB
+
+**Result**: POOR INCOMING VIDEO QUALITY
+- Phone couldn't request keyframes when packets lost
+- Phone couldn't signal bandwidth constraints properly
+- No transport-wide congestion control feedback
+- **Symptom**: Periodic pixelation during longer calls
+  - Video degrades to unrecognizable → Stays pixelated → Suddenly clears up → Repeats
+  - Phone was adapting bitrate blindly without feedback
+
+**Why This Happened**:
+- codec-preferences caps didn't include RTCP feedback properties
+- SDP answer advertised minimal capabilities
+- Phone's encoder adapted overly conservatively without feedback signals
+
+**The Fix** (Commit: Current):
+Added RTCP feedback capabilities to video codec-preferences in 3 locations:
+1. `parse_video_codec_from_offer()` (answerer mode - lines 197-219)
+2. `create_offer()` offerer codec-preferences (lines 525-542)
+3. Both now include:
+   ```cpp
+   "rtcp-fb-nack-pli", G_TYPE_BOOLEAN, TRUE,      // Picture Loss Indication
+   "rtcp-fb-ccm-fir", G_TYPE_BOOLEAN, TRUE,       // Full Intra Request
+   "rtcp-fb-transport-cc", G_TYPE_BOOLEAN, TRUE,  // Transport-wide CC
+   ```
+
+**Result**: SDP answer now advertises:
+```xml
+<payload-type id="96" name="VP8" clockrate="90000">
+    <rtcp-fb type="nack" subtype="pli" />
+    <rtcp-fb type="ccm" subtype="fir" />
+    <rtcp-fb type="transport-cc" />
+</payload-type>
+```
+
+**Benefits**:
+- **NACK-PLI**: Phone requests keyframes when packets lost → Fast recovery from pixelation
+- **CCM-FIR**: Full frame refresh for severe errors
+- **Transport-CC**: Proper bandwidth adaptation using TWCC (Transport-Wide Congestion Control)
+- **Result**: Smooth incoming video quality, fast recovery from network issues
+
+**Files Modified**:
+- `drunk_call_service/src/webrtc_session.cpp` (3 locations)
+
+**Key Learning**: Always advertise RTCP feedback capabilities in SDP. Without them, peer flies blind on network conditions.
+
+**DO NOT**:
+- ❌ Send bare minimum codec capabilities in SDP
+- ❌ Assume default RTCP feedback is enough
+- ❌ Ignore rtcp-fb attributes from peer's offer
+
+**DO**:
+- ✅ Include RTCP feedback in codec-preferences caps
+- ✅ Match peer's capabilities (NACK-PLI, FIR, Transport-CC)
+- ✅ Enable proper congestion control feedback
+- ✅ Test video quality over time, not just initial connection
 
 ---
 

@@ -195,13 +195,20 @@ static GstCaps* parse_video_codec_from_offer(GstSDPMessage *offer, int* out_payl
     }
 
     // Create caps WITHOUT fixed payload (allows flexible matching)
+    // CRITICAL: Include RTCP feedback capabilities for:
+    // - NACK PLI: Request keyframes when packets lost (fixes pixelation on packet loss)
+    // - CCM FIR: Full Intra Request for severe errors
+    // - Transport-CC: Transport-wide congestion control (better bandwidth adaptation)
     GstCaps *caps = gst_caps_new_simple("application/x-rtp",
         "media", G_TYPE_STRING, "video",
         "encoding-name", G_TYPE_STRING, encoding_name.c_str(),
         "clock-rate", G_TYPE_INT, clock_rate,
+        "rtcp-fb-nack-pli", G_TYPE_BOOLEAN, TRUE,      // Picture Loss Indication
+        "rtcp-fb-ccm-fir", G_TYPE_BOOLEAN, TRUE,       // Full Intra Request
+        "rtcp-fb-transport-cc", G_TYPE_BOOLEAN, TRUE,  // Transport-wide CC
         nullptr);
 
-    LOG_INFO("[WebRTCSession] Created video codec-preferences caps (payload NOT fixed)");
+    LOG_INFO("[WebRTCSession] Created video codec-preferences caps with RTCP feedback (NACK-PLI, FIR, TWCC)");
 
     // Return payload type via output parameter if requested
     if (out_payload) {
@@ -516,17 +523,21 @@ void WebRTCSession::create_offer(SDPCallback callback) {
 
                 if (trans) {
                     // Create codec-preferences: VP8 only, payload=96
+                    // CRITICAL: Include RTCP feedback for proper congestion control and error recovery
                     GstCaps *codec_prefs = gst_caps_new_simple("application/x-rtp",
                         "media", G_TYPE_STRING, "video",
                         "encoding-name", G_TYPE_STRING, "VP8",
                         "clock-rate", G_TYPE_INT, 90000,
                         "payload", G_TYPE_INT, 96,
+                        "rtcp-fb-nack-pli", G_TYPE_BOOLEAN, TRUE,      // Picture Loss Indication
+                        "rtcp-fb-ccm-fir", G_TYPE_BOOLEAN, TRUE,       // Full Intra Request
+                        "rtcp-fb-transport-cc", G_TYPE_BOOLEAN, TRUE,  // Transport-wide CC
                         nullptr);
 
                     g_object_set(trans, "codec-preferences", codec_prefs, nullptr);
 
                     gchar *caps_str = gst_caps_to_string(codec_prefs);
-                    LOG_INFO("[WebRTCSession] ✓ Set video codec-preferences for offerer: {}", caps_str);
+                    LOG_INFO("[WebRTCSession] ✓ Set video codec-preferences for offerer with RTCP feedback: {}", caps_str);
                     g_free(caps_str);
                     gst_caps_unref(codec_prefs);
                 } else {
