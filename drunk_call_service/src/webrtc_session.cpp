@@ -1201,42 +1201,57 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         gst_element_get_state(pipeline_, &current_state, nullptr, GST_CLOCK_TIME_NONE);
         LOG_INFO("[WebRTCSession] Pipeline state after pause: {}", gst_element_state_get_name(current_state));
 
-        // Create video elements
-        const char *src_name = config_.camera_device.empty() ?
-            "autovideosrc" : "v4l2src";
-        video_src_ = gst_element_factory_make(src_name, "video_src");
-        GstElement *queue = gst_element_factory_make("queue", "queue_video_src");
+        // Create video source - use v4l2src directly (do-timestamp works properly)
+        video_src_ = gst_element_factory_make("v4l2src", "video_src");
+        if (!video_src_) {
+            LOG_ERROR("[WebRTCSession] Failed to create v4l2src");
+            return false;
+        }
+
+        // Configure camera device if specified, otherwise use default
+        if (!config_.camera_device.empty()) {
+            g_object_set(video_src_, "device", config_.camera_device.c_str(), nullptr);
+            LOG_INFO("[WebRTCSession] ✓ Set camera device: {}", config_.camera_device);
+        } else {
+            LOG_INFO("[WebRTCSession] ✓ Using v4l2src with default camera (/dev/video0)");
+        }
+
+        // CRITICAL: Enable do-timestamp for proper timestamps
+        g_object_set(video_src_, "do-timestamp", TRUE, nullptr);
+        LOG_INFO("[WebRTCSession] ✓ Set do-timestamp=TRUE on v4l2src");
+
+        // Create rest of pipeline elements
         GstElement *convert = gst_element_factory_make("videoconvert", "videoconvert");
-        GstElement *scale = gst_element_factory_make("videoscale", "videoscale");
+        GstElement *queue1 = gst_element_factory_make("queue", "queue_pre_encode");
         GstElement *encoder = gst_element_factory_make("vp8enc", "vp8enc");
         GstElement *payloader = gst_element_factory_make("rtpvp8pay", "rtpvp8pay");
+        GstElement *queue2 = gst_element_factory_make("queue", "queue_post_pay");
         GstElement *capsfilter = gst_element_factory_make("capsfilter", "rtp_video_caps");
 
-        if (!video_src_ || !queue || !convert || !scale || !encoder || !payloader || !capsfilter) {
+        if (!convert || !queue1 || !encoder || !payloader || !queue2 || !capsfilter) {
             LOG_ERROR("[WebRTCSession] Failed to create video elements");
             return false;
         }
 
-        // Configure camera device if specified
-        if (!config_.camera_device.empty() && src_name == std::string("v4l2src")) {
-            g_object_set(video_src_, "device", config_.camera_device.c_str(), nullptr);
-            LOG_INFO("[WebRTCSession] ✓ Set camera device: {}", config_.camera_device);
-        } else {
-            LOG_INFO("[WebRTCSession] Using autovideosrc (no specific camera device)");
-        }
-
-        // Configure encoder for good quality with low latency
+        // Configure encoder - realtime with reasonable keyframes for calls
         g_object_set(encoder,
             "deadline", G_GINT64_CONSTANT(1),        // Realtime encoding (lowest latency)
-            "cpu-used", 8,                            // Max speed (lowest latency, slight quality loss)
-            "target-bitrate", 1500000,                // 1.5Mbps (good quality for 640x480)
-            "keyframe-max-dist", 30,                  // Keyframe every 30 frames (~1 sec at 30fps)
+            "cpu-used", 8,                            // Max speed (lowest latency)
+            "target-bitrate", 1500000,                // 1.5Mbps
+            "keyframe-max-dist", 60,                  // Keyframe every 60 frames (2 seconds at 30fps)
             nullptr);
-        LOG_INFO("[WebRTCSession] ✓ Configured vp8enc (bitrate=1.5Mbps, low latency)");
+        LOG_INFO("[WebRTCSession] ✓ Configured vp8enc (deadline=1, keyframe-max-dist=60, 1.5Mbps)");
+
+        // CRITICAL: Configure payloader with picture-id-mode=15-bit
+        // Official example comment: "This improves TWCC stats behavior and fixes stuttery video playback in Chrome"
+        g_object_set(payloader,
+            "picture-id-mode", 2,  // 2 = 15-bit mode (enum value from gst-inspect-1.0 rtpvp8pay)
+            nullptr);
+        LOG_INFO("[WebRTCSession] ✓ Configured rtpvp8pay with picture-id-mode=15-bit (fixes stuttering!)");
 
         // CRITICAL: Use payload from negotiated video codec caps (if available)
-        // For now, use standard VP8 payload=96
-        int payload = 98;  // Match what Dino sends in offer
+        // For now, use standard VP8 payload=98 to match Dino's offer
+        int payload = 98;
 
         GstCaps *rtp_caps = gst_caps_new_simple("application/x-rtp",
             "media", G_TYPE_STRING, "video",
@@ -1247,15 +1262,15 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         gst_caps_unref(rtp_caps);
         LOG_INFO("[WebRTCSession] ✓ Set RTP caps: application/x-rtp,media=video,encoding-name=VP8,payload={}", payload);
 
-        // Add to pipeline
-        gst_bin_add_many(GST_BIN(pipeline_), video_src_, queue, convert, scale, encoder, payloader, capsfilter, nullptr);
+        // Add to pipeline - simple chain based on official example
+        gst_bin_add_many(GST_BIN(pipeline_), video_src_, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr);
 
-        // Link video chain FIRST (while pipeline is PAUSED, elements are NULL)
-        if (!gst_element_link_many(video_src_, queue, convert, scale, encoder, payloader, capsfilter, nullptr)) {
+        // Link video chain (src→convert→queue→encoder→payloader→queue→capsfilter)
+        if (!gst_element_link_many(video_src_, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr)) {
             LOG_ERROR("[WebRTCSession] Failed to link video chain");
             return false;
         }
-        LOG_INFO("[WebRTCSession] ✓ Linked video chain: src→queue→convert→scale→vp8enc→rtpvp8pay→capsfilter");
+        LOG_INFO("[WebRTCSession] ✓ Linked video chain: src→videoconvert→queue→vp8enc→rtpvp8pay→queue→capsfilter");
 
         // Get webrtcbin sink pad - ANSWERER MODE
         // Reuse the pad we created during set-remote-description
