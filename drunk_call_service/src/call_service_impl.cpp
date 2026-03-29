@@ -96,6 +96,7 @@ grpc::Status CallServiceImpl::CreateSession(
 
         // Video configuration
         if (request->enable_video_receive()) {
+            config.enable_video_receive = true;
             config.video_udp_host = request->video_udp_host();
             config.video_udp_port = request->video_udp_port();
             LOG_INFO("Session {}: Video enabled - UDP {}:{}", session_id, config.video_udp_host, config.video_udp_port);

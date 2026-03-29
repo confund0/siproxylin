@@ -451,6 +451,10 @@ void WebRTCSession::create_offer(SDPCallback callback) {
             GstWebRTCRTPTransceiver *trans = GST_WEBRTC_RTP_TRANSCEIVER(g_value_get_object(&val));
 
             if (trans) {
+                // Set explicit mid for audio transceiver to ensure proper transport stream mapping
+                g_object_set(trans, "mid", "audio0", nullptr);
+                LOG_INFO("[WebRTCSession] ✓ Set audio transceiver mid=audio0");
+
                 // Create codec-preferences: OPUS only, payload=111, stereo
                 GstCaps *codec_prefs = gst_caps_new_simple("application/x-rtp",
                     "media", G_TYPE_STRING, "audio",
@@ -476,6 +480,61 @@ void WebRTCSession::create_offer(SDPCallback callback) {
             gst_object_unref(sink_pad);
         } else {
             LOG_WARN("[WebRTCSession] Could not get sink_0 pad for codec-preferences");
+        }
+
+        // CRITICAL: For offerers with video, create video source pipeline BEFORE create-offer
+        // Only if video is enabled in config
+        if (config_.enable_video_receive) {
+            LOG_INFO("[WebRTCSession] Offerer mode: Creating video source pipeline...");
+
+            if (!setup_offerer_video_pipeline()) {
+                LOG_ERROR("[WebRTCSession] Failed to create offerer video source pipeline!");
+                if (callback) {
+                    callback(false, SDPMessage(), "Failed to create video source pipeline");
+                }
+                return;
+            }
+
+            LOG_INFO("[WebRTCSession] Video source pipeline created, now setting codec preferences...");
+
+            // Set codec-preferences on video transceiver BEFORE create-offer
+            // Get the transceiver for sink_1 (created by setup_offerer_video_pipeline)
+            GstPad *video_sink_pad = gst_element_get_static_pad(webrtc_, "sink_1");
+            if (video_sink_pad) {
+                GValue val = G_VALUE_INIT;
+                g_object_get_property(G_OBJECT(video_sink_pad), "transceiver", &val);
+                GstWebRTCRTPTransceiver *trans = GST_WEBRTC_RTP_TRANSCEIVER(g_value_get_object(&val));
+
+                if (trans) {
+                    // Set explicit mid for video transceiver to ensure proper transport stream mapping
+                    g_object_set(trans, "mid", "video1", nullptr);
+                    LOG_INFO("[WebRTCSession] ✓ Set video transceiver mid=video1");
+
+                    // Create codec-preferences: VP8 only, payload=96
+                    GstCaps *codec_prefs = gst_caps_new_simple("application/x-rtp",
+                        "media", G_TYPE_STRING, "video",
+                        "encoding-name", G_TYPE_STRING, "VP8",
+                        "clock-rate", G_TYPE_INT, 90000,
+                        "payload", G_TYPE_INT, 96,
+                        nullptr);
+
+                    g_object_set(trans, "codec-preferences", codec_prefs, nullptr);
+
+                    gchar *caps_str = gst_caps_to_string(codec_prefs);
+                    LOG_INFO("[WebRTCSession] ✓ Set video codec-preferences for offerer: {}", caps_str);
+                    g_free(caps_str);
+                    gst_caps_unref(codec_prefs);
+                } else {
+                    LOG_WARN("[WebRTCSession] Could not get video transceiver for codec-preferences");
+                }
+
+                g_value_unset(&val);
+                gst_object_unref(video_sink_pad);
+            } else {
+                LOG_WARN("[WebRTCSession] Could not get sink_1 pad for video codec-preferences");
+            }
+        } else {
+            LOG_INFO("[WebRTCSession] Video disabled, skipping video pipeline setup");
         }
 
         LOG_INFO("[WebRTCSession] Creating offer...");
@@ -1201,24 +1260,18 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         gst_element_get_state(pipeline_, &current_state, nullptr, GST_CLOCK_TIME_NONE);
         LOG_INFO("[WebRTCSession] Pipeline state after pause: {}", gst_element_state_get_name(current_state));
 
-        // Create video source - use v4l2src directly (do-timestamp works properly)
+        // Create video source - use v4l2src on Linux (works reliably with /dev/video*)
+        // TODO: Use platform detection for Windows (ksvideosrc) and macOS (avfvideosrc)
         video_src_ = gst_element_factory_make("v4l2src", "video_src");
         if (!video_src_) {
-            LOG_ERROR("[WebRTCSession] Failed to create v4l2src");
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to create v4l2src video source");
             return false;
         }
-
-        // Configure camera device if specified, otherwise use default
-        if (!config_.camera_device.empty()) {
-            g_object_set(video_src_, "device", config_.camera_device.c_str(), nullptr);
-            LOG_INFO("[WebRTCSession] ✓ Set camera device: {}", config_.camera_device);
-        } else {
-            LOG_INFO("[WebRTCSession] ✓ Using v4l2src with default camera (/dev/video0)");
-        }
+        LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Using v4l2src (Linux V4L2 camera access)");
 
         // CRITICAL: Enable do-timestamp for proper timestamps
         g_object_set(video_src_, "do-timestamp", TRUE, nullptr);
-        LOG_INFO("[WebRTCSession] ✓ Set do-timestamp=TRUE on v4l2src");
+        LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Set do-timestamp=TRUE on video source");
 
         // Create rest of pipeline elements
         GstElement *convert = gst_element_factory_make("videoconvert", "videoconvert");
@@ -1262,7 +1315,7 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         gst_caps_unref(rtp_caps);
         LOG_INFO("[WebRTCSession] ✓ Set RTP caps: application/x-rtp,media=video,encoding-name=VP8,payload={}", payload);
 
-        // Add to pipeline - simple chain based on official example
+        // Add all elements to pipeline
         gst_bin_add_many(GST_BIN(pipeline_), video_src_, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr);
 
         // Link video chain (src→convert→queue→encoder→payloader→queue→capsfilter)
@@ -1501,6 +1554,144 @@ bool WebRTCSession::setup_offerer_audio_pipeline() {
 
     } catch (const std::exception &e) {
         LOG_ERROR("[WebRTCSession] [OFFERER] setup_offerer_audio_pipeline exception: {}", e.what());
+        return false;
+    }
+}
+
+// Video Pipeline Setup - OFFERER (Outgoing Calls)
+// ============================================================================
+
+bool WebRTCSession::setup_offerer_video_pipeline() {
+    try {
+        LOG_DEBUG("[WebRTCSession] [OFFERER] Creating video source pipeline...");
+
+        // CRITICAL: Pause pipeline before adding elements to avoid FLUSHING state
+        GstState current_state, pending_state;
+        gst_element_get_state(pipeline_, &current_state, &pending_state, 0);
+        LOG_INFO("[WebRTCSession] [OFFERER] Pipeline state before pause: current={}, pending={}",
+                 gst_element_state_get_name(current_state),
+                 gst_element_state_get_name(pending_state));
+
+        LOG_DEBUG("[WebRTCSession] [OFFERER] Pausing pipeline to add video elements...");
+        GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PAUSED);
+        LOG_DEBUG("[WebRTCSession] [OFFERER] Pause state change result: {}", static_cast<int>(ret));
+        gst_element_get_state(pipeline_, &current_state, nullptr, GST_CLOCK_TIME_NONE);
+        LOG_INFO("[WebRTCSession] [OFFERER] Pipeline state after pause: {}", gst_element_state_get_name(current_state));
+
+        // Create video source - use v4l2src on Linux (works reliably with /dev/video*)
+        // TODO: Use platform detection for Windows (ksvideosrc) and macOS (avfvideosrc)
+        video_src_ = gst_element_factory_make("v4l2src", "video_src");
+        if (!video_src_) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create v4l2src video source");
+            return false;
+        }
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Using v4l2src (Linux V4L2 camera access)");
+
+        // CRITICAL: Enable do-timestamp for proper timestamps
+        g_object_set(video_src_, "do-timestamp", TRUE, nullptr);
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Set do-timestamp=TRUE on video source");
+
+        // Create rest of pipeline elements
+        GstElement *convert = gst_element_factory_make("videoconvert", "videoconvert");
+        GstElement *queue1 = gst_element_factory_make("queue", "queue_pre_encode");
+        GstElement *encoder = gst_element_factory_make("vp8enc", "vp8enc");
+        GstElement *payloader = gst_element_factory_make("rtpvp8pay", "rtpvp8pay");
+        GstElement *queue2 = gst_element_factory_make("queue", "queue_post_pay");
+        GstElement *capsfilter = gst_element_factory_make("capsfilter", "rtp_video_caps");
+
+        if (!convert || !queue1 || !encoder || !payloader || !queue2 || !capsfilter) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create video elements");
+            return false;
+        }
+
+        // Configure encoder - realtime with reasonable keyframes for calls
+        g_object_set(encoder,
+            "deadline", G_GINT64_CONSTANT(1),        // Realtime encoding (lowest latency)
+            "cpu-used", 8,                            // Max speed (lowest latency)
+            "target-bitrate", 1500000,                // 1.5Mbps
+            "keyframe-max-dist", 60,                  // Keyframe every 60 frames (2 seconds at 30fps)
+            nullptr);
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Configured vp8enc (deadline=1, keyframe-max-dist=60, 1.5Mbps)");
+
+        // CRITICAL: Configure payloader with picture-id-mode=15-bit
+        // Official example comment: "This improves TWCC stats behavior and fixes stuttery video playback in Chrome"
+        g_object_set(payloader,
+            "picture-id-mode", 2,  // 2 = 15-bit mode (enum value from gst-inspect-1.0 rtpvp8pay)
+            nullptr);
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Configured rtpvp8pay with picture-id-mode=15-bit (fixes stuttering!)");
+
+        // Use payload=96 (standard for VP8)
+        GstCaps *rtp_caps = gst_caps_new_simple("application/x-rtp",
+            "media", G_TYPE_STRING, "video",
+            "encoding-name", G_TYPE_STRING, "VP8",
+            "payload", G_TYPE_INT, 96,
+            nullptr);
+        g_object_set(capsfilter, "caps", rtp_caps, nullptr);
+        gst_caps_unref(rtp_caps);
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Set RTP caps: application/x-rtp,media=video,encoding-name=VP8,payload=96");
+
+        // Add all elements to pipeline
+        gst_bin_add_many(GST_BIN(pipeline_), video_src_, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr);
+
+        // Link video chain (src→convert→queue→encoder→payloader→queue→capsfilter)
+        if (!gst_element_link_many(video_src_, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr)) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link video chain");
+            return false;
+        }
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Linked video chain: src→videoconvert→queue→vp8enc→rtpvp8pay→queue→capsfilter");
+
+        // Get webrtcbin sink pad - OFFERER MODE
+        // Create new pad (will auto-create transceiver)
+        GstPad *webrtc_sink = gst_element_request_pad_simple(webrtc_, "sink_%u");
+        if (!webrtc_sink) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to request video sink pad from webrtcbin!");
+            return false;
+        }
+
+        gchar *pad_name = gst_pad_get_name(webrtc_sink);
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Created new video pad: {}", pad_name);
+        g_free(pad_name);
+
+        // Set transceiver direction to SENDRECV
+        GValue val = G_VALUE_INIT;
+        g_object_get_property(G_OBJECT(webrtc_sink), "transceiver", &val);
+        GstWebRTCRTPTransceiver *trans = GST_WEBRTC_RTP_TRANSCEIVER(g_value_get_object(&val));
+
+        if (trans) {
+            LOG_INFO("[WebRTCSession] [OFFERER] Setting video transceiver direction to SENDRECV...");
+            g_object_set(trans, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, nullptr);
+            LOG_INFO("[WebRTCSession] [OFFERER] ✓ Video transceiver direction set to SENDRECV");
+        } else {
+            LOG_WARN("[WebRTCSession] [OFFERER] Could not get transceiver from video pad");
+        }
+        g_value_unset(&val);
+
+        // Link capsfilter to webrtcbin
+        GstPad *caps_src = gst_element_get_static_pad(capsfilter, "src");
+        GstPadLinkReturn link_ret = gst_pad_link(caps_src, webrtc_sink);
+        if (link_ret != GST_PAD_LINK_OK) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link video capsfilter to webrtcbin: {}", static_cast<int>(link_ret));
+            gst_object_unref(caps_src);
+            gst_object_unref(webrtc_sink);
+            return false;
+        }
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Linked video capsfilter to webrtcbin");
+
+        gst_object_unref(caps_src);
+        gst_object_unref(webrtc_sink);
+
+        // Resume pipeline to PLAYING
+        LOG_DEBUG("[WebRTCSession] [OFFERER] Resuming pipeline to PLAYING...");
+        ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
+        LOG_DEBUG("[WebRTCSession] [OFFERER] Resume state change result: {}", static_cast<int>(ret));
+        gst_element_get_state(pipeline_, &current_state, nullptr, GST_CLOCK_TIME_NONE);
+        LOG_INFO("[WebRTCSession] [OFFERER] Pipeline state after resume: {}", gst_element_state_get_name(current_state));
+
+        LOG_INFO("[WebRTCSession] [OFFERER] Video source pipeline created and linked");
+        return true;
+
+    } catch (const std::exception &e) {
+        LOG_ERROR("[WebRTCSession] [OFFERER] setup_offerer_video_pipeline exception: {}", e.what());
         return false;
     }
 }

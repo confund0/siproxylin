@@ -171,7 +171,7 @@ class GoCallService:
                 except Exception as e:
                     self.logger.warning(f"Failed to load logging settings from {logging_config_path}: {e}")
 
-            stdout_file = open(go_stdout_file, 'a')
+            stdout_file = open(go_stdout_file, 'w')
 
             self._process = subprocess.Popen(
                 [binary_path, "--log-level", log_level, "--log-path", str(go_log_file)],

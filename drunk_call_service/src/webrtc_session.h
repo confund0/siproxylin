@@ -155,6 +155,7 @@ private:
     bool create_pipeline();
     bool setup_answerer_audio_pipeline();  // Incoming calls (answerer mode)
     bool setup_answerer_video_pipeline();  // Incoming calls - video send (answerer mode)
+    bool setup_offerer_video_pipeline();   // Outgoing calls - video send (offerer mode)
     bool setup_offerer_audio_pipeline();    // Outgoing calls (offerer mode)
     bool configure_webrtcbin();
     bool configure_proxy();
