@@ -1352,6 +1352,14 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
             return false;
         }
 
+        // CRITICAL: Configure low-latency queues for real-time video (WebRTC industry standard)
+        // max-size-buffers=5: Limit buffering to ~166ms at 30fps (prevents 3-5 sec delay)
+        // leaky=2 (downstream): Drop old frames when full, keep pipeline flowing
+        g_object_set(tee_queue, "max-size-buffers", 5, "leaky", 2, nullptr);
+        g_object_set(queue1, "max-size-buffers", 5, "leaky", 2, nullptr);
+        g_object_set(queue2, "max-size-buffers", 5, "leaky", 2, nullptr);
+        LOG_INFO("[WebRTCSession] ✓ Configured low-latency queues (max-size-buffers=5, leaky=downstream)");
+
         // Configure encoder - realtime with reasonable keyframes for calls
         g_object_set(encoder,
             "deadline", G_GINT64_CONSTANT(1),        // Realtime encoding (lowest latency)
@@ -1455,6 +1463,149 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         gst_element_sync_state_with_parent(queue2);
         gst_element_sync_state_with_parent(capsfilter);
         LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Synced video elements (incl. tee) to PLAYING (after all linking complete)");
+
+        // CRITICAL: Create self-view branch immediately (don't wait for incoming video)
+        // This prevents race conditions and gives instant self-view feedback
+        LOG_INFO("[WebRTCSession] [ANSWERER] Creating immediate self-view (before incoming video)...");
+
+        // Create compositor for self-view (will add incoming video later)
+        compositor_ = gst_element_factory_make("compositor", "video_compositor");
+        if (!compositor_) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to create compositor for self-view");
+            return false;
+        }
+        g_object_set(compositor_, "background", 1, nullptr);  // 1 = black background
+
+        // Create video sink
+#ifdef _WIN32
+        video_sink_ = gst_element_factory_make("glimagesink", "video_sink");
+#else
+        video_sink_ = gst_element_factory_make("autovideosink", "video_sink");
+#endif
+        if (!video_sink_) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to create video sink for self-view");
+            gst_object_unref(compositor_);
+            compositor_ = nullptr;
+            return false;
+        }
+        g_object_set(video_sink_, "sync", TRUE, nullptr);
+
+        // Create format conversion for compositor → sink
+        GstElement *sink_convert = gst_element_factory_make("videoconvert", "video_convert_sink");
+        if (!sink_convert) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to create sink videoconvert");
+            gst_object_unref(compositor_);
+            gst_object_unref(video_sink_);
+            compositor_ = nullptr;
+            video_sink_ = nullptr;
+            return false;
+        }
+
+        // Add compositor and sink to pipeline
+        gst_bin_add_many(GST_BIN(pipeline_), compositor_, sink_convert, video_sink_, nullptr);
+
+        // Link compositor → convert → sink
+        if (!gst_element_link_many(compositor_, sink_convert, video_sink_, nullptr)) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to link compositor → sink");
+            gst_bin_remove_many(GST_BIN(pipeline_), compositor_, sink_convert, video_sink_, nullptr);
+            compositor_ = nullptr;
+            video_sink_ = nullptr;
+            return false;
+        }
+
+        // Create self-view branch: tee → queue → convert → scale → flip → compositor
+        GstElement *self_queue = gst_element_factory_make("queue", "self_view_queue");
+        GstElement *self_convert = gst_element_factory_make("videoconvert", "self_view_convert");
+        GstElement *self_scale = gst_element_factory_make("videoscale", "self_view_scale");
+        GstElement *self_flip = gst_element_factory_make("videoflip", "self_view_flip");
+
+        if (!self_queue || !self_convert || !self_scale || !self_flip) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to create self-view elements");
+            gst_bin_remove_many(GST_BIN(pipeline_), compositor_, sink_convert, video_sink_, nullptr);
+            if (self_queue) gst_object_unref(self_queue);
+            if (self_convert) gst_object_unref(self_convert);
+            if (self_scale) gst_object_unref(self_scale);
+            if (self_flip) gst_object_unref(self_flip);
+            compositor_ = nullptr;
+            video_sink_ = nullptr;
+            return false;
+        }
+
+        // Configure low-latency queue for self-view
+        g_object_set(self_queue, "max-size-buffers", 5, "leaky", 2, nullptr);
+
+        // Configure flip for mirror effect
+        g_object_set(self_flip, "method", 4, nullptr);  // 4 = horizontal flip
+
+        // Add self-view elements to pipeline
+        gst_bin_add_many(GST_BIN(pipeline_), self_queue, self_convert, self_scale, self_flip, nullptr);
+
+        // Link self-view chain
+        if (!gst_element_link_many(self_queue, self_convert, self_scale, self_flip, nullptr)) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to link self-view chain");
+            gst_bin_remove_many(GST_BIN(pipeline_), compositor_, sink_convert, video_sink_, self_queue, self_convert, self_scale, self_flip, nullptr);
+            compositor_ = nullptr;
+            video_sink_ = nullptr;
+            return false;
+        }
+
+        // Request compositor sink pad for self-view (layer 0 initially - will be background when remote video arrives)
+        GstPad *comp_sink0 = gst_element_request_pad_simple(compositor_, "sink_%u");
+        if (!comp_sink0) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to request compositor sink pad for self-view");
+            gst_bin_remove_many(GST_BIN(pipeline_), compositor_, sink_convert, video_sink_, self_queue, self_convert, self_scale, self_flip, nullptr);
+            compositor_ = nullptr;
+            video_sink_ = nullptr;
+            return false;
+        }
+
+        // Configure self-view as fullscreen initially (will be repositioned when remote video arrives)
+        g_object_set(comp_sink0,
+            "xpos", 0,
+            "ypos", 0,
+            "zorder", 0,  // Background layer initially
+            nullptr);
+
+        // Link tee → self_queue
+        GstPad *tee_self_src = gst_element_request_pad_simple(video_tee_, "src_%u");
+        GstPad *self_queue_sink = gst_element_get_static_pad(self_queue, "sink");
+        GstPadLinkReturn self_link_ret = gst_pad_link(tee_self_src, self_queue_sink);
+        gst_object_unref(tee_self_src);
+        gst_object_unref(self_queue_sink);
+
+        if (self_link_ret != GST_PAD_LINK_OK) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to link tee → self_queue: {}", static_cast<int>(self_link_ret));
+            gst_object_unref(comp_sink0);
+            gst_bin_remove_many(GST_BIN(pipeline_), compositor_, sink_convert, video_sink_, self_queue, self_convert, self_scale, self_flip, nullptr);
+            compositor_ = nullptr;
+            video_sink_ = nullptr;
+            return false;
+        }
+
+        // Link self_flip → compositor
+        GstPad *flip_src = gst_element_get_static_pad(self_flip, "src");
+        self_link_ret = gst_pad_link(flip_src, comp_sink0);
+        gst_object_unref(flip_src);
+        gst_object_unref(comp_sink0);
+
+        if (self_link_ret != GST_PAD_LINK_OK) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to link self_flip → compositor: {}", static_cast<int>(self_link_ret));
+            gst_bin_remove_many(GST_BIN(pipeline_), compositor_, sink_convert, video_sink_, self_queue, self_convert, self_scale, self_flip, nullptr);
+            compositor_ = nullptr;
+            video_sink_ = nullptr;
+            return false;
+        }
+
+        // Sync all new elements to PLAYING
+        gst_element_sync_state_with_parent(self_queue);
+        gst_element_sync_state_with_parent(self_convert);
+        gst_element_sync_state_with_parent(self_scale);
+        gst_element_sync_state_with_parent(self_flip);
+        gst_element_sync_state_with_parent(compositor_);
+        gst_element_sync_state_with_parent(sink_convert);
+        gst_element_sync_state_with_parent(video_sink_);
+
+        LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Self-view created immediately (fullscreen until remote video arrives)");
 
         // Resume pipeline to PLAYING
         LOG_DEBUG("[WebRTCSession] Resuming pipeline to PLAYING...");
@@ -1733,6 +1884,14 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
             return false;
         }
 
+        // CRITICAL: Configure low-latency queues for real-time video (WebRTC industry standard)
+        // max-size-buffers=5: Limit buffering to ~166ms at 30fps (prevents 3-5 sec delay)
+        // leaky=2 (downstream): Drop old frames when full, keep pipeline flowing
+        g_object_set(tee_queue, "max-size-buffers", 5, "leaky", 2, nullptr);
+        g_object_set(queue1, "max-size-buffers", 5, "leaky", 2, nullptr);
+        g_object_set(queue2, "max-size-buffers", 5, "leaky", 2, nullptr);
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Configured low-latency queues (max-size-buffers=5, leaky=downstream)");
+
         // Configure encoder - realtime with reasonable keyframes for calls
         g_object_set(encoder,
             "deadline", G_GINT64_CONSTANT(1),        // Realtime encoding (lowest latency)
@@ -1847,6 +2006,149 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         gst_element_sync_state_with_parent(queue2);
         gst_element_sync_state_with_parent(capsfilter);
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Synced video elements (incl. tee) to PLAYING (after all linking complete)");
+
+        // CRITICAL: Create self-view branch immediately (don't wait for incoming video)
+        // This prevents race conditions and gives instant self-view feedback
+        LOG_INFO("[WebRTCSession] [OFFERER] Creating immediate self-view (before incoming video)...");
+
+        // Create compositor for self-view (will add incoming video later)
+        compositor_ = gst_element_factory_make("compositor", "video_compositor");
+        if (!compositor_) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create compositor for self-view");
+            return false;
+        }
+        g_object_set(compositor_, "background", 1, nullptr);  // 1 = black background
+
+        // Create video sink
+#ifdef _WIN32
+        video_sink_ = gst_element_factory_make("glimagesink", "video_sink");
+#else
+        video_sink_ = gst_element_factory_make("autovideosink", "video_sink");
+#endif
+        if (!video_sink_) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create video sink for self-view");
+            gst_object_unref(compositor_);
+            compositor_ = nullptr;
+            return false;
+        }
+        g_object_set(video_sink_, "sync", TRUE, nullptr);
+
+        // Create format conversion for compositor → sink
+        GstElement *sink_convert = gst_element_factory_make("videoconvert", "video_convert_sink");
+        if (!sink_convert) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create sink videoconvert");
+            gst_object_unref(compositor_);
+            gst_object_unref(video_sink_);
+            compositor_ = nullptr;
+            video_sink_ = nullptr;
+            return false;
+        }
+
+        // Add compositor and sink to pipeline
+        gst_bin_add_many(GST_BIN(pipeline_), compositor_, sink_convert, video_sink_, nullptr);
+
+        // Link compositor → convert → sink
+        if (!gst_element_link_many(compositor_, sink_convert, video_sink_, nullptr)) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link compositor → sink");
+            gst_bin_remove_many(GST_BIN(pipeline_), compositor_, sink_convert, video_sink_, nullptr);
+            compositor_ = nullptr;
+            video_sink_ = nullptr;
+            return false;
+        }
+
+        // Create self-view branch: tee → queue → convert → scale → flip → compositor
+        GstElement *self_queue = gst_element_factory_make("queue", "self_view_queue");
+        GstElement *self_convert = gst_element_factory_make("videoconvert", "self_view_convert");
+        GstElement *self_scale = gst_element_factory_make("videoscale", "self_view_scale");
+        GstElement *self_flip = gst_element_factory_make("videoflip", "self_view_flip");
+
+        if (!self_queue || !self_convert || !self_scale || !self_flip) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create self-view elements");
+            gst_bin_remove_many(GST_BIN(pipeline_), compositor_, sink_convert, video_sink_, nullptr);
+            if (self_queue) gst_object_unref(self_queue);
+            if (self_convert) gst_object_unref(self_convert);
+            if (self_scale) gst_object_unref(self_scale);
+            if (self_flip) gst_object_unref(self_flip);
+            compositor_ = nullptr;
+            video_sink_ = nullptr;
+            return false;
+        }
+
+        // Configure low-latency queue for self-view
+        g_object_set(self_queue, "max-size-buffers", 5, "leaky", 2, nullptr);
+
+        // Configure flip for mirror effect
+        g_object_set(self_flip, "method", 4, nullptr);  // 4 = horizontal flip
+
+        // Add self-view elements to pipeline
+        gst_bin_add_many(GST_BIN(pipeline_), self_queue, self_convert, self_scale, self_flip, nullptr);
+
+        // Link self-view chain
+        if (!gst_element_link_many(self_queue, self_convert, self_scale, self_flip, nullptr)) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link self-view chain");
+            gst_bin_remove_many(GST_BIN(pipeline_), compositor_, sink_convert, video_sink_, self_queue, self_convert, self_scale, self_flip, nullptr);
+            compositor_ = nullptr;
+            video_sink_ = nullptr;
+            return false;
+        }
+
+        // Request compositor sink pad for self-view (layer 0 initially - will be background when remote video arrives)
+        GstPad *comp_sink0 = gst_element_request_pad_simple(compositor_, "sink_%u");
+        if (!comp_sink0) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to request compositor sink pad for self-view");
+            gst_bin_remove_many(GST_BIN(pipeline_), compositor_, sink_convert, video_sink_, self_queue, self_convert, self_scale, self_flip, nullptr);
+            compositor_ = nullptr;
+            video_sink_ = nullptr;
+            return false;
+        }
+
+        // Configure self-view as fullscreen initially (will be repositioned when remote video arrives)
+        g_object_set(comp_sink0,
+            "xpos", 0,
+            "ypos", 0,
+            "zorder", 0,  // Background layer initially
+            nullptr);
+
+        // Link tee → self_queue
+        GstPad *tee_self_src = gst_element_request_pad_simple(video_tee_, "src_%u");
+        GstPad *self_queue_sink = gst_element_get_static_pad(self_queue, "sink");
+        GstPadLinkReturn self_link_ret = gst_pad_link(tee_self_src, self_queue_sink);
+        gst_object_unref(tee_self_src);
+        gst_object_unref(self_queue_sink);
+
+        if (self_link_ret != GST_PAD_LINK_OK) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link tee → self_queue: {}", static_cast<int>(self_link_ret));
+            gst_object_unref(comp_sink0);
+            gst_bin_remove_many(GST_BIN(pipeline_), compositor_, sink_convert, video_sink_, self_queue, self_convert, self_scale, self_flip, nullptr);
+            compositor_ = nullptr;
+            video_sink_ = nullptr;
+            return false;
+        }
+
+        // Link self_flip → compositor
+        GstPad *flip_src = gst_element_get_static_pad(self_flip, "src");
+        self_link_ret = gst_pad_link(flip_src, comp_sink0);
+        gst_object_unref(flip_src);
+        gst_object_unref(comp_sink0);
+
+        if (self_link_ret != GST_PAD_LINK_OK) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link self_flip → compositor: {}", static_cast<int>(self_link_ret));
+            gst_bin_remove_many(GST_BIN(pipeline_), compositor_, sink_convert, video_sink_, self_queue, self_convert, self_scale, self_flip, nullptr);
+            compositor_ = nullptr;
+            video_sink_ = nullptr;
+            return false;
+        }
+
+        // Sync all new elements to PLAYING
+        gst_element_sync_state_with_parent(self_queue);
+        gst_element_sync_state_with_parent(self_convert);
+        gst_element_sync_state_with_parent(self_scale);
+        gst_element_sync_state_with_parent(self_flip);
+        gst_element_sync_state_with_parent(compositor_);
+        gst_element_sync_state_with_parent(sink_convert);
+        gst_element_sync_state_with_parent(video_sink_);
+
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Self-view created immediately (fullscreen until remote video arrives)");
 
         LOG_INFO("[WebRTCSession] [OFFERER] Video source pipeline created and linked");
         return true;
@@ -2789,106 +3091,98 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
         }
 
         // ========================================================================
-        // HANDLE VIDEO RECEIVE PIPELINE WITH PIP SELF-VIEW
+        // HANDLE VIDEO RECEIVE PIPELINE - ADD TO EXISTING COMPOSITOR
         // ========================================================================
         if (is_video) {
-            // Create video receive chain: rtpvp8depay → vp8dec → videoconvert → compositor → autovideosink
-            // Compositor allows us to overlay self-view (PiP) on top of incoming video
+            // Create video receive chain: rtpvp8depay → vp8dec → videoconvert → compositor
+            // Compositor and sink were already created with self-view (immediate on call start)
             GstElement *depay = gst_element_factory_make("rtpvp8depay", "video_depay");
             GstElement *decoder = gst_element_factory_make("vp8dec", "video_decoder");
             GstElement *convert = gst_element_factory_make("videoconvert", "video_convert_recv");
-            compositor_ = gst_element_factory_make("compositor", "video_compositor");
-            GstElement *sink = gst_element_factory_make("autovideosink", "video_sink");
 
-            if (!depay || !decoder || !convert || !compositor_ || !sink) {
-                LOG_ERROR("[WebRTCSession] Failed to create video sink elements");
+            if (!depay || !decoder || !convert) {
+                LOG_ERROR("[WebRTCSession] Failed to create video receive elements");
                 if (depay) gst_object_unref(depay);
                 if (decoder) gst_object_unref(decoder);
                 if (convert) gst_object_unref(convert);
-                if (compositor_) { gst_object_unref(compositor_); compositor_ = nullptr; }
-                if (sink) gst_object_unref(sink);
                 return;
             }
 
-            // Configure compositor: background is black (for smooth transitions)
-            g_object_set(compositor_, "background", 1, nullptr);  // 1 = black
-
-            // Configure video sink for A/V sync
-            g_object_set(sink, "sync", TRUE, nullptr);  // Sync to clock for smooth playback
-
-            // Create videoconvert for compositor → sink format conversion
-            // (compositor outputs I420/YUY2, D3D11/GPU sinks want NV12/BGRA)
-            GstElement *sink_convert = gst_element_factory_make("videoconvert", "video_convert_sink");
-            if (!sink_convert) {
-                LOG_ERROR("[WebRTCSession] Failed to create sink videoconvert");
+            // Compositor should already exist (created with self-view)
+            if (!compositor_) {
+                LOG_ERROR("[WebRTCSession] Compositor does not exist! Self-view should have created it.");
                 gst_object_unref(depay);
                 gst_object_unref(decoder);
                 gst_object_unref(convert);
-                gst_object_unref(compositor_); compositor_ = nullptr;
-                gst_object_unref(sink);
                 return;
             }
 
-            LOG_INFO("[WebRTCSession] ✓ Created video receive pipeline with compositor (PiP ready)");
+            LOG_INFO("[WebRTCSession] Adding incoming video to existing compositor (with self-view)");
 
-            // Add elements to pipeline
-            gst_bin_add_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink_convert, sink, nullptr);
+            // Add receive elements to pipeline
+            gst_bin_add_many(GST_BIN(pipeline_), depay, decoder, convert, nullptr);
 
-            // Link incoming video chain: depay → decoder → convert → compositor (sink_0, layer 0 = background)
+            // Link incoming video chain: depay → decoder → convert
             if (!gst_element_link_many(depay, decoder, convert, nullptr)) {
                 LOG_ERROR("[WebRTCSession] Failed to link video receive chain");
-                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink_convert, sink, nullptr);
-                gst_object_unref(depay);
-                gst_object_unref(decoder);
-                gst_object_unref(convert);
-                gst_object_unref(compositor_); compositor_ = nullptr;
-                gst_object_unref(sink_convert);
-                gst_object_unref(sink);
+                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, nullptr);
                 return;
             }
 
-            // Request compositor sink pad for incoming video (layer 0 = background, full screen)
-            GstPad *comp_sink0 = gst_element_request_pad_simple(compositor_, "sink_%u");
-            if (!comp_sink0) {
+            // Request NEW compositor sink pad for incoming video (layer 1 = background behind self-view)
+            // Self-view is on layer 0 (created first), incoming video goes to layer 1 (created now)
+            // We'll use zorder to control layering: incoming=0 (background), self-view=1 (overlay)
+            GstPad *comp_sink_incoming = gst_element_request_pad_simple(compositor_, "sink_%u");
+            if (!comp_sink_incoming) {
                 LOG_ERROR("[WebRTCSession] Failed to request compositor sink pad for incoming video");
-                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink_convert, sink, nullptr);
+                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, nullptr);
                 return;
             }
 
-            // Configure layer 0: full screen background
-            g_object_set(comp_sink0,
+            // Configure incoming video as fullscreen background (zorder=0, behind self-view)
+            // Repositioning self-view to corner will happen here
+            g_object_set(comp_sink_incoming,
                 "xpos", 0,
                 "ypos", 0,
-                "zorder", 0,  // Background layer
+                "zorder", 0,  // Background layer (incoming video fullscreen)
                 nullptr);
 
-            // Link convert → compositor sink_0
+            // Link convert → compositor
             GstPad *convert_src = gst_element_get_static_pad(convert, "src");
-            GstPadLinkReturn link_ret = gst_pad_link(convert_src, comp_sink0);
+            GstPadLinkReturn link_ret = gst_pad_link(convert_src, comp_sink_incoming);
             gst_object_unref(convert_src);
-            gst_object_unref(comp_sink0);
 
             if (link_ret != GST_PAD_LINK_OK) {
-                LOG_ERROR("[WebRTCSession] Failed to link convert → compositor");
-                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink_convert, sink, nullptr);
+                LOG_ERROR("[WebRTCSession] Failed to link convert → compositor: {}", static_cast<int>(link_ret));
+                gst_object_unref(comp_sink_incoming);
+                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, nullptr);
                 return;
             }
 
-            // Link compositor → sink_convert → sink (format conversion for GPU sinks)
-            if (!gst_element_link_many(compositor_, sink_convert, sink, nullptr)) {
-                LOG_ERROR("[WebRTCSession] Failed to link compositor → sink_convert → sink");
-                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink_convert, sink, nullptr);
-                gst_object_unref(compositor_); compositor_ = nullptr;
-                return;
+            // NOW reposition self-view from fullscreen to PiP corner (bottom-right)
+            // Get the first compositor sink pad (self-view, created earlier)
+            GstPad *comp_sink_self = gst_element_get_static_pad(compositor_, "sink_0");
+            if (comp_sink_self) {
+                // Reposition self-view to bottom-right corner as PiP overlay
+                g_object_set(comp_sink_self,
+                    "xpos", 480,    // Right side (assuming 640x480 base resolution)
+                    "ypos", 360,    // Bottom (480 - 120 = 360)
+                    "width", 160,   // Thumbnail width
+                    "height", 120,  // Thumbnail height
+                    "zorder", 1,    // Overlay on top of incoming video
+                    nullptr);
+                gst_object_unref(comp_sink_self);
+                LOG_INFO("[WebRTCSession] ✓ Repositioned self-view to bottom-right corner (PiP overlay)");
+            } else {
+                LOG_WARN("[WebRTCSession] Could not get self-view pad to reposition it");
             }
+
+            gst_object_unref(comp_sink_incoming);
 
             // Sync state with parent
             gst_element_sync_state_with_parent(depay);
             gst_element_sync_state_with_parent(decoder);
             gst_element_sync_state_with_parent(convert);
-            gst_element_sync_state_with_parent(compositor_);
-            gst_element_sync_state_with_parent(sink_convert);
-            gst_element_sync_state_with_parent(sink);
 
             // Link webrtcbin pad to depay
             GstPad *sink_pad = gst_element_get_static_pad(depay, "sink");
@@ -2897,93 +3191,11 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
 
             if (link_ret != GST_PAD_LINK_OK) {
                 LOG_ERROR("[WebRTCSession] Failed to link incoming video pad to depay: {}", static_cast<int>(link_ret));
-                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink_convert, sink, nullptr);
-                gst_object_unref(compositor_); compositor_ = nullptr;
+                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, nullptr);
                 return;
             }
 
-            LOG_INFO("[WebRTCSession] ✓ Incoming video stream linked to compositor (layer 0)");
-
-            // Now link self-view branch if video_tee_ exists (camera pipeline already created)
-            if (video_tee_) {
-                LOG_INFO("[WebRTCSession] Linking self-view branch to compositor...");
-                // Create self-view overlay branch: tee → queue → videoconvert → videoscale → videoflip → compositor (layer 1)
-                GstElement *self_queue = gst_element_factory_make("queue", "self_view_queue");
-                GstElement *self_convert = gst_element_factory_make("videoconvert", "self_view_convert");
-                GstElement *self_scale = gst_element_factory_make("videoscale", "self_view_scale");
-                GstElement *self_flip = gst_element_factory_make("videoflip", "self_view_flip");
-
-                if (!self_queue || !self_convert || !self_scale || !self_flip) {
-                    LOG_ERROR("[WebRTCSession] Failed to create self-view elements");
-                    if (self_queue) gst_object_unref(self_queue);
-                    if (self_convert) gst_object_unref(self_convert);
-                    if (self_scale) gst_object_unref(self_scale);
-                    if (self_flip) gst_object_unref(self_flip);
-                } else {
-                    // Configure flip for mirror effect
-                    g_object_set(self_flip, "method", 4, nullptr);  // 4 = horizontal flip
-
-                    // Add self-view elements to pipeline
-                    gst_bin_add_many(GST_BIN(pipeline_), self_queue, self_convert, self_scale, self_flip, nullptr);
-
-                    // Link self-view chain
-                    if (!gst_element_link_many(self_queue, self_convert, self_scale, self_flip, nullptr)) {
-                        LOG_ERROR("[WebRTCSession] Failed to link self-view chain");
-                        gst_bin_remove_many(GST_BIN(pipeline_), self_queue, self_convert, self_scale, self_flip, nullptr);
-                    } else {
-                        // Request compositor sink pad for self-view (layer 1 = overlay, top-right corner)
-                        GstPad *comp_sink1 = gst_element_request_pad_simple(compositor_, "sink_%u");
-                        if (!comp_sink1) {
-                            LOG_ERROR("[WebRTCSession] Failed to request compositor sink pad for self-view");
-                            gst_bin_remove_many(GST_BIN(pipeline_), self_queue, self_convert, self_scale, self_flip, nullptr);
-                        } else {
-                            // Configure layer 1: 160x120 thumbnail in bottom-right corner
-                            // TODO: Make position/size configurable
-                            g_object_set(comp_sink1,
-                                "xpos", 480,    // Right side (assuming 640x480 base resolution)
-                                "ypos", 360,    // Bottom (480 - 120 = 360)
-                                "width", 160,   // Thumbnail width
-                                "height", 120,  // Thumbnail height
-                                "zorder", 1,    // Overlay on top
-                                nullptr);
-
-                            // Link tee → self_queue
-                            GstPad *tee_src = gst_element_request_pad_simple(video_tee_, "src_%u");
-                            GstPad *queue_sink = gst_element_get_static_pad(self_queue, "sink");
-                            link_ret = gst_pad_link(tee_src, queue_sink);
-                            gst_object_unref(tee_src);
-                            gst_object_unref(queue_sink);
-
-                            if (link_ret != GST_PAD_LINK_OK) {
-                                LOG_ERROR("[WebRTCSession] Failed to link tee → self_queue");
-                                gst_object_unref(comp_sink1);
-                                gst_bin_remove_many(GST_BIN(pipeline_), self_queue, self_convert, self_scale, self_flip, nullptr);
-                            } else {
-                                // Link self_flip → compositor sink_1
-                                GstPad *flip_src = gst_element_get_static_pad(self_flip, "src");
-                                link_ret = gst_pad_link(flip_src, comp_sink1);
-                                gst_object_unref(flip_src);
-                                gst_object_unref(comp_sink1);
-
-                                if (link_ret != GST_PAD_LINK_OK) {
-                                    LOG_ERROR("[WebRTCSession] Failed to link self_flip → compositor");
-                                    gst_bin_remove_many(GST_BIN(pipeline_), self_queue, self_convert, self_scale, self_flip, nullptr);
-                                } else {
-                                    // Sync state with parent
-                                    gst_element_sync_state_with_parent(self_queue);
-                                    gst_element_sync_state_with_parent(self_convert);
-                                    gst_element_sync_state_with_parent(self_scale);
-                                    gst_element_sync_state_with_parent(self_flip);
-
-                                    LOG_INFO("[WebRTCSession] ✓ Self-view PiP linked to compositor (layer 1, 160x120 at top-right)");
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                LOG_INFO("[WebRTCSession] No camera pipeline yet, self-view will be added when camera starts");
-            }
+            LOG_INFO("[WebRTCSession] ✓ Incoming video added to compositor (fullscreen background, self-view in corner)");
 
             return;  // Done handling video
         }
