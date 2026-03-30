@@ -1320,9 +1320,11 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
             LOG_INFO("[WebRTCSession] [ANSWERER] Using default camera device");
         }
 
-        // CRITICAL: Enable do-timestamp for proper timestamps
+        // CRITICAL: Enable do-timestamp for proper timestamps (v4l2src only)
+#ifdef __linux__
         g_object_set(video_src_, "do-timestamp", TRUE, nullptr);
-        LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Set do-timestamp=TRUE on video source");
+        LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Set do-timestamp=TRUE on v4l2src");
+#endif
 
         // Create tee to split camera feed (one branch for encoding, one for self-view PiP)
         video_tee_ = gst_element_factory_make("tee", "video_tee");
@@ -1699,9 +1701,11 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
             LOG_INFO("[WebRTCSession] [OFFERER] Using default camera device");
         }
 
-        // CRITICAL: Enable do-timestamp for proper timestamps
+        // CRITICAL: Enable do-timestamp for proper timestamps (v4l2src only)
+#ifdef __linux__
         g_object_set(video_src_, "do-timestamp", TRUE, nullptr);
-        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Set do-timestamp=TRUE on video source");
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Set do-timestamp=TRUE on v4l2src");
+#endif
 
         // Create tee to split camera feed (one branch for encoding, one for self-view PiP)
         video_tee_ = gst_element_factory_make("tee", "video_tee");
@@ -2812,15 +2816,11 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
             // Configure video sink for A/V sync
             g_object_set(sink, "sync", TRUE, nullptr);  // Sync to clock for smooth playback
 
-            LOG_INFO("[WebRTCSession] ✓ Created video receive pipeline with compositor (PiP ready)");
-
-            // Add elements to pipeline
-            gst_bin_add_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink, nullptr);
-
-            // Link incoming video chain: depay → decoder → convert → compositor (sink_0, layer 0 = background)
-            if (!gst_element_link_many(depay, decoder, convert, nullptr)) {
-                LOG_ERROR("[WebRTCSession] Failed to link video receive chain");
-                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink, nullptr);
+            // Create videoconvert for compositor → sink format conversion
+            // (compositor outputs I420/YUY2, D3D11/GPU sinks want NV12/BGRA)
+            GstElement *sink_convert = gst_element_factory_make("videoconvert", "video_convert_sink");
+            if (!sink_convert) {
+                LOG_ERROR("[WebRTCSession] Failed to create sink videoconvert");
                 gst_object_unref(depay);
                 gst_object_unref(decoder);
                 gst_object_unref(convert);
@@ -2829,11 +2829,29 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
                 return;
             }
 
+            LOG_INFO("[WebRTCSession] ✓ Created video receive pipeline with compositor (PiP ready)");
+
+            // Add elements to pipeline
+            gst_bin_add_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink_convert, sink, nullptr);
+
+            // Link incoming video chain: depay → decoder → convert → compositor (sink_0, layer 0 = background)
+            if (!gst_element_link_many(depay, decoder, convert, nullptr)) {
+                LOG_ERROR("[WebRTCSession] Failed to link video receive chain");
+                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink_convert, sink, nullptr);
+                gst_object_unref(depay);
+                gst_object_unref(decoder);
+                gst_object_unref(convert);
+                gst_object_unref(compositor_); compositor_ = nullptr;
+                gst_object_unref(sink_convert);
+                gst_object_unref(sink);
+                return;
+            }
+
             // Request compositor sink pad for incoming video (layer 0 = background, full screen)
             GstPad *comp_sink0 = gst_element_request_pad_simple(compositor_, "sink_%u");
             if (!comp_sink0) {
                 LOG_ERROR("[WebRTCSession] Failed to request compositor sink pad for incoming video");
-                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink, nullptr);
+                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink_convert, sink, nullptr);
                 return;
             }
 
@@ -2852,14 +2870,14 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
 
             if (link_ret != GST_PAD_LINK_OK) {
                 LOG_ERROR("[WebRTCSession] Failed to link convert → compositor");
-                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink, nullptr);
+                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink_convert, sink, nullptr);
                 return;
             }
 
-            // Link compositor → sink
-            if (!gst_element_link(compositor_, sink)) {
-                LOG_ERROR("[WebRTCSession] Failed to link compositor → sink");
-                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink, nullptr);
+            // Link compositor → sink_convert → sink (format conversion for GPU sinks)
+            if (!gst_element_link_many(compositor_, sink_convert, sink, nullptr)) {
+                LOG_ERROR("[WebRTCSession] Failed to link compositor → sink_convert → sink");
+                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink_convert, sink, nullptr);
                 gst_object_unref(compositor_); compositor_ = nullptr;
                 return;
             }
@@ -2869,6 +2887,7 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
             gst_element_sync_state_with_parent(decoder);
             gst_element_sync_state_with_parent(convert);
             gst_element_sync_state_with_parent(compositor_);
+            gst_element_sync_state_with_parent(sink_convert);
             gst_element_sync_state_with_parent(sink);
 
             // Link webrtcbin pad to depay
@@ -2878,7 +2897,7 @@ void WebRTCSession::on_incoming_stream(GstPad *pad) {
 
             if (link_ret != GST_PAD_LINK_OK) {
                 LOG_ERROR("[WebRTCSession] Failed to link incoming video pad to depay: {}", static_cast<int>(link_ret));
-                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink, nullptr);
+                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, compositor_, sink_convert, sink, nullptr);
                 gst_object_unref(compositor_); compositor_ = nullptr;
                 return;
             }
