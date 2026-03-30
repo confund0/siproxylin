@@ -144,6 +144,11 @@ add_executable(${BINARY_NAME}
     src/main.cpp
     src/call_service_impl.cpp
     src/webrtc_session.cpp
+    src/webrtc_session_audio.cpp
+    src/webrtc_session_video.cpp
+    src/webrtc_session_ice.cpp
+    src/webrtc_session_sdp.cpp
+    src/webrtc_session_stats.cpp
     src/session_manager.cpp
     src/device_enumerator.cpp
     src/logger.cpp

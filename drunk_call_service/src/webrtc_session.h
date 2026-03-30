@@ -166,6 +166,12 @@ private:
     bool add_turn_servers();
     void connect_signals();
 
+    // Audio pipeline helpers (implemented in webrtc_session_audio.cpp)
+    void handle_incoming_audio_stream(GstPad *pad);
+
+    // Video pipeline helpers (implemented in webrtc_session_video.cpp)
+    void handle_incoming_video_stream(GstPad *pad);
+
     // Promise callback for set-remote-description before answer
     static void on_offer_set_for_answer_static(GstPromise *promise, gpointer user_data);
     void on_offer_set_for_answer();
