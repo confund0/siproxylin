@@ -6,3 +6,4 @@ DO NOT TOUCH protobuf code generating for Python.
 FEEL FREE to do READ operations within the project scope: find, ls, tree, cat, grep, awk, tr, sed or similar that needed to analyze logs or code itself
 FEEL FREE to do web searches when necesscary
 
+If you need a temporary place for files use ./tmp/ inside of the project instead of "/tmp", to avoid interactive asking permissions.
