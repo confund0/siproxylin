@@ -1297,14 +1297,20 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         gst_element_get_state(pipeline_, &current_state, nullptr, GST_CLOCK_TIME_NONE);
         LOG_INFO("[WebRTCSession] Pipeline state after pause: {}", gst_element_state_get_name(current_state));
 
-        // Create video source - use v4l2src on Linux (works reliably with /dev/video*)
-        // TODO: Use platform detection for Windows (ksvideosrc) and macOS (avfvideosrc)
+        // Create video source - platform-specific
+        // Linux: v4l2src (tested, reliable), others: autovideosrc (GStreamer auto-detection)
+#ifdef __linux__
         video_src_ = gst_element_factory_make("v4l2src", "video_src");
+        const char* source_name = "v4l2src (Linux V4L2)";
+#else
+        video_src_ = gst_element_factory_make("autovideosrc", "video_src");
+        const char* source_name = "autovideosrc";
+#endif
         if (!video_src_) {
-            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to create v4l2src video source");
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to create video source: {}", source_name);
             return false;
         }
-        LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Using v4l2src (Linux V4L2 camera access)");
+        LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Using {}", source_name);
 
         // Set camera device if specified (e.g., "/dev/video0")
         if (!config_.camera_device.empty()) {
@@ -1670,14 +1676,20 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         // Use gst_element_sync_state_with_parent() to let GStreamer manage state transitions
         LOG_INFO("[WebRTCSession] [OFFERER] Adding video elements to running pipeline...");
 
-        // Create video source - use v4l2src on Linux (works reliably with /dev/video*)
-        // TODO: Use platform detection for Windows (ksvideosrc) and macOS (avfvideosrc)
+        // Create video source - platform-specific
+        // Linux: v4l2src (tested, reliable), others: autovideosrc (GStreamer auto-detection)
+#ifdef __linux__
         video_src_ = gst_element_factory_make("v4l2src", "video_src");
+        const char* source_name = "v4l2src (Linux V4L2)";
+#else
+        video_src_ = gst_element_factory_make("autovideosrc", "video_src");
+        const char* source_name = "autovideosrc";
+#endif
         if (!video_src_) {
-            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create v4l2src video source");
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create video source: {}", source_name);
             return false;
         }
-        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Using v4l2src (Linux V4L2 camera access)");
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Using {}", source_name);
 
         // Set camera device if specified (e.g., "/dev/video0")
         if (!config_.camera_device.empty()) {
