@@ -208,7 +208,7 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
 
         // Create video sink
 #ifdef _WIN32
-        video_sink_ = gst_element_factory_make("glimagesink", "video_sink");
+        video_sink_ = gst_element_factory_make("d3dvideosink", "video_sink");
 #else
         video_sink_ = gst_element_factory_make("autovideosink", "video_sink");
 #endif
@@ -219,6 +219,14 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
             return false;
         }
         g_object_set(video_sink_, "sync", TRUE, nullptr);
+#ifdef _WIN32
+        // D3D9 stability settings for VM/RDP compatibility
+        g_object_set(video_sink_,
+            "force-aspect-ratio", TRUE,           // Maintain aspect ratio
+            "enable-navigation-events", FALSE,    // Reduce event overhead
+            "stream-stop-on-close", FALSE,        // Don't stop stream if window closes accidentally
+            nullptr);
+#endif
 
         // Create format conversion for compositor → sink
         GstElement *sink_convert = gst_element_factory_make("videoconvert", "video_convert_sink");
@@ -552,7 +560,7 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
 
         // Create video sink
 #ifdef _WIN32
-        video_sink_ = gst_element_factory_make("glimagesink", "video_sink");
+        video_sink_ = gst_element_factory_make("d3dvideosink", "video_sink");
 #else
         video_sink_ = gst_element_factory_make("autovideosink", "video_sink");
 #endif
@@ -563,6 +571,14 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
             return false;
         }
         g_object_set(video_sink_, "sync", TRUE, nullptr);
+#ifdef _WIN32
+        // D3D9 stability settings for VM/RDP compatibility
+        g_object_set(video_sink_,
+            "force-aspect-ratio", TRUE,           // Maintain aspect ratio
+            "enable-navigation-events", FALSE,    // Reduce event overhead
+            "stream-stop-on-close", FALSE,        // Don't stop stream if window closes accidentally
+            nullptr);
+#endif
 
         // Create format conversion for compositor → sink
         GstElement *sink_convert = gst_element_factory_make("videoconvert", "video_convert_sink");
