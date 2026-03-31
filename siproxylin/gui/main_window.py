@@ -1148,9 +1148,15 @@ class MainWindow(QMainWindow):
         dialog = DiscoQueryDialog(parent=self)
 
         # Connect the dialog's signal to the existing disco handler
-        dialog.disco_query_requested.connect(
-            lambda account_id, jid: asyncio.create_task(self._disco_contact_async(account_id, jid))
-        )
+        def handle_disco_query(account_id, jid):
+            logger.debug(f"Disco query signal received, creating async task for {jid}")
+            try:
+                task = asyncio.create_task(self._disco_contact_async(account_id, jid))
+                logger.debug(f"Async task created: {task}")
+            except Exception as e:
+                logger.error(f"Failed to create disco async task: {e}", exc_info=True)
+
+        dialog.disco_query_requested.connect(handle_disco_query)
 
         dialog.show()
 
