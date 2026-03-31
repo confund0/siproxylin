@@ -8,6 +8,10 @@
 #include "logger.h"
 #include <gst/webrtc/webrtc.h>
 
+#ifdef _WIN32
+#include <windows.h>  // For FindWindowExW, ShowWindow, SetForegroundWindow
+#endif
+
 namespace drunk_call {
 
 bool WebRTCSession::setup_answerer_video_pipeline() {
@@ -344,6 +348,18 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         gst_element_sync_state_with_parent(video_sink_);
 
         LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Self-view created immediately (fullscreen until remote video arrives)");
+
+#ifdef _WIN32
+        // Windows: Maximize d3dvideosink window to prevent collapsed appearance
+        HWND hwnd = FindWindowExW(nullptr, nullptr, L"GstD3DVideoSinkInternalWindow", nullptr);
+        if (hwnd) {
+            ShowWindow(hwnd, SW_MAXIMIZE);
+            SetForegroundWindow(hwnd);
+            LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Maximized d3dvideosink window");
+        } else {
+            LOG_WARN("[WebRTCSession] [ANSWERER] Could not find d3dvideosink window to maximize");
+        }
+#endif
 
         // Resume pipeline to PLAYING
         LOG_DEBUG("[WebRTCSession] Resuming pipeline to PLAYING...");
@@ -696,6 +712,18 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         gst_element_sync_state_with_parent(video_sink_);
 
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Self-view created immediately (fullscreen until remote video arrives)");
+
+#ifdef _WIN32
+        // Windows: Maximize d3dvideosink window to prevent collapsed appearance
+        HWND hwnd = FindWindowExW(nullptr, nullptr, L"GstD3DVideoSinkInternalWindow", nullptr);
+        if (hwnd) {
+            ShowWindow(hwnd, SW_MAXIMIZE);
+            SetForegroundWindow(hwnd);
+            LOG_INFO("[WebRTCSession] [OFFERER] ✓ Maximized d3dvideosink window");
+        } else {
+            LOG_WARN("[WebRTCSession] [OFFERER] Could not find d3dvideosink window to maximize");
+        }
+#endif
 
         LOG_INFO("[WebRTCSession] [OFFERER] Video source pipeline created and linked");
         return true;
