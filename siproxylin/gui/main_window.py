@@ -1125,7 +1125,7 @@ class MainWindow(QMainWindow):
 
     def _on_disco_contact(self, account_id: int, jid: str):
         """Handle Service Discovery for a contact."""
-        logger.debug(f"Disco requested for contact {jid} on account {account_id}")
+        logger.info(f"Disco requested for contact {jid} on account {account_id}")
         asyncio.create_task(self._disco_contact_async(account_id, jid))
 
     def _on_disco_muc(self, account_id: int, room_jid: str):
@@ -1149,10 +1149,10 @@ class MainWindow(QMainWindow):
 
         # Connect the dialog's signal to the existing disco handler
         def handle_disco_query(account_id, jid):
-            logger.debug(f"Disco query signal received, creating async task for {jid}")
+            logger.info(f"Disco query signal received, creating async task for {jid}")
             try:
                 task = asyncio.create_task(self._disco_contact_async(account_id, jid))
-                logger.debug(f"Async task created: {task}")
+                logger.info(f"Async task created: {task}")
             except Exception as e:
                 logger.error(f"Failed to create disco async task: {e}", exc_info=True)
 
