@@ -1125,7 +1125,7 @@ class MainWindow(QMainWindow):
 
     def _on_disco_contact(self, account_id: int, jid: str):
         """Handle Service Discovery for a contact."""
-        logger.info(f"Disco requested for contact {jid} on account {account_id}")
+        logger.debug(f"Disco requested for contact {jid} on account {account_id}")
         asyncio.create_task(self._disco_contact_async(account_id, jid))
 
     def _on_disco_muc(self, account_id: int, room_jid: str):
@@ -1149,12 +1149,12 @@ class MainWindow(QMainWindow):
 
         # Connect the dialog's signal to the existing disco handler
         def handle_disco_query(account_id, jid):
-            logger.info(f"Disco query signal received, creating async task for {jid}")
+            logger.debug(f"Disco query signal received, creating async task for {jid}")
             try:
                 # Use ensure_future instead of create_task for better compatibility
                 import qasync
                 task = asyncio.ensure_future(self._disco_contact_async(account_id, jid))
-                logger.info(f"Async task created with ensure_future: {task}")
+                logger.debug(f"Async task created with ensure_future: {task}")
             except Exception as e:
                 logger.error(f"Failed to create disco async task: {e}", exc_info=True)
 
@@ -1164,24 +1164,31 @@ class MainWindow(QMainWindow):
 
     async def _disco_contact_async(self, account_id: int, jid: str):
         """Async handler for contact disco query."""
-        logger.info(f"[DISCO ASYNC] Started for {jid} on account {account_id}")
+        logger.debug(f"[DISCO ASYNC] Started for {jid} on account {account_id}")
         from .dialogs.disco_info_dialog import DiscoInfoDialog
 
-        logger.info(f"[DISCO ASYNC] Getting account {account_id}")
+        logger.debug(f"[DISCO ASYNC] Getting account {account_id}")
         account = self.account_manager.get_account(account_id)
-        logger.info(f"[DISCO ASYNC] Account retrieved: {account}")
+        logger.debug(f"[DISCO ASYNC] Account retrieved: {account}")
+
+        logger.debug(f"[DISCO ASYNC] Checking account validity: account={account is not None}, client={account.client if account else None}")
         if not account or not account.client:
+            logger.error(f"[DISCO ASYNC] Account check failed!")
             QMessageBox.warning(self, "Error", "Account not available or not connected")
             return
 
+        logger.debug(f"[DISCO ASYNC] Checking connection status...")
         if not account.is_connected():
+            logger.error(f"[DISCO ASYNC] Account not connected!")
             QMessageBox.warning(self, "Error", f"Account must be connected to query disco info")
             return
 
+        logger.debug(f"[DISCO ASYNC] About to query disco info for {jid}")
         try:
             # Query disco info via XEP-0030
+            logger.debug(f"[DISCO ASYNC] Calling get_info()...")
             info = await account.client['xep_0030'].get_info(jid=jid)
-            logger.debug(f"Disco response received from {jid}, info type: {type(info)}")
+            logger.debug(f"[DISCO ASYNC] get_info() returned, info type: {type(info)}")
 
             # Get raw XML before parsing
             raw_xml = self._get_pretty_xml(info)

@@ -154,13 +154,13 @@ class DiscoQueryDialog(QDialog):
             logger.warning(f"Query clicked but invalid: jid='{jid}', account_id={account_id}")
             return
 
-        logger.info(f"Disco query requested: account_id={account_id}, target_jid={jid}")
-        logger.info(f"Emitting disco_query_requested signal...")
+        logger.debug(f"Disco query requested: account_id={account_id}, target_jid={jid}")
+        logger.debug(f"Emitting disco_query_requested signal...")
 
         # Emit signal with query parameters
         self.disco_query_requested.emit(account_id, jid)
 
-        logger.info(f"Signal emitted, accepting dialog")
+        logger.debug(f"Signal emitted, accepting dialog")
 
         # Accept and close dialog
         self.accept()
