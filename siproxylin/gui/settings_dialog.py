@@ -4,6 +4,7 @@ Settings dialog for Siproxylin.
 
 import json
 import asyncio
+import logging
 from pathlib import Path
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QTabWidget, QWidget,
@@ -12,11 +13,10 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
-from ..utils.logger import setup_main_logger
 from ..utils.paths import get_paths
 from ..db.database import get_db
 
-logger = setup_main_logger()
+logger = logging.getLogger('siproxylin.settings_dialog')
 
 
 class SettingsDialog(QDialog):

@@ -9,13 +9,12 @@ exposed simultaneously.
 """
 
 import json
+import logging
 import subprocess
 import platform
 from typing import Optional
 
-from .logger import setup_main_logger
-
-logger = setup_main_logger()
+logger = logging.getLogger(__name__)
 
 
 def fix_audio_card_profiles() -> None:
