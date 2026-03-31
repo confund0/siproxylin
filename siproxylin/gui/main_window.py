@@ -1170,19 +1170,22 @@ class MainWindow(QMainWindow):
         try:
             # Query disco info via XEP-0030
             info = await account.client['xep_0030'].get_info(jid=jid)
+            logger.debug(f"Disco response received from {jid}, info type: {type(info)}")
 
             # Get raw XML before parsing
             raw_xml = self._get_pretty_xml(info)
+            logger.debug(f"Raw XML length: {len(raw_xml) if raw_xml else 0}")
 
             # Parse disco response
             disco_data = self._parse_disco_info(info)
+            logger.debug(f"Parsed disco_data: {disco_data}")
 
             # Create and show dialog (non-blocking with .show())
             dialog = DiscoInfoDialog(parent=self, jid=jid, disco_data=disco_data, raw_xml=raw_xml)
             dialog.show()
 
         except Exception as e:
-            logger.error(f"Failed to get disco info for {jid}: {e}")
+            logger.error(f"Failed to get disco info for {jid}: {e}", exc_info=True)
             QMessageBox.critical(self, "Disco Error", f"Failed to query {jid}:\n{str(e)}")
 
     async def _disco_muc_async(self, account_id: int, room_jid: str):
@@ -1402,7 +1405,7 @@ class MainWindow(QMainWindow):
             return '\n'.join(lines)
 
         except Exception as e:
-            logger.warning(f"Failed to pretty-print stanza XML: {e}")
+            logger.error(f"Failed to pretty-print stanza XML: {e}", exc_info=True)
             # Fallback: try alternative method
             try:
                 import xml.etree.ElementTree as ET
@@ -1411,7 +1414,7 @@ class MainWindow(QMainWindow):
                 xml_str = ET.tostring(stanza, encoding='unicode')
                 return xml_str
             except Exception as e2:
-                logger.warning(f"Fallback pretty-print also failed: {e2}")
+                logger.error(f"Fallback pretty-print also failed: {e2}", exc_info=True)
                 # Last resort: return raw string
                 return str(stanza)
 

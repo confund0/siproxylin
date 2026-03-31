@@ -4,6 +4,7 @@ Service Discovery Information Dialog.
 Displays XMPP Service Discovery (XEP-0030) information in YAML format.
 """
 
+import logging
 import yaml
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QTextEdit, QPushButton,
@@ -12,6 +13,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QFont
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
+
+
+logger = logging.getLogger('siproxylin.disco_info_dialog')
 
 
 class DiscoInfoDialog(QDialog):
@@ -112,6 +116,7 @@ class DiscoInfoDialog(QDialog):
                 self.text_edit.setPlainText(yaml_text)
             except Exception as e:
                 # Fallback to simple list if YAML fails
+                logger.error(f"YAML formatting failed, using simple list fallback: {e}", exc_info=True)
                 text = self._format_as_simple_list(self.disco_data)
                 self.text_edit.setPlainText(text)
         else:
@@ -231,6 +236,7 @@ class DiscoInfoDialog(QDialog):
 
         except Exception as e:
             # Fallback to simple list
+            logger.error(f"XML formatting failed, using simple list fallback: {e}", exc_info=True)
             return self._format_as_simple_list(data)
 
     def _copy_to_clipboard(self):
