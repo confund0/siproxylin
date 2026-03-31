@@ -1151,8 +1151,10 @@ class MainWindow(QMainWindow):
         def handle_disco_query(account_id, jid):
             logger.info(f"Disco query signal received, creating async task for {jid}")
             try:
-                task = asyncio.create_task(self._disco_contact_async(account_id, jid))
-                logger.info(f"Async task created: {task}")
+                # Use ensure_future instead of create_task for better compatibility
+                import qasync
+                task = asyncio.ensure_future(self._disco_contact_async(account_id, jid))
+                logger.info(f"Async task created with ensure_future: {task}")
             except Exception as e:
                 logger.error(f"Failed to create disco async task: {e}", exc_info=True)
 
