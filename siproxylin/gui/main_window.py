@@ -1162,9 +1162,12 @@ class MainWindow(QMainWindow):
 
     async def _disco_contact_async(self, account_id: int, jid: str):
         """Async handler for contact disco query."""
+        logger.info(f"[DISCO ASYNC] Started for {jid} on account {account_id}")
         from .dialogs.disco_info_dialog import DiscoInfoDialog
 
+        logger.info(f"[DISCO ASYNC] Getting account {account_id}")
         account = self.account_manager.get_account(account_id)
+        logger.info(f"[DISCO ASYNC] Account retrieved: {account}")
         if not account or not account.client:
             QMessageBox.warning(self, "Error", "Account not available or not connected")
             return
