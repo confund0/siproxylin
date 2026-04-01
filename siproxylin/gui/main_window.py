@@ -1307,7 +1307,11 @@ class MainWindow(QMainWindow):
 
         logger.debug(f"[PARSE DISCO] disco_info has 'identities': {'identities' in disco_info if hasattr(disco_info, '__contains__') else 'N/A (not dict-like)'}")
 
-        if disco_info and 'identities' in disco_info:
+        # Check if identities interface exists (works on both Linux and Windows)
+        has_identities = 'identities' in getattr(disco_info, 'interfaces', set())
+        logger.debug(f"[PARSE DISCO] 'identities' in interfaces: {has_identities}")
+
+        if disco_info and has_identities:
             for identity in disco_info['identities']:
                 identities.append({
                     'category': identity[0],
@@ -1323,7 +1327,12 @@ class MainWindow(QMainWindow):
         # Extract features
         features = []
         logger.debug(f"[PARSE DISCO] disco_info has 'features': {'features' in disco_info if hasattr(disco_info, '__contains__') else 'N/A'}")
-        if disco_info and 'features' in disco_info:
+
+        # Check if features interface exists (works on both Linux and Windows)
+        has_features = 'features' in getattr(disco_info, 'interfaces', set())
+        logger.debug(f"[PARSE DISCO] 'features' in interfaces: {has_features}")
+
+        if disco_info and has_features:
             features = sorted(list(disco_info['features']))
             logger.debug(f"[PARSE DISCO] Extracted {len(features)} features")
         else:
@@ -1333,7 +1342,12 @@ class MainWindow(QMainWindow):
 
         # Extended info (XEP-0128 data forms)
         logger.debug(f"[PARSE DISCO] disco_info has 'form': {'form' in disco_info if hasattr(disco_info, '__contains__') else 'N/A'}")
-        if disco_info and 'form' in disco_info:
+
+        # Check if form interface exists (works on both Linux and Windows)
+        has_form = 'form' in getattr(disco_info, 'interfaces', set())
+        logger.debug(f"[PARSE DISCO] 'form' in interfaces: {has_form}")
+
+        if disco_info and has_form:
             form = disco_info['form']
             extended = self._parse_data_form(form)
             if extended:
