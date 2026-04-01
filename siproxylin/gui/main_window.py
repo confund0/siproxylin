@@ -1281,11 +1281,22 @@ class MainWindow(QMainWindow):
         Returns:
             Dictionary with identities, features, and extended info
         """
+        # DEBUG: Log info object details
+        logger.debug(f"[PARSE DISCO] info type: {type(info)}")
+        logger.debug(f"[PARSE DISCO] info class name: {info.__class__.__name__}")
+        logger.debug(f"[PARSE DISCO] has 'get' method: {hasattr(info, 'get')}")
+        logger.debug(f"[PARSE DISCO] has 'disco_info' attr: {hasattr(info, 'disco_info')}")
+        logger.debug(f"[PARSE DISCO] dir(info): {[attr for attr in dir(info) if not attr.startswith('_')][:20]}")
+
         result = {}
 
         # Extract identities
         identities = []
         disco_info = info.get('disco_info', info)
+        logger.debug(f"[PARSE DISCO] disco_info type after .get(): {type(disco_info)}")
+        logger.debug(f"[PARSE DISCO] disco_info is info: {disco_info is info}")
+        logger.debug(f"[PARSE DISCO] disco_info has 'identities': {'identities' in disco_info if hasattr(disco_info, '__contains__') else 'N/A (not dict-like)'}")
+
         if disco_info and 'identities' in disco_info:
             for identity in disco_info['identities']:
                 identities.append({
@@ -1295,21 +1306,31 @@ class MainWindow(QMainWindow):
                 })
         if identities:
             result['identities'] = identities
+            logger.debug(f"[PARSE DISCO] Extracted {len(identities)} identities")
+        else:
+            logger.debug(f"[PARSE DISCO] No identities found")
 
         # Extract features
         features = []
+        logger.debug(f"[PARSE DISCO] disco_info has 'features': {'features' in disco_info if hasattr(disco_info, '__contains__') else 'N/A'}")
         if disco_info and 'features' in disco_info:
             features = sorted(list(disco_info['features']))
+            logger.debug(f"[PARSE DISCO] Extracted {len(features)} features")
+        else:
+            logger.debug(f"[PARSE DISCO] No features found")
         if features:
             result['features'] = features
 
         # Extended info (XEP-0128 data forms)
+        logger.debug(f"[PARSE DISCO] disco_info has 'form': {'form' in disco_info if hasattr(disco_info, '__contains__') else 'N/A'}")
         if disco_info and 'form' in disco_info:
             form = disco_info['form']
             extended = self._parse_data_form(form)
             if extended:
                 result['extended_info'] = extended
+                logger.debug(f"[PARSE DISCO] Extracted extended info")
 
+        logger.debug(f"[PARSE DISCO] Final result keys: {list(result.keys())}")
         return result
 
     def _parse_data_form(self, form):
