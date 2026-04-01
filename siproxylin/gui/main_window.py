@@ -1295,6 +1295,16 @@ class MainWindow(QMainWindow):
         disco_info = info.get('disco_info', info)
         logger.debug(f"[PARSE DISCO] disco_info type after .get(): {type(disco_info)}")
         logger.debug(f"[PARSE DISCO] disco_info is info: {disco_info is info}")
+        logger.debug(f"[PARSE DISCO] disco_info has '__contains__': {hasattr(disco_info, '__contains__')}")
+        logger.debug(f"[PARSE DISCO] disco_info dir: {[attr for attr in dir(disco_info) if not attr.startswith('_')][:30]}")
+        logger.debug(f"[PARSE DISCO] disco_info.interfaces: {getattr(disco_info, 'interfaces', 'N/A')}")
+
+        # Try to get identities attribute directly
+        if hasattr(disco_info, 'identities'):
+            logger.debug(f"[PARSE DISCO] disco_info.identities exists: {type(disco_info.identities)}")
+        if hasattr(disco_info, 'features'):
+            logger.debug(f"[PARSE DISCO] disco_info.features exists: {type(disco_info.features)}")
+
         logger.debug(f"[PARSE DISCO] disco_info has 'identities': {'identities' in disco_info if hasattr(disco_info, '__contains__') else 'N/A (not dict-like)'}")
 
         if disco_info and 'identities' in disco_info:
