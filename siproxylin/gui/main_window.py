@@ -1149,14 +1149,8 @@ class MainWindow(QMainWindow):
 
         # Connect the dialog's signal to the existing disco handler
         def handle_disco_query(account_id, jid):
-            logger.debug(f"Disco query signal received, creating async task for {jid}")
-            try:
-                # Use ensure_future instead of create_task for better compatibility
-                import qasync
-                task = asyncio.ensure_future(self._disco_contact_async(account_id, jid))
-                logger.debug(f"Async task created with ensure_future: {task}")
-            except Exception as e:
-                logger.error(f"Failed to create disco async task: {e}", exc_info=True)
+            logger.debug(f"Disco query signal received for {jid}")
+            asyncio.ensure_future(self._disco_contact_async(account_id, jid))
 
         dialog.disco_query_requested.connect(handle_disco_query)
 
@@ -1164,39 +1158,27 @@ class MainWindow(QMainWindow):
 
     async def _disco_contact_async(self, account_id: int, jid: str):
         """Async handler for contact disco query."""
-        logger.debug(f"[DISCO ASYNC] Started for {jid} on account {account_id}")
         from .dialogs.disco_info_dialog import DiscoInfoDialog
 
-        logger.debug(f"[DISCO ASYNC] Getting account {account_id}")
         account = self.account_manager.get_account(account_id)
-        logger.debug(f"[DISCO ASYNC] Account retrieved: {account}")
 
-        logger.debug(f"[DISCO ASYNC] Checking account validity: account={account is not None}, client={account.client if account else None}")
         if not account or not account.client:
-            logger.error(f"[DISCO ASYNC] Account check failed!")
             QMessageBox.warning(self, "Error", "Account not available or not connected")
             return
 
-        logger.debug(f"[DISCO ASYNC] Checking connection status...")
         if not account.is_connected():
-            logger.error(f"[DISCO ASYNC] Account not connected!")
             QMessageBox.warning(self, "Error", f"Account must be connected to query disco info")
             return
 
-        logger.debug(f"[DISCO ASYNC] About to query disco info for {jid}")
         try:
             # Query disco info via XEP-0030
-            logger.debug(f"[DISCO ASYNC] Calling get_info()...")
             info = await account.client['xep_0030'].get_info(jid=jid)
-            logger.debug(f"[DISCO ASYNC] get_info() returned, info type: {type(info)}")
 
             # Get raw XML before parsing
             raw_xml = self._get_pretty_xml(info)
-            logger.debug(f"Raw XML length: {len(raw_xml) if raw_xml else 0}")
 
             # Parse disco response
             disco_data = self._parse_disco_info(info)
-            logger.debug(f"Parsed disco_data: {disco_data}")
 
             # Create and show dialog (non-blocking with .show())
             dialog = DiscoInfoDialog(parent=self, jid=jid, disco_data=disco_data, raw_xml=raw_xml)
@@ -1281,35 +1263,15 @@ class MainWindow(QMainWindow):
         Returns:
             Dictionary with identities, features, and extended info
         """
-        # DEBUG: Log info object details
-        logger.debug(f"[PARSE DISCO] info type: {type(info)}")
-        logger.debug(f"[PARSE DISCO] info class name: {info.__class__.__name__}")
-        logger.debug(f"[PARSE DISCO] has 'get' method: {hasattr(info, 'get')}")
-        logger.debug(f"[PARSE DISCO] has 'disco_info' attr: {hasattr(info, 'disco_info')}")
-        logger.debug(f"[PARSE DISCO] dir(info): {[attr for attr in dir(info) if not attr.startswith('_')][:20]}")
-
         result = {}
 
         # Extract identities
         identities = []
         disco_info = info.get('disco_info', info)
-        logger.debug(f"[PARSE DISCO] disco_info type after .get(): {type(disco_info)}")
-        logger.debug(f"[PARSE DISCO] disco_info is info: {disco_info is info}")
-        logger.debug(f"[PARSE DISCO] disco_info has '__contains__': {hasattr(disco_info, '__contains__')}")
-        logger.debug(f"[PARSE DISCO] disco_info dir: {[attr for attr in dir(disco_info) if not attr.startswith('_')][:30]}")
-        logger.debug(f"[PARSE DISCO] disco_info.interfaces: {getattr(disco_info, 'interfaces', 'N/A')}")
-
-        # Try to get identities attribute directly
-        if hasattr(disco_info, 'identities'):
-            logger.debug(f"[PARSE DISCO] disco_info.identities exists: {type(disco_info.identities)}")
-        if hasattr(disco_info, 'features'):
-            logger.debug(f"[PARSE DISCO] disco_info.features exists: {type(disco_info.features)}")
-
-        logger.debug(f"[PARSE DISCO] disco_info has 'identities': {'identities' in disco_info if hasattr(disco_info, '__contains__') else 'N/A (not dict-like)'}")
 
         # Check if identities interface exists (works on both Linux and Windows)
+        # Note: Windows DiscoInfo doesn't implement __contains__, so we check interfaces set
         has_identities = 'identities' in getattr(disco_info, 'interfaces', set())
-        logger.debug(f"[PARSE DISCO] 'identities' in interfaces: {has_identities}")
 
         if disco_info and has_identities:
             for identity in disco_info['identities']:
@@ -1320,41 +1282,25 @@ class MainWindow(QMainWindow):
                 })
         if identities:
             result['identities'] = identities
-            logger.debug(f"[PARSE DISCO] Extracted {len(identities)} identities")
-        else:
-            logger.debug(f"[PARSE DISCO] No identities found")
 
         # Extract features
         features = []
-        logger.debug(f"[PARSE DISCO] disco_info has 'features': {'features' in disco_info if hasattr(disco_info, '__contains__') else 'N/A'}")
-
-        # Check if features interface exists (works on both Linux and Windows)
         has_features = 'features' in getattr(disco_info, 'interfaces', set())
-        logger.debug(f"[PARSE DISCO] 'features' in interfaces: {has_features}")
 
         if disco_info and has_features:
             features = sorted(list(disco_info['features']))
-            logger.debug(f"[PARSE DISCO] Extracted {len(features)} features")
-        else:
-            logger.debug(f"[PARSE DISCO] No features found")
         if features:
             result['features'] = features
 
         # Extended info (XEP-0128 data forms)
-        logger.debug(f"[PARSE DISCO] disco_info has 'form': {'form' in disco_info if hasattr(disco_info, '__contains__') else 'N/A'}")
-
-        # Check if form interface exists (works on both Linux and Windows)
         has_form = 'form' in getattr(disco_info, 'interfaces', set())
-        logger.debug(f"[PARSE DISCO] 'form' in interfaces: {has_form}")
 
         if disco_info and has_form:
             form = disco_info['form']
             extended = self._parse_data_form(form)
             if extended:
                 result['extended_info'] = extended
-                logger.debug(f"[PARSE DISCO] Extracted extended info")
 
-        logger.debug(f"[PARSE DISCO] Final result keys: {list(result.keys())}")
         return result
 
     def _parse_data_form(self, form):
