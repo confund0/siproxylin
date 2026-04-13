@@ -9,6 +9,7 @@
 #include "logger.h"
 #include <gst/sdp/sdp.h>
 #include <gst/webrtc/webrtc.h>
+#include <gst/video/videooverlay.h>
 #include <stdexcept>
 #include <cstring>
 #include <sstream>
@@ -790,6 +791,23 @@ void WebRTCSession::on_offer_set_for_answer_static(GstPromise *promise, gpointer
 }
 
 // ============================================================================
+// Windows-specific Helper Functions
+// ============================================================================
+
+#ifdef _WIN32
+void WebRTCSession::maximize_d3dvideosink_window() {
+    HWND hwnd = FindWindowExW(nullptr, nullptr, L"GstD3DVideoSinkInternalWindow", nullptr);
+    if (hwnd) {
+        ShowWindow(hwnd, SW_MAXIMIZE);
+        SetForegroundWindow(hwnd);
+        LOG_INFO("[WebRTCSession] ✓ Maximized d3dvideosink window");
+    } else {
+        LOG_DEBUG("[WebRTCSession] d3dvideosink window not found yet");
+    }
+}
+#endif
+
+// ============================================================================
 // Instance Bus Message Handler
 // ============================================================================
 
@@ -850,6 +868,30 @@ gboolean WebRTCSession::bus_message_handler(GstBus *bus, GstMessage *msg) {
                     LOG_DEBUG("[WebRTCSession] Pipeline state changed: {} → {}",
                              old_str, new_str);
                 }
+
+#ifdef _WIN32
+                // Fallback: Try to maximize window when d3dvideosink reaches PLAYING
+                const gchar *src_name = GST_MESSAGE_SRC_NAME(msg);
+                if (src_name && strcmp(src_name, "d3dvideosink0") == 0) {
+                    GstState old_state, new_state, pending_state;
+                    gst_message_parse_state_changed(msg, &old_state, &new_state, &pending_state);
+                    if (new_state == GST_STATE_PLAYING) {
+                        LOG_DEBUG("[WebRTCSession] d3dvideosink reached PLAYING, attempting maximize");
+                        maximize_d3dvideosink_window();
+                    }
+                }
+#endif
+                break;
+            }
+
+            case GST_MESSAGE_ELEMENT: {
+#ifdef _WIN32
+                // Check if this is prepare-window-handle from video sink
+                if (gst_is_video_overlay_prepare_window_handle_message(msg)) {
+                    LOG_DEBUG("[WebRTCSession] Video overlay window ready, maximizing...");
+                    maximize_d3dvideosink_window();
+                }
+#endif
                 break;
             }
 

@@ -176,6 +176,11 @@ private:
     static void on_offer_set_for_answer_static(GstPromise *promise, gpointer user_data);
     void on_offer_set_for_answer();
 
+#ifdef _WIN32
+    // Windows-specific helper
+    void maximize_d3dvideosink_window();
+#endif
+
     // Stats helpers
     static void on_stats_received_static(GstPromise *promise, gpointer user_data);
     void parse_stats(const GstStructure *stats, Stats &result) const;
