@@ -14,6 +14,10 @@
 #include <cstring>
 #include <sstream>
 
+#ifdef _WIN32
+#include <windows.h>  // For FindWindowExW, ShowWindow, SetForegroundWindow
+#endif
+
 namespace drunk_call {
 
 // ============================================================================
