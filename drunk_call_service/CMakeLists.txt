@@ -42,6 +42,7 @@ if(WIN32)
         "${GSTREAMER_ROOT}/lib/gstreamer-1.0.lib"
         "${GSTREAMER_ROOT}/lib/gstwebrtc-1.0.lib"
         "${GSTREAMER_ROOT}/lib/gstsdp-1.0.lib"
+        "${GSTREAMER_ROOT}/lib/gstvideo-1.0.lib"
         "${GSTREAMER_ROOT}/lib/gobject-2.0.lib"
         "${GSTREAMER_ROOT}/lib/glib-2.0.lib"
     )
@@ -80,6 +81,7 @@ else()
         gstreamer-1.0
         gstreamer-webrtc-1.0
         gstreamer-sdp-1.0
+        gstreamer-video-1.0
     )
 
     # gRPC and Protobuf
