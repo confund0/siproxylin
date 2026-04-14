@@ -6,6 +6,10 @@
 
 ## Breaking News!
 
+**2026-04-14 v0.0.29 released, supporting video calls** 
+
+It's still very first release, the video window looks super primitive, for now using default GStreamer window which seems too complicated to decorate for Wayland, _but it does work_. Windows package has been removed as users reported issues that will require some fixes, Windows will in next versions.
+
 **2026-03-29 first successful tests of video calls** 
 
 Confirmed video calls working with Conversations and Dino. Feature still in the branch and tested only on Linux. Next steps - testing/fixing on Windows.
@@ -66,7 +70,7 @@ chmod +x Siproxylin-*.AppImage
 - ✅ **Account registration** - XEP-0077 with CAPTCHA support (XEP-0158)
 - ✅ **Multi-language spell checking** - en, de, ru, lt, es, ro, ar
 - ✅ **Themes** - Multiple color schemes (matters at night!)
-- ⏳ **Video calls** - In progress
+- ⏳ **Video calls** - **Works on Linux** since v0.0.29, Windows still in progress, MacOS planned
 - ⏳ **Screen sharing** - Planned
 - ⏳ **macOS** - Linux and Windows already working
 
@@ -162,7 +166,7 @@ I'll confess: I borrowed Dino's DB structure to start, just to not reinvent the 
 
 **Jingle** was difficult. Siproxylin uses XEP-0353 from slixmpp, however XEP-0166, XEP-0167, XEP-0176, XEP-0320 have been added to `./drunk_call_hook/` on the fly. **XEP-0158** (media support for CAPTCHA) also wasn't there and had to be added. A few bugs popped up when dealing with slixmpp — runtime patches have been made for them (see `./drunk_xmpp/slixmpp_patches`).
 
-DrunkXMPP is loaded by Siproxylin Core (`./siproxylin/core/`), which connects with the Qt6-based GUI (`./siproxylin/gui/`). When a call comes in, Jingle requests are passed to CallBridge (`./drunk_call_hook/`), which translates them into **gRPC** requests and passes them to the Go service (`./drunk_call_service/`), which uses **GStreamer** to handle WebRTC, tricke-ICE, TURN, and audio (video and screen sharing coming soon).
+DrunkXMPP is loaded by Siproxylin Core (`./siproxylin/core/`), which connects with the Qt6-based GUI (`./siproxylin/gui/`). When a call comes in, Jingle requests are passed to CallBridge (`./drunk_call_hook/`), which translates them into **gRPC** requests and passes them to the C++ service (`./drunk_call_service/`), which uses **GStreamer** to handle WebRTC, tricke-ICE, TURN, and audio/video (screen sharing coming soon).
 
 Siproxylin starts as a single Python process with two threads: one for keeping a heartbeat between CallBridge and the Go service, and another for everything else. The Go service is started by CallBridge at application startup. Each component writes logs (defaults to INFO, can be disabled via global and per-account settings), and the app has a built-in log viewer for convenience.
 
@@ -195,7 +199,7 @@ For production, two command-line parameters are available:
 
 ## Proxies
 
-**Beware of potential leaks during the calls!** After migration from Go / Pion to C++ / GStreamer I noticed that proxies are not applied on all sockets. The work is ongoing an the issues will be fixed.
+**Beware of potential leaks during the calls!** After migration from Go / Pion to C++ / GStreamer I noticed that proxies are not applied on all sockets. The work is ongoing and the issues will be fixed.
 
 Siproxylin supports **proxies per account**. Even the **registration wizard** asks if you'd like to use a proxy. SOCKS5 and HTTP are both supported, and if you register an account using a proxy, it's automatically saved with that account's settings.
 
