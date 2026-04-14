@@ -1,5 +1,5 @@
 version: 1
-# Cache invalidation: 2025-03-07 - removed libc++-dev conflict
+# Cache invalidation: 2026-04-14 - added gstreamer1.0-plugins-base for compositor
 
 AppDir:
   path: ./AppDir
