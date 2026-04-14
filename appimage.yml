@@ -1,5 +1,5 @@
 version: 1
-# Cache invalidation: 2026-04-14 - added gstreamer1.0-plugins-base for compositor
+# Cache invalidation: 2026-04-14b - added gstreamer1.0-x and Wayland libs for video sinks
 
 AppDir:
   path: ./AppDir
@@ -34,8 +34,12 @@ AppDir:
       - gstreamer1.0-plugins-base
       - gstreamer1.0-plugins-good
       - gstreamer1.0-plugins-bad
+      - gstreamer1.0-x
       - gstreamer1.0-pulseaudio
       - libpulse0
+      - libwayland-client0
+      - libwayland-cursor0
+      - libwayland-egl1
       - libgl1
       - libxcb-xinerama0
       - libxkbcommon-x11-0
