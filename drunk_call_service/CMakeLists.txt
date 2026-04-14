@@ -42,6 +42,7 @@ if(WIN32)
         "${GSTREAMER_ROOT}/lib/gstreamer-1.0.lib"
         "${GSTREAMER_ROOT}/lib/gstwebrtc-1.0.lib"
         "${GSTREAMER_ROOT}/lib/gstsdp-1.0.lib"
+        "${GSTREAMER_ROOT}/lib/gstvideo-1.0.lib"
         "${GSTREAMER_ROOT}/lib/gobject-2.0.lib"
         "${GSTREAMER_ROOT}/lib/glib-2.0.lib"
     )
@@ -80,6 +81,7 @@ else()
         gstreamer-1.0
         gstreamer-webrtc-1.0
         gstreamer-sdp-1.0
+        gstreamer-video-1.0
     )
 
     # gRPC and Protobuf
@@ -144,6 +146,11 @@ add_executable(${BINARY_NAME}
     src/main.cpp
     src/call_service_impl.cpp
     src/webrtc_session.cpp
+    src/webrtc_session_audio.cpp
+    src/webrtc_session_video.cpp
+    src/webrtc_session_ice.cpp
+    src/webrtc_session_sdp.cpp
+    src/webrtc_session_stats.cpp
     src/session_manager.cpp
     src/device_enumerator.cpp
     src/logger.cpp

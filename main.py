@@ -118,6 +118,10 @@ def main():
     logger.info(f"Profile: {args.profile}")
     logger.info(f"Log level: {log_level if logging_config.get('main_log_enabled', True) else 'WARNING (console only)'}")
 
+    # Clean up GStreamer cache on startup to prevent corruption
+    from siproxylin.utils import cleanup_gstreamer_cache
+    cleanup_gstreamer_cache()
+
     # Setup global XML logging (shared by all XMPP connections)
     if logging_config.get('xml_log_enabled', True):
         from logging.handlers import RotatingFileHandler

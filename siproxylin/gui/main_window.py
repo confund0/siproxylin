@@ -1148,9 +1148,11 @@ class MainWindow(QMainWindow):
         dialog = DiscoQueryDialog(parent=self)
 
         # Connect the dialog's signal to the existing disco handler
-        dialog.disco_query_requested.connect(
-            lambda account_id, jid: asyncio.create_task(self._disco_contact_async(account_id, jid))
-        )
+        def handle_disco_query(account_id, jid):
+            logger.debug(f"Disco query signal received for {jid}")
+            asyncio.ensure_future(self._disco_contact_async(account_id, jid))
+
+        dialog.disco_query_requested.connect(handle_disco_query)
 
         dialog.show()
 
@@ -1159,6 +1161,7 @@ class MainWindow(QMainWindow):
         from .dialogs.disco_info_dialog import DiscoInfoDialog
 
         account = self.account_manager.get_account(account_id)
+
         if not account or not account.client:
             QMessageBox.warning(self, "Error", "Account not available or not connected")
             return
@@ -1182,7 +1185,7 @@ class MainWindow(QMainWindow):
             dialog.show()
 
         except Exception as e:
-            logger.error(f"Failed to get disco info for {jid}: {e}")
+            logger.error(f"Failed to get disco info for {jid}: {e}", exc_info=True)
             QMessageBox.critical(self, "Disco Error", f"Failed to query {jid}:\n{str(e)}")
 
     async def _disco_muc_async(self, account_id: int, room_jid: str):
@@ -1265,7 +1268,12 @@ class MainWindow(QMainWindow):
         # Extract identities
         identities = []
         disco_info = info.get('disco_info', info)
-        if disco_info and 'identities' in disco_info:
+
+        # Check if identities interface exists (works on both Linux and Windows)
+        # Note: Windows DiscoInfo doesn't implement __contains__, so we check interfaces set
+        has_identities = 'identities' in getattr(disco_info, 'interfaces', set())
+
+        if disco_info and has_identities:
             for identity in disco_info['identities']:
                 identities.append({
                     'category': identity[0],
@@ -1277,13 +1285,17 @@ class MainWindow(QMainWindow):
 
         # Extract features
         features = []
-        if disco_info and 'features' in disco_info:
+        has_features = 'features' in getattr(disco_info, 'interfaces', set())
+
+        if disco_info and has_features:
             features = sorted(list(disco_info['features']))
         if features:
             result['features'] = features
 
         # Extended info (XEP-0128 data forms)
-        if disco_info and 'form' in disco_info:
+        has_form = 'form' in getattr(disco_info, 'interfaces', set())
+
+        if disco_info and has_form:
             form = disco_info['form']
             extended = self._parse_data_form(form)
             if extended:
@@ -1402,7 +1414,7 @@ class MainWindow(QMainWindow):
             return '\n'.join(lines)
 
         except Exception as e:
-            logger.warning(f"Failed to pretty-print stanza XML: {e}")
+            logger.error(f"Failed to pretty-print stanza XML: {e}", exc_info=True)
             # Fallback: try alternative method
             try:
                 import xml.etree.ElementTree as ET
@@ -1411,7 +1423,7 @@ class MainWindow(QMainWindow):
                 xml_str = ET.tostring(stanza, encoding='unicode')
                 return xml_str
             except Exception as e2:
-                logger.warning(f"Fallback pretty-print also failed: {e2}")
+                logger.error(f"Fallback pretty-print also failed: {e2}", exc_info=True)
                 # Last resort: return raw string
                 return str(stanza)
 

@@ -368,15 +368,22 @@ std::vector<VideoDevice> DeviceEnumerator::enumerate_video_devices(const char *c
         // Add filter for video sources
         gst_device_monitor_add_filter(monitor, classes, nullptr);
 
+        // Show all devices, including those from hidden providers (fixes PipeWire compatibility)
+        // This ensures devices from hidden providers (PipeWire, ALSA compat layers) are visible
+        gst_device_monitor_set_show_all_devices(monitor, TRUE);
+
         // Get devices WITHOUT start/stop - avoids PipeWire double-free bug
         GList *device_list = gst_device_monitor_get_devices(monitor);
+
+        // Track seen device paths to deduplicate (show_all_devices can return duplicates)
+        std::unordered_set<std::string> seen_paths;
 
         for (GList *l = device_list; l != nullptr; l = l->next) {
             GstDevice *device = GST_DEVICE(l->data);
 
             VideoDevice video_dev;
 
-            // Get device ID
+            // Get device ID (driver name for video devices)
             video_dev.id = extract_device_id(device);
 
             // Get display name
@@ -393,7 +400,7 @@ std::vector<VideoDevice> DeviceEnumerator::enumerate_video_devices(const char *c
                 g_free(device_class);
             }
 
-            // Get device path (Linux: /dev/video0, etc.)
+            // Get device path (Linux: /dev/video0, Windows: device path, macOS: device index)
             GstStructure *props = gst_device_get_properties(device);
             if (props) {
                 const gchar *path = gst_structure_get_string(props, "device.path");
@@ -403,16 +410,26 @@ std::vector<VideoDevice> DeviceEnumerator::enumerate_video_devices(const char *c
                 gst_structure_free(props);
             }
 
+            // Skip devices without a device path (invalid/virtual devices)
+            if (video_dev.device_path.empty()) {
+                LOG_DEBUG("[DeviceEnumerator] Skipping video device without device.path: '{}'", video_dev.name);
+                gst_object_unref(device);
+                continue;
+            }
+
+            // Skip duplicate devices (show_all_devices returns same device from multiple providers)
+            if (seen_paths.count(video_dev.device_path) > 0) {
+                LOG_DEBUG("[DeviceEnumerator] Skipping duplicate video device: '{}'", video_dev.device_path);
+                gst_object_unref(device);
+                continue;
+            }
+            seen_paths.insert(video_dev.device_path);
+
             // Check if default
             video_dev.is_default = is_default_device(device);
 
-            if (!video_dev.device_path.empty()) {
-                LOG_INFO("[DeviceEnumerator]   {}{} (id: {}, path: {})",
-                         video_dev.is_default ? "✓ " : "  ", video_dev.name, video_dev.id, video_dev.device_path);
-            } else {
-                LOG_INFO("[DeviceEnumerator]   {}{} (id: {})",
-                         video_dev.is_default ? "✓ " : "  ", video_dev.name, video_dev.id);
-            }
+            LOG_INFO("[DeviceEnumerator]   {}{} (path: {}, id: {})",
+                     video_dev.is_default ? "✓ " : "  ", video_dev.name, video_dev.device_path, video_dev.id);
 
             devices.push_back(video_dev);
             gst_object_unref(device);

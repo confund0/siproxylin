@@ -4,6 +4,7 @@ Settings dialog for Siproxylin.
 
 import json
 import asyncio
+import logging
 from pathlib import Path
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QTabWidget, QWidget,
@@ -12,11 +13,10 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
-from ..utils.logger import setup_main_logger
 from ..utils.paths import get_paths
 from ..db.database import get_db
 
-logger = setup_main_logger()
+logger = logging.getLogger('siproxylin.settings_dialog')
 
 
 class SettingsDialog(QDialog):
@@ -79,11 +79,10 @@ class SettingsDialog(QDialog):
         self._setup_calls_tab()
         self.tabs.addTab(self.calls_tab, "Calls")
 
-        # Video tab (placeholder)
+        # Video tab
         self.video_tab = QWidget()
         self._setup_video_tab()
         self.tabs.addTab(self.video_tab, "Video")
-        self.tabs.setTabEnabled(self.tabs.indexOf(self.video_tab), False)
 
         # Notifications tab
         self.notifications_tab = QWidget()
@@ -188,25 +187,32 @@ class SettingsDialog(QDialog):
         logger.debug("Calls tab setup complete")
 
     def _setup_video_tab(self):
-        """Setup the Video tab (placeholder for future camera/video settings)."""
+        """Setup the Video tab with camera device selection."""
         layout = QFormLayout(self.video_tab)
 
-        # Placeholder info
-        placeholder_label = QLabel("Video settings will be available in a future release.")
-        placeholder_label.setStyleSheet("color: gray; font-size: 11pt; font-style: italic;")
-        layout.addRow(placeholder_label)
+        # Video Devices section
+        devices_label = QLabel("Video Devices")
+        devices_label.setStyleSheet("font-weight: bold; font-size: 11pt;")
+        layout.addRow(devices_label)
 
-        info_label = QLabel(
-            "This tab will contain:\n"
-            "• Camera device selection\n"
-            "• Video resolution settings\n"
-            "• Video encoding options"
-        )
-        info_label.setWordWrap(True)
-        info_label.setStyleSheet("color: gray; font-size: 10pt;")
-        layout.addRow("", info_label)
+        # Camera picker
+        self.camera_combo = QComboBox()
+        self.camera_combo.addItem("Default (System)", "")
+        layout.addRow("Camera:", self.camera_combo)
 
-        logger.debug("Video tab setup complete (placeholder)")
+        # Info label (will be updated based on device availability)
+        self.camera_info_label = QLabel("Cameras are enumerated from V4L2 (Linux) or system API.")
+        self.camera_info_label.setWordWrap(True)
+        self.camera_info_label.setStyleSheet("color: gray; font-size: 10pt;")
+        layout.addRow("", self.camera_info_label)
+
+        # Video settings info label
+        video_info = QLabel("Settings apply when starting a new video call. Restart active calls to apply changes.")
+        video_info.setWordWrap(True)
+        video_info.setStyleSheet("color: gray; font-size: 9pt; font-style: italic;")
+        layout.addRow("", video_info)
+
+        logger.debug("Video tab setup complete")
 
     def _setup_logging_tab(self):
         """Setup the Logging tab with global logging controls."""
@@ -432,7 +438,8 @@ class SettingsDialog(QDialog):
     async def _populate_devices(self):
         """Populate device dropdowns from call service."""
         try:
-            devices = await self.call_bridge.list_audio_devices()
+            # Populate audio devices
+            audio_devices = await self.call_bridge.list_audio_devices()
 
             # Clear existing items (except Default)
             self.microphone_combo.clear()
@@ -443,7 +450,7 @@ class SettingsDialog(QDialog):
             self.speakers_combo.addItem("Default (System)", "")
 
             # Add devices
-            for device in devices:
+            for device in audio_devices:
                 if device['device_class'] == 'Audio/Source':
                     # Microphone
                     self.microphone_combo.addItem(device['description'], device['name'])
@@ -451,23 +458,54 @@ class SettingsDialog(QDialog):
                     # Speakers
                     self.speakers_combo.addItem(device['description'], device['name'])
 
-            logger.info(f"Populated {len(devices)} audio devices")
+            logger.info(f"Populated {len(audio_devices)} audio devices")
 
             # Update info label to show successful enumeration
             self.devices_info_label.setText("Devices are enumerated from GStreamer/PulseAudio.")
             self.devices_info_label.setStyleSheet("color: gray; font-size: 10pt;")
 
-            # Restore saved selections
-            self._load_current_settings()
-
         except Exception as e:
-            logger.error(f"Failed to populate devices: {e}")
+            logger.error(f"Failed to populate audio devices: {e}")
             # Show error in info label
             self.devices_info_label.setText(
                 f"⚠ Failed to enumerate devices: {str(e)}\n"
                 "Using Default (System) only."
             )
             self.devices_info_label.setStyleSheet("color: #cc0000; font-size: 10pt;")
+
+        # Populate video devices
+        try:
+            video_devices = await self.call_bridge.list_video_devices()
+
+            # Clear existing items (except Default)
+            self.camera_combo.clear()
+
+            # Re-add Default option
+            self.camera_combo.addItem("Default (System)", "")
+
+            # Add video devices
+            for device in video_devices:
+                # Show name and device path (e.g., "HD Pro Webcam C920 (/dev/video0)")
+                display_name = f"{device['name']} ({device['device']})" if device['name'] else device['device']
+                self.camera_combo.addItem(display_name, device['device'])
+
+            logger.info(f"Populated {len(video_devices)} video devices")
+
+            # Update info label to show successful enumeration
+            self.camera_info_label.setText("Cameras are enumerated from V4L2 (Linux) or system API.")
+            self.camera_info_label.setStyleSheet("color: gray; font-size: 10pt;")
+
+        except Exception as e:
+            logger.error(f"Failed to populate video devices: {e}")
+            # Show error in info label
+            self.camera_info_label.setText(
+                f"⚠ Failed to enumerate cameras: {str(e)}\n"
+                "Using Default (System) only."
+            )
+            self.camera_info_label.setStyleSheet("color: #cc0000; font-size: 10pt;")
+
+        # Restore saved selections
+        self._load_current_settings()
 
     def _load_settings(self):
         """Load settings from JSON file."""
@@ -741,6 +779,23 @@ class SettingsDialog(QDialog):
         gain_control = audio_processing.get('gain_control', True)
         self.gain_control_checkbox.setChecked(gain_control)
 
+        # Load camera device (handle both dict and string formats for backward compatibility)
+        camera_device = self.settings.get('camera_device', '')
+        if isinstance(camera_device, dict):
+            camera_device_id = camera_device.get('device_id', '')
+        else:
+            # Old format (string) - could be device_id or display_name
+            camera_device_id = camera_device
+
+        camera_index = self.camera_combo.findData(camera_device_id)
+        if camera_index >= 0:
+            self.camera_combo.setCurrentIndex(camera_index)
+        else:
+            # Device not found (USB unplugged?) - fallback to default
+            if camera_device_id:  # Only log if there was a saved device
+                logger.warning(f"Saved camera device not found: {camera_device_id}, using default")
+            self.camera_combo.setCurrentIndex(0)  # Default (System)
+
         # Load logging settings
         self.main_log_enabled_checkbox.setChecked(
             self.logging_settings.get('main_log_enabled', True)
@@ -794,6 +849,8 @@ class SettingsDialog(QDialog):
         mic_display_name = self.microphone_combo.currentText()
         speakers_device_id = self.speakers_combo.currentData()
         speakers_display_name = self.speakers_combo.currentText()
+        camera_device_id = self.camera_combo.currentData()
+        camera_display_name = self.camera_combo.currentText()
 
         # Store as dict with both fields (for handling USB device disconnect/reconnect)
         self.settings['microphone_device'] = {
@@ -803,6 +860,10 @@ class SettingsDialog(QDialog):
         self.settings['speakers_device'] = {
             'device_id': speakers_device_id if speakers_device_id else '',
             'display_name': speakers_display_name
+        }
+        self.settings['camera_device'] = {
+            'device_id': camera_device_id if camera_device_id else '',
+            'display_name': camera_display_name
         }
 
         # Get audio processing settings

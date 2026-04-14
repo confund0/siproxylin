@@ -133,6 +133,7 @@ class CallBarrel:
         self.call_bridge = None  # CallBridge instance (Go service)
         self.jingle_adapter = None  # JingleAdapter for Jingle signaling
         self.pending_call_offers: Dict[str, str] = {}  # session_id → sdp_offer (temp storage)
+        self.pending_call_media: Dict[str, list] = {}  # session_id → media types (for outgoing calls)
         self.accepted_calls: set = set()  # Track calls user accepted (sent proceed, waiting for session-initiate)
         self.incoming_call_timers: Dict[str, Any] = {}  # session_id → QTimer (60s timeout for unanswered calls)
         self.outgoing_call_timers: Dict[str, Any] = {}  # session_id → QTimer (60s timeout for unanswered calls)
@@ -250,12 +251,12 @@ class CallBarrel:
     # Call Functionality (DrunkCALL Integration)
     # =========================================================================
 
-    def _load_audio_settings(self) -> tuple[str, str, str, str, dict]:
+    def _load_audio_settings(self) -> tuple[str, str, str, str, str, str, dict]:
         """
-        Load audio device and processing settings from calls.json.
+        Load audio/video device and processing settings from calls.json.
 
         Returns:
-            Tuple of (microphone_device_id, microphone_display_name, speakers_device_id, speakers_display_name, audio_processing_settings).
+            Tuple of (microphone_device_id, microphone_display_name, speakers_device_id, speakers_display_name, camera_device_id, camera_display_name, audio_processing_settings).
             Empty strings = system default.
             audio_processing_settings is a dict with: echo_cancel, echo_suppression_level,
             noise_suppression, noise_suppression_level, gain_control
@@ -278,6 +279,7 @@ class CallBarrel:
                     # Handle both dict (new format) and string (old format) for backward compatibility
                     mic_setting = settings.get('microphone_device', '')
                     speakers_setting = settings.get('speakers_device', '')
+                    camera_setting = settings.get('camera_device', '')
 
                     if isinstance(mic_setting, dict):
                         mic_id = mic_setting.get('device_id', '')
@@ -293,18 +295,25 @@ class CallBarrel:
                         speakers_id = speakers_setting  # Old format (string)
                         speakers_display = ''
 
+                    if isinstance(camera_setting, dict):
+                        camera_id = camera_setting.get('device_id', '')
+                        camera_display = camera_setting.get('display_name', '')
+                    else:
+                        camera_id = camera_setting  # Old format (string)
+                        camera_display = ''
+
                     # Load audio processing settings if present
                     if 'audio_processing' in settings:
                         audio_processing.update(settings['audio_processing'])
 
                     if self.logger:
-                        self.logger.debug(f"Loaded audio settings: mic={mic_id or 'default'}, speakers={speakers_id or 'default'}, processing={audio_processing}")
-                    return mic_id, mic_display, speakers_id, speakers_display, audio_processing
+                        self.logger.debug(f"Loaded device settings: mic={mic_id or 'default'}, speakers={speakers_id or 'default'}, camera={camera_id or 'default'}, processing={audio_processing}")
+                    return mic_id, mic_display, speakers_id, speakers_display, camera_id, camera_display, audio_processing
         except Exception as e:
             if self.logger:
-                self.logger.error(f"Failed to load audio settings: {e}")
+                self.logger.error(f"Failed to load device settings: {e}")
 
-        return '', '', '', '', audio_processing  # Default to system defaults
+        return '', '', '', '', '', '', audio_processing  # Default to system defaults
 
     async def _setup_call_functionality(self):
         """
@@ -491,6 +500,13 @@ class CallBarrel:
             return
 
         try:
+            # Get media types from pending call (stored in start_call)
+            media_types = self.pending_call_media.get(session_id, ['audio'])
+            enable_video = 'video' in media_types
+
+            if self.logger:
+                self.logger.debug(f"Outgoing call media types: {media_types}, video enabled: {enable_video}")
+
             # Query XEP-0215 for TURN servers
             turn_server, turn_username, turn_password = '', '', ''
             try:
@@ -508,14 +524,15 @@ class CallBarrel:
                 if self.logger:
                     self.logger.warning(f"Failed to query XEP-0215: {e}, will use Jami TURN")
 
-            # Load audio device and processing settings
-            mic_device, mic_display, speakers_device, speakers_display, audio_proc = self._load_audio_settings()
+            # Load audio/video device and processing settings
+            mic_device, mic_display, speakers_device, speakers_display, camera_device, camera_display, audio_proc = self._load_audio_settings()
 
             # Create CallBridge session (WebRTC peer connection)
-            await self.call_bridge.create_session(
-                peer_jid, session_id, mic_device, speakers_device,
+            result = await self.call_bridge.create_session(
+                peer_jid, session_id, mic_device, speakers_device, camera_device,
                 microphone_display_name=mic_display,
                 speakers_display_name=speakers_display,
+                camera_display_name=camera_display,
                 proxy_host=self.proxy_host or "",
                 proxy_port=self.proxy_port or 0,
                 proxy_username=self.proxy_username or "",
@@ -528,20 +545,40 @@ class CallBarrel:
                 echo_suppression_level=audio_proc['echo_suppression_level'],
                 noise_suppression=audio_proc['noise_suppression'],
                 noise_suppression_level=audio_proc['noise_suppression_level'],
-                gain_control=audio_proc['gain_control']
+                gain_control=audio_proc['gain_control'],
+                enable_video=enable_video
             )
+
+            # Handle return value - can be bool (legacy) or tuple (success, video_port)
+            if isinstance(result, tuple):
+                success, video_port = result
+            else:
+                success = result
+                video_port = None
+
+            if not success:
+                raise RuntimeError("Failed to create CallBridge session")
 
             # Generate SDP offer from CallBridge
             sdp_offer = await self.call_bridge.create_offer(session_id)
 
             # Create outgoing session in JingleAdapter (encapsulated API)
-            self.jingle_adapter.create_outgoing_session(session_id, peer_jid, sdp_offer, ['audio'])
+            self.jingle_adapter.create_outgoing_session(session_id, peer_jid, sdp_offer, media_types)
+
+            # Store video port for RTP streaming
+            if video_port:
+                self.jingle_adapter.sessions[session_id]['video_port'] = video_port
+                if self.logger:
+                    self.logger.info(f"Video enabled for outgoing call {session_id}, RTP port: {video_port}")
 
             # Send ONLY session-initiate (skip propose - already sent by mixin)
             await self.jingle_adapter._send_session_initiate(session_id)
 
             if self.logger:
                 self.logger.debug(f"Sent Jingle session-initiate to {peer_jid}")
+
+            # Clean up pending media types
+            self.pending_call_media.pop(session_id, None)
 
         except Exception as e:
             if self.logger:
@@ -725,6 +762,13 @@ class CallBarrel:
             return False
 
         try:
+            # Get media types from session
+            media_types = self.jingle_adapter.sessions[session_id].get('media', ['audio'])
+            enable_video = 'video' in media_types
+
+            if self.logger:
+                self.logger.debug(f"Session {session_id} media types: {media_types}, video enabled: {enable_video}")
+
             # Query XEP-0215 for TURN servers
             turn_server, turn_username, turn_password = '', '', ''
             try:
@@ -742,21 +786,23 @@ class CallBarrel:
                 if self.logger:
                     self.logger.warning(f"Failed to query XEP-0215: {e}, will use Jami TURN")
 
-            # Load audio device and processing settings
-            mic_device, mic_display, speakers_device, speakers_display, audio_proc = self._load_audio_settings()
+            # Load audio/video device and processing settings
+            mic_device, mic_display, speakers_device, speakers_display, camera_device, camera_display, audio_proc = self._load_audio_settings()
 
             # State transition: Resources (TURN credentials + devices) ready
             self.jingle_adapter.trickle_ice.set_incoming_state(session_id, IncomingCallState.RESOURCES_READY)
 
             # Create CallBridge session (incoming call)
             # GStreamer webrtcbin will queue any ICE candidates that arrive before set-remote-description
-            success = await self.call_bridge.create_session(
+            result = await self.call_bridge.create_session(
                 self.jingle_adapter.sessions[session_id]['peer_jid'],
                 session_id,
                 mic_device,
                 speakers_device,
+                camera_device,
                 microphone_display_name=mic_display,
                 speakers_display_name=speakers_display,
+                camera_display_name=camera_display,
                 proxy_host=self.proxy_host or "",
                 proxy_port=self.proxy_port or 0,
                 proxy_username=self.proxy_username or "",
@@ -769,11 +815,25 @@ class CallBarrel:
                 echo_suppression_level=audio_proc['echo_suppression_level'],
                 noise_suppression=audio_proc['noise_suppression'],
                 noise_suppression_level=audio_proc['noise_suppression_level'],
-                gain_control=audio_proc['gain_control']
+                gain_control=audio_proc['gain_control'],
+                enable_video=enable_video
             )
+
+            # Handle return value - can be bool (legacy) or tuple (success, video_port)
+            if isinstance(result, tuple):
+                success, video_port = result
+            else:
+                success = result
+                video_port = None
 
             if not success:
                 raise RuntimeError("Failed to create CallBridge session")
+
+            # Store video port for RTP streaming
+            if video_port:
+                self.jingle_adapter.sessions[session_id]['video_port'] = video_port
+                if self.logger:
+                    self.logger.info(f"Video enabled for session {session_id}, RTP port: {video_port}")
 
             if self.logger:
                 self.logger.info(f"C++ session created for incoming call {session_id}")
@@ -901,6 +961,13 @@ class CallBarrel:
 
         peer_jid = session_info['peer_jid']
 
+        # Get media types from session
+        media_types = self.jingle_adapter.sessions[session_id].get('media', ['audio'])
+        enable_video = 'video' in media_types
+
+        if self.logger:
+            self.logger.debug(f"Session {session_id} media types: {media_types}, video enabled: {enable_video}")
+
         # Query XEP-0215 for TURN servers
         turn_server, turn_username, turn_password = '', '', ''
         try:
@@ -918,14 +985,15 @@ class CallBarrel:
             if self.logger:
                 self.logger.warning(f"Failed to query XEP-0215: {e}, will use Jami TURN")
 
-        # Load audio device and processing settings
-        mic_device, mic_display, speakers_device, speakers_display, audio_proc = self._load_audio_settings()
+        # Load audio/video device and processing settings
+        mic_device, mic_display, speakers_device, speakers_display, camera_device, camera_display, audio_proc = self._load_audio_settings()
 
         # Create WebRTC session
-        await self.call_bridge.create_session(
-            peer_jid, session_id, mic_device, speakers_device,
+        result = await self.call_bridge.create_session(
+            peer_jid, session_id, mic_device, speakers_device, camera_device,
             microphone_display_name=mic_display,
             speakers_display_name=speakers_display,
+            camera_display_name=camera_display,
             proxy_host=self.proxy_host or "",
             proxy_port=self.proxy_port or 0,
             proxy_username=self.proxy_username or "",
@@ -938,8 +1006,27 @@ class CallBarrel:
             echo_suppression_level=audio_proc['echo_suppression_level'],
             noise_suppression=audio_proc['noise_suppression'],
             noise_suppression_level=audio_proc['noise_suppression_level'],
-            gain_control=audio_proc['gain_control']
+            gain_control=audio_proc['gain_control'],
+            enable_video=enable_video
         )
+
+        # Handle return value - can be bool (legacy) or tuple (success, video_port)
+        if isinstance(result, tuple):
+            success, video_port = result
+        else:
+            success = result
+            video_port = None
+
+        if not success:
+            if self.logger:
+                self.logger.error("Failed to create CallBridge session")
+            return
+
+        # Store video port for RTP streaming
+        if video_port:
+            self.jingle_adapter.sessions[session_id]['video_port'] = video_port
+            if self.logger:
+                self.logger.info(f"Video enabled for session {session_id}, RTP port: {video_port}")
 
         # Set remote description (caller's offer)
         await self.call_bridge.set_remote_description(
@@ -1122,6 +1209,9 @@ class CallBarrel:
         # The mixin generates its own session_id for the XEP-0353 flow
         try:
             actual_sid = self.client.send_call_propose(peer_jid, media)
+
+            # Store media types for later use in _on_xmpp_call_accepted
+            self.pending_call_media[actual_sid] = media
 
             if self.logger:
                 self.logger.debug(f"Call propose sent (session {actual_sid})")
@@ -1510,6 +1600,7 @@ class CallBarrel:
 
         # Layer 4: AccountManager state cleanup
         self.pending_call_offers.pop(session_id, None)
+        self.pending_call_media.pop(session_id, None)
         self.accepted_calls.discard(session_id)
 
         # Phase 4: Call logging state cleanup

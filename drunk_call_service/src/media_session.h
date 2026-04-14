@@ -159,6 +159,12 @@ struct SessionConfig {
     std::string microphone_device;  // Empty = default
     std::string speakers_device;    // Empty = default
 
+    // Video devices
+    std::string camera_device;      // Empty = default camera
+    bool enable_video_receive;      // Enable video receive pipeline
+    std::string video_udp_host;     // UDP host for video streaming (e.g., "127.127.69.69")
+    int video_udp_port;             // UDP port for video streaming
+
     // Network configuration
     bool relay_only;                // ICE transport policy
     std::string stun_server;        // "stun://host:port"

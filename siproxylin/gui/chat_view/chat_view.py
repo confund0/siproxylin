@@ -617,7 +617,9 @@ class ChatViewWidget(QWidget):
 
         async def start_call_with_error_handling():
             try:
-                await account.start_call(self.current_jid, [call_type])
+                # FIX: Video calls need both audio and video media types
+                media = ["audio", "video"] if call_type == "video" else ["audio"]
+                await account.start_call(self.current_jid, media)
             except Exception as e:
                 error_msg = str(e)
                 logger.error(f"Call failed: {error_msg}")

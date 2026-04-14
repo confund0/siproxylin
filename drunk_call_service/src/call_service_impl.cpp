@@ -57,6 +57,7 @@ grpc::Status CallServiceImpl::CreateSession(
         config.session_id = session_id;
         config.microphone_device = request->microphone_device();
         config.speakers_device = request->speakers_device();
+        config.camera_device = request->camera_device();  // NEW: Camera device selection
         config.relay_only = request->relay_only();
 
         // Proxy config
@@ -93,6 +94,14 @@ grpc::Status CallServiceImpl::CreateSession(
         config.noise_suppression = request->noise_suppression();
         config.noise_suppression_level = request->noise_suppression_level();
         config.gain_control = request->gain_control();
+
+        // Video configuration
+        if (request->enable_video_receive()) {
+            config.enable_video_receive = true;
+            config.video_udp_host = request->video_udp_host();
+            config.video_udp_port = request->video_udp_port();
+            LOG_INFO("Session {}: Video enabled - UDP {}:{}", session_id, config.video_udp_host, config.video_udp_port);
+        }
 
         // Set callbacks (BEFORE initialize to avoid race)
         // CRITICAL: Use weak_ptr to avoid circular reference leak!
@@ -596,6 +605,38 @@ grpc::Status CallServiceImpl::ListAudioDevices(
 
     } catch (const std::exception& e) {
         LOG_ERROR("Exception in ListAudioDevices: {}", e.what());
+        return grpc::Status(grpc::StatusCode::INTERNAL,
+                          std::string("Exception: ") + e.what());
+    }
+}
+
+grpc::Status CallServiceImpl::ListVideoDevices(
+    grpc::ServerContext* context,
+    const call::Empty* request,
+    call::ListVideoDevicesResponse* response) {
+
+    LOG_DEBUG("gRPC: ListVideoDevices");
+    LOG_INFO("ListVideoDevices: Enumerating video devices");
+
+    try {
+        // Get video source devices (cameras)
+        auto devices = DeviceEnumerator::list_video_sources();
+        LOG_DEBUG("ListVideoDevices: Found {} device(s)", devices.size());
+
+        for (const auto& device : devices) {
+            auto* proto_device = response->add_devices();
+            proto_device->set_device(device.device_path);      // e.g., "/dev/video0"
+            proto_device->set_name(device.name);               // e.g., "HD Pro Webcam C920"
+            proto_device->set_driver(device.id);               // e.g., "uvcvideo"
+            LOG_DEBUG("  → Video: device='{}', name='{}', driver='{}'",
+                     device.device_path, device.name, device.id);
+        }
+
+        LOG_INFO("ListVideoDevices: Success, total devices: {}", devices.size());
+        return grpc::Status::OK;
+
+    } catch (const std::exception& e) {
+        LOG_ERROR("Exception in ListVideoDevices: {}", e.what());
         return grpc::Status(grpc::StatusCode::INTERNAL,
                           std::string("Exception: ") + e.what());
     }

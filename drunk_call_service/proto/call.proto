@@ -39,6 +39,9 @@ service CallService {
   // List available audio devices
   rpc ListAudioDevices(Empty) returns (ListAudioDevicesResponse);
 
+  // List available video devices
+  rpc ListVideoDevices(Empty) returns (ListVideoDevicesResponse);
+
   // Set microphone mute state for a session
   rpc SetMute(SetMuteRequest) returns (Empty);
 }
@@ -50,6 +53,7 @@ message CreateSessionRequest {
   string peer_jid = 2;
   string microphone_device = 3;  // Device name (e.g., "alsa_input.pci-0000_05_00.6.analog-stereo"), empty = default
   string speakers_device = 4;    // Device name (e.g., "alsa_output.pci-0000_05_00.6.analog-stereo"), empty = default
+  string camera_device = 22;     // Camera device path (e.g., "/dev/video0"), empty = default
 
   // Proxy configuration (for routing TURN connections through SOCKS5/HTTP proxy)
   string proxy_host = 5;         // Proxy hostname/IP, empty = no proxy
@@ -72,6 +76,11 @@ message CreateSessionRequest {
   bool noise_suppression = 16;   // Enable noise suppression, default: true
   int32 noise_suppression_level = 17; // 0=low, 1=moderate, 2=high, 3=very-high, default: 1
   bool gain_control = 18;        // Enable automatic gain control, default: true
+
+  // Video configuration
+  bool enable_video_receive = 19;     // Enable video receive pipeline (default: false)
+  string video_udp_host = 20;         // UDP host for video streaming (e.g., "127.127.69.69"), empty = no video
+  int32 video_udp_port = 21;          // UDP port for video streaming (allocated by Python)
 }
 
 message CreateSessionResponse {
@@ -183,4 +192,16 @@ message ListAudioDevicesResponse {
 message SetMuteRequest {
   string session_id = 1;
   bool muted = 2;  // true = mute microphone, false = unmute
+}
+
+// Video device enumeration messages
+
+message VideoDevice {
+  string device = 1;       // Device path (e.g., "/dev/video0")
+  string name = 2;         // User-friendly name (e.g., "HD Pro Webcam C920")
+  string driver = 3;       // Driver name (e.g., "uvcvideo")
+}
+
+message ListVideoDevicesResponse {
+  repeated VideoDevice devices = 1;
 }

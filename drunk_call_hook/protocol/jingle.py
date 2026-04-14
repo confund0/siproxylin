@@ -11,6 +11,7 @@ XEPs implemented:
 """
 
 import logging
+import re
 import uuid
 import asyncio
 from typing import Optional, Dict, Any, List, Callable
@@ -403,10 +404,26 @@ class JingleAdapter:
                     cand_port = candidate_el.get('port')
                     cand_type = candidate_el.get('type')
 
+                    # Map content_name to mline_index using media list order
+                    # e.g., ['audio', 'video'] → audio=0, video=1
+                    # Content names are like "audio0", "video1" - extract media type
+                    media_type = re.sub(r'\d+$', '', content_name)  # Strip trailing digits
+                    media_list = session.get('media', ['audio'])
+                    try:
+                        mline_index = media_list.index(media_type)
+                    except ValueError:
+                        # Media type not found, try exact content_name match (fallback)
+                        try:
+                            mline_index = media_list.index(content_name)
+                        except ValueError:
+                            # Neither worked, default to 0
+                            self.logger.warning(f"Content '{content_name}' (media_type='{media_type}') not in media list {media_list}, using mline_index=0")
+                            mline_index = 0
+
                     candidate = {
                         'candidate': f"candidate:{candidate_el.get('foundation')} {component} {candidate_el.get('protocol')} {candidate_el.get('priority')} {cand_ip} {cand_port} typ {cand_type}",
                         'sdpMid': content_name,  # Use content name as mid (matches SDP a=mid)
-                        'sdpMLineIndex': 0
+                        'sdpMLineIndex': mline_index
                     }
                     candidates.append(candidate)
                     self.logger.info(f"Received ICE candidate for {sid}: {cand_ip}:{cand_port} ({cand_type}) component={component}")

@@ -4,6 +4,33 @@ All notable changes to Siproxylin are documented in this file.
 
 ---
 
+## [0.0.28 - Firewater] - 2026-03-26
+
+> (eef90be15c)
+
+    Releasing first version which supports Windows
+
+> (80a74d559c)
+
+    Merging branch "win" into "main"
+    
+    - Updated C++ call service code to compile under MS Windows.
+    - Fixed paths of app data to use Windows standard locations.
+    - Cherry-picked required GStreamer libraries.
+    - Cherry-picked required VCPKG libraries.
+    - Created a separate release of dependencies (bunch of zipped dll
+      files).
+    - Created code which generates bundled Inno (ISS) installer, with
+      embedded GST/VCPKG libraries and Python.
+    - Lots of small bugfixes.
+    
+    Status:
+    
+    - Application seems to be functional on MS Windows.
+    - Release to GitHub process still requires manual actions.
+    
+    TODO: Automate Windows builds work with GitHub actions.
+
 ## [deps-v0.0.27 - Fermented] - 2026-03-13
 
 > (dc9527d2ba)

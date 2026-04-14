@@ -61,6 +61,10 @@ private:
     GstElement *audio_sink_;  // Created dynamically on pad-added
     GstElement *volume_;      // For mute functionality
     GstElement *echoprobe_;   // WebRTC echo probe for echo cancellation
+    GstElement *video_src_;   // Video source (v4l2src/autovideosrc)
+    GstElement *video_sink_;  // Video sink (created dynamically on pad-added)
+    GstElement *video_tee_;   // Camera feed splitter for PiP self-view
+    GstElement *compositor_;  // Video compositor for PiP overlay
 
     // Configuration
     SessionConfig config_;
@@ -70,12 +74,16 @@ private:
     // Pad management: Track the pad created during negotiation for answerer mode
     // Answerer: webrtcbin auto-creates transceiver from offer, we get its pad
     // after negotiation completes, then reuse that pad for audio pipeline
-    GstPad* negotiated_pad_;  // Pad used for SDP negotiation (answerer only)
-    GstCaps* offer_codec_caps_;  // Codec caps parsed from remote offer (answerer only)
+    GstPad* negotiated_pad_;  // Audio pad used for SDP negotiation (answerer only)
+    GstCaps* offer_codec_caps_;  // Audio codec caps parsed from remote offer (answerer only)
+    GstPad* negotiated_video_pad_;  // Video pad used for SDP negotiation (answerer only)
+    GstCaps* offer_video_codec_caps_;  // Video codec caps parsed from remote offer (answerer only)
+    bool video_first_mline_;  // true if video is m-line 0 (Conversations), false if audio is m-line 0 (Dino)
 
     // Negotiated codec parameters from answer SDP (used to configure audio pipeline)
     int negotiated_payload_;   // RTP payload type from answer (e.g., 111)
     int negotiated_channels_;  // Audio channels from answer (e.g., 2 for stereo)
+    int negotiated_video_payload_;  // Video RTP payload type from offer (e.g., 96 or 98)
 
     // Media mid mapping: mline index → mid value (from SDP a=mid:)
     // Extracted from our offer SDP to populate sdpMid in ICE candidates
@@ -96,6 +104,12 @@ private:
 
     // Stats monitoring
     guint stats_timer_id_;  // GLib timer source ID
+
+#ifdef _WIN32
+    // Windows: d3dvideosink window maximize retry state
+    guint window_maximize_timer_id_;  // GLib timer for retry attempts
+    int window_maximize_attempts_;    // Current retry attempt counter
+#endif
 
     // Candidate collection (for complete stats reporting)
     struct CollectedCandidate {
@@ -133,6 +147,9 @@ private:
                                          gpointer user_data);
     static gboolean stats_timer_callback_static(gpointer user_data);  // NEW: stats timer
     static void on_stats_promise_static(GstPromise *promise, gpointer user_data);  // NEW: stats result
+#ifdef _WIN32
+    static gboolean window_maximize_timer_callback_static(gpointer user_data);  // Windows: timer for d3dvideosink maximize retry
+#endif
 
     // Instance methods called by static handlers
     gboolean bus_message_handler(GstBus *bus, GstMessage *msg);
@@ -146,19 +163,35 @@ private:
     void on_incoming_stream(GstPad *pad);
     gboolean stats_timer_callback();  // NEW: instance method for stats timer
     void on_stats_promise(GstPromise *promise);  // NEW: process stats result
+#ifdef _WIN32
+    gboolean window_maximize_timer_callback();  // Windows: instance method for d3dvideosink maximize retry
+#endif
 
     // Helper methods
     bool create_pipeline();
     bool setup_answerer_audio_pipeline();  // Incoming calls (answerer mode)
+    bool setup_answerer_video_pipeline();  // Incoming calls - video send (answerer mode)
+    bool setup_offerer_video_pipeline();   // Outgoing calls - video send (offerer mode)
     bool setup_offerer_audio_pipeline();    // Outgoing calls (offerer mode)
     bool configure_webrtcbin();
     bool configure_proxy();
     bool add_turn_servers();
     void connect_signals();
 
+    // Audio pipeline helpers (implemented in webrtc_session_audio.cpp)
+    void handle_incoming_audio_stream(GstPad *pad);
+
+    // Video pipeline helpers (implemented in webrtc_session_video.cpp)
+    void handle_incoming_video_stream(GstPad *pad);
+
     // Promise callback for set-remote-description before answer
     static void on_offer_set_for_answer_static(GstPromise *promise, gpointer user_data);
     void on_offer_set_for_answer();
+
+#ifdef _WIN32
+    // Windows-specific helper
+    void maximize_d3dvideosink_window();
+#endif
 
     // Stats helpers
     static void on_stats_received_static(GstPromise *promise, gpointer user_data);

@@ -151,9 +151,10 @@ class DiscoQueryDialog(QDialog):
         account_id = self.account_combo.currentData()
 
         if not jid or account_id is None:
+            logger.warning(f"Query clicked but invalid: jid='{jid}', account_id={account_id}")
             return
 
-        logger.info(f"Disco query requested: account_id={account_id}, target_jid={jid}")
+        logger.debug(f"Disco query requested: account_id={account_id}, target_jid={jid}")
 
         # Emit signal with query parameters
         self.disco_query_requested.emit(account_id, jid)
