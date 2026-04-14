@@ -180,9 +180,11 @@ When starting the call service, automatically adds bundled libraries to PATH:
 - gRPC, protobuf, spdlog, abseil, cares, re2
 
 **GStreamer runtime** (~30 MB installed):
-- Core libraries: gstreamer, gstbase, gstwebrtc, gstrtp, gstaudio
-- Plugins: webrtcbin, dtls, srtp, nice, opus, wasapi, autodetect
+- Core libraries: gstreamer, gstbase, gstwebrtc, gstrtp, gstaudio, gstvideo
+- Plugins: webrtcbin, dtls, srtp, nice, opus, wasapi, autodetect, **compositor**, videoconvert, videoscale, vp8enc, vp8dec, d3dvideosink
 - Supporting: GLib, libcrypto, libssl, libnice
+
+**CRITICAL**: The `compositor` plugin (gst-plugins-base) is required for video calls. Without it, video pipeline creation fails with "Failed to create compositor for self-view".
 
 **Python packages** (~760 MB downloaded during install):
 - PySide6 (Qt6 GUI)
