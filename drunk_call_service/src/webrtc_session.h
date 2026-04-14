@@ -105,6 +105,12 @@ private:
     // Stats monitoring
     guint stats_timer_id_;  // GLib timer source ID
 
+#ifdef _WIN32
+    // Windows: d3dvideosink window maximize retry state
+    guint window_maximize_timer_id_;  // GLib timer for retry attempts
+    int window_maximize_attempts_;    // Current retry attempt counter
+#endif
+
     // Candidate collection (for complete stats reporting)
     struct CollectedCandidate {
         std::string id;          // Candidate ID (for nominated pair lookup)
@@ -141,6 +147,9 @@ private:
                                          gpointer user_data);
     static gboolean stats_timer_callback_static(gpointer user_data);  // NEW: stats timer
     static void on_stats_promise_static(GstPromise *promise, gpointer user_data);  // NEW: stats result
+#ifdef _WIN32
+    static gboolean window_maximize_timer_callback_static(gpointer user_data);  // Windows: timer for d3dvideosink maximize retry
+#endif
 
     // Instance methods called by static handlers
     gboolean bus_message_handler(GstBus *bus, GstMessage *msg);
@@ -154,6 +163,9 @@ private:
     void on_incoming_stream(GstPad *pad);
     gboolean stats_timer_callback();  // NEW: instance method for stats timer
     void on_stats_promise(GstPromise *promise);  // NEW: process stats result
+#ifdef _WIN32
+    gboolean window_maximize_timer_callback();  // Windows: instance method for d3dvideosink maximize retry
+#endif
 
     // Helper methods
     bool create_pipeline();
