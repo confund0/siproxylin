@@ -960,7 +960,16 @@ gboolean WebRTCSession::window_maximize_timer_callback() {
     if (hwnd) {
         ShowWindow(hwnd, SW_MAXIMIZE);
         SetForegroundWindow(hwnd);
-        LOG_INFO("[WebRTCSession] ✓ Maximized d3dvideosink window (attempt {})", window_maximize_attempts_);
+
+        // Bring window to front but below topmost windows (call_window controls)
+        // Two-step technique: TOPMOST → NOTOPMOST brings window above normal windows
+        // but below always-on-top windows (call_window with Qt.WindowStaysOnTopHint)
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+
+        LOG_INFO("[WebRTCSession] ✓ Maximized d3dvideosink window and brought to front (attempt {})", window_maximize_attempts_);
 
         // Success! Cancel timer
         window_maximize_timer_id_ = 0;
