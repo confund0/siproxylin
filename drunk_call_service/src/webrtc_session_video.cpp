@@ -801,6 +801,13 @@ void WebRTCSession::handle_incoming_video_stream(GstPad *pad) {
             gst_element_sync_state_with_parent(decoder);
             gst_element_sync_state_with_parent(convert);
 
+#ifdef _WIN32
+            // Re-trigger window maximize after incoming video linked (fixes outgoing calls)
+            // When remote video arrives on outgoing calls, pipeline state changes can
+            // reset window z-order. Re-applying positioning ensures window stays in front.
+            maximize_d3dvideosink_window();
+#endif
+
             // Link webrtcbin pad to depay
             GstPad *sink_pad = gst_element_get_static_pad(depay, "sink");
             link_ret = gst_pad_link(pad, sink_pad);
