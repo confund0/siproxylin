@@ -4,6 +4,336 @@ All notable changes to Siproxylin are documented in this file.
 
 ---
 
+## [0.0.29 - Glass bottle] - 2026-04-14
+
+> (137e1c05ff)
+
+    Merge branch 'video'
+
+> (a29c9587c9)
+
+    Push d3dvideosink window in front for OFFERER (babysit windows)
+
+> (f7c06cc9f9)
+
+    Push d3dvideosink window in front (babysit windows)
+
+> (0d2db71ecc)
+
+    Change handling of d3dvideosink (babysit windows)
+
+> (0e7bee20ed)
+
+    Adding missing lib (babysit windows)
+
+> (80fe5ce5b5)
+
+    Adding missing include (babysit windows)
+
+> (ead1cae5ca)
+
+    Better handling of GStreamer d3dvideosink (babysit windows)
+
+> (31088a60a6)
+
+    Fix Service Discovery feature broken on Windows
+    
+    Root cause: slixmpp's DiscoInfo object on Windows doesn't implement
+    __contains__() method, causing 'identities' in disco_info to always
+    return False even when data exists.
+    
+    The code was checking disco data availability using Python's 'in'
+    operator (e.g., 'identities' in disco_info), which relies on
+    __contains__(). This worked on Linux where DiscoInfo implements
+    __contains__, but silently failed on Windows where it doesn't,
+    resulting in empty disco results despite successful XMPP queries.
+    
+    Fix: Check disco_info.interfaces set instead of using 'in' operator
+    directly. The interfaces attribute exists on both platforms and
+    contains the same data ('identities', 'features', 'form').
+    
+    Changed from:
+      if disco_info and 'identities' in disco_info:
+    
+    To:
+      has_identities = 'identities' in getattr(disco_info, 'interfaces', set())
+      if disco_info and has_identities:
+    
+    This works consistently across both Linux and Windows versions of
+    slixmpp, regardless of __contains__ implementation.
+
+> (744a8914cc)
+
+    Add more logging for discovery (disco) features
+
+> (67fc496e39)
+
+    Add more logging for discovery (disco) features
+
+> (ce64fb44bc)
+
+    Add more logging for discovery (disco) features
+
+> (9ed72928e5)
+
+    Fixed main.log to respect selected log level
+
+> (c038219c74)
+
+    Add more logging for discovery (disco) features
+
+> (b531961e68)
+
+    Fix async call for discovery (disco) features (babysit windows)
+
+> (2763138fa4)
+
+    Add more logging for discovery (disco) features
+
+> (08596eccd6)
+
+    Add more logging for discovery (disco) features
+
+> (3e88aa69a3)
+
+    Add more logging for discovery (disco) features
+
+> (11a29b2852)
+
+    Add more logging for discovery (disco) features
+
+> (5f9b3ad699)
+
+    An attempt to maximize video call viewer (babysit windows)
+
+> (13c3438ef1)
+
+    Added cleaning GStreamed cache on app startup
+
+> (bc1ce54df9)
+
+    Added slim mode for call window. Call window always "on-top" to not cover video. Call window detached from the parent to be visible on top of Direct3d video.
+
+> (4658f6d1ae)
+
+    Updated docs
+
+> (a735e22c61)
+
+    Updated docs
+
+> (3baecfaf77)
+
+    Switching to "d3dvideosink" (babysit windows)
+
+> (21b79aa555)
+
+    Updated CLAUDE.md
+
+> (3b29795e7a)
+
+    Split src/webrtc_session.cpp monolith monster into manageable chunks
+
+> (48d539d396)
+
+    Fix video call race condition and latency
+    
+    - Create self-view window immediately when video pipeline starts (both
+      offerer and answerer modes), eliminating race condition where self-view
+      would fail to link when remote video arrived late
+    
+    - Configure low-latency queues for all video paths (max-size-buffers=5,
+      leaky=downstream) reducing buffering from ~6.7 seconds to ~166ms at 30fps,
+      following WebRTC industry standards
+    
+    - Refactor incoming video handler to add remote video to existing compositor
+      instead of creating new one, repositioning self-view from fullscreen to
+      PiP corner when remote video arrives
+
+> (f07aecf563)
+
+    Inserted sink_convert into video output pipeline (babysit windows)
+
+> (b2863eeb91)
+
+    Making video sources OS dependent
+
+> (4f71ba41db)
+
+    Adding very primitive "self-view" overlay
+
+> (fbf8b638ec)
+
+    Add RTCP feedback capabilities
+    
+    Problem: Incoming video from Conversations/Quicksy showed periodic pixelation
+    during longer calls - video would degrade to unrecognizable quality, stay
+    pixelated for 10-20 seconds, then suddenly clear up and repeat the cycle.
+    
+    The Fix:
+    Added RTCP feedback properties to video codec-preferences caps in 3 locations:
+    1. parse_video_codec_from_offer() - answerer mode (incoming calls)
+    2. create_offer() - offerer mode codec-preferences (outgoing calls)
+    
+    Now includes:
+    - "rtcp-fb-nack-pli": TRUE (request keyframes on packet loss)
+    - "rtcp-fb-ccm-fir": TRUE (full intra request for severe errors)
+    - "rtcp-fb-transport-cc": TRUE (transport-wide congestion control)
+    
+    Result: SDP answer now advertises proper RTCP feedback capabilities, enabling:
+    - Fast recovery from packet loss (phone can request keyframes)
+    - Proper bandwidth adaptation via TWCC feedback
+    - Smooth incoming video quality without periodic pixelation
+
+> (f775e33a07)
+
+    Updated docs
+
+> (df455b62ed)
+
+    Updated CLAUDE.md
+
+> (f337630cf7)
+
+    Added video device (camera) choice to File -> Settings dialog
+
+> (a2dd288d5d)
+
+    Update README.md
+
+> (6a9025261e)
+
+    Fix incoming video calls from Conversations
+    
+    Two critical bugs preventing Conversations→SP video calls:
+    
+    1. Transceiver order mismatch: Code assumed audio-first m-line ordering (Dino
+       style), but Conversations sends video-first SDP offers. Added dynamic
+       m-line detection and request pads in correct order based on offer.
+    
+    2. Payload type mismatch: setup_answerer_video_pipeline() hardcoded payload=98,
+       but Conversations' offer specifies payload=96. Phone received PT=98 packets
+       when expecting PT=96 per SDP answer → couldn't decode → black screen.
+       Now parse and use negotiated payload from offer SDP.
+    
+    Result: calls in all directions with Dino and Conversations work fine.
+
+> (0bf8cdfa2f)
+
+    Updated docs
+
+> (d86d27b6cb)
+
+    Updated CLAUDE.md
+
+> (d435d70f1e)
+
+    Fix outgoing video calls (dynamic bundle-policy)
+    
+    This commit fixes the race condition in outgoing video call setup and
+    implements role-specific bundle policies to support both Dino (unbundled)
+    and Conversations (bundled) peers.
+    
+    Changes:
+    
+    1. Fix v4l2src race condition in setup_offerer_video_pipeline():
+       - Remove manual pause/resume of pipeline
+       - Move sync_state_with_parent() AFTER all linking is complete
+       - Prevents v4l2src from starting before webrtcbin is ready
+       - Fixes "code should not be reached" error at gstwebrtcbin.c:5236
+    
+    2. Implement dynamic bundle-policy based on call direction:
+       - OFFERER (create_offer): Uses BALANCED to adapt to peer's response
+       - ANSWERER (create_answer): Uses MAX_COMPAT to match peer's offer
+       - Remove static bundle-policy from configure_webrtcbin()
+    
+    3. Remove broken transceiver 'mid' property assignments:
+       - Property is read-only, assignments were failing silently
+       - Let webrtcbin manage mid values automatically
+    
+    Fixes the "Internal data stream error, not-linked (-1)" crash that
+    prevented outgoing video calls to Dino from working.
+    
+    Test Results:
+    - ✅ SP → Conversations: Works perfectly
+    - ✅ SP → Dino: Works (fixed!)
+    - ✅ Dino → SP: Works
+    - ⚠️  Conversations → SP: Partial (video one-way, to be fixed)
+
+> (3dbe32f10c)
+
+    Fix video calls - add transceiver mid assignment
+    
+    - Set explicit mid values on webrtcbin transceivers (audio0, video1)
+    - Fix Python media list to pass ["audio", "video"] for video calls
+    - Fix Jingle ICE candidate mline_index mapping
+    - Make cal service stdout log truncate on each restart
+    
+    Partial fix:
+    - Incoming from Dino video works on both ends but or GStreamer video window
+      is very slow to start.
+    - Outgoing to Dino currently does not work at all (no video on neither side).
+    - Incoming from Conversations - we see the video comingh from the phone,
+      but phone does not show our video.
+    - Outgoing to Conversations connects fast, opens video on both ends of a
+      good quality
+
+> (579f6807d5)
+
+    Some progress with video performance on Dino end; Conversations still does not show any
+
+> (1175758fee)
+
+    Initial working incoming video stream without VLC (GStreamer native window)
+
+> (ec1aebbb06)
+
+    Got the video call connecting after the merge of main with Windows changes
+
+> (cf8a971d2e)
+
+    Merge branch 'main' into video
+
+> (54b1f5596b)
+
+    Updated docs
+
+> (7ff52d36cb)
+
+    Documents cleanup
+
+> (adce5b80ce)
+
+    Updated docs
+
+> (ddb1b54eaa)
+
+    Updated docs
+
+> (682861fbbc)
+
+    Updated docs
+
+> (6177af8bd0)
+
+    Updated docs
+
+> (462b6c4b50)
+
+    Documents cleanup
+
+> (c545f9818e)
+
+    Update README.md
+
+> (a486462d66)
+
+    Update README.md
+
+> (52c66e3518)
+
+    First buggy clumsy dirty frozen and pretty much ueseless... but a working video call
+
 ## [0.0.28 - Firewater] - 2026-03-26
 
 > (eef90be15c)
