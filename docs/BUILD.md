@@ -14,20 +14,61 @@
 - GStreamer 1.0 + WebRTC plugin
 - Qt6 libraries
 
-**C++ Call Service Dependencies:**
+### Build Dependencies (C++ Call Service)
+
+Required to compile `drunk_call_service/` on Debian/Ubuntu:
+
 ```bash
-sudo apt install cmake build-essential \
+sudo apt install build-essential cmake pkg-config \
+  protobuf-compiler protobuf-compiler-grpc \
+  libgrpc-dev libgrpc++-dev \
+  libspdlog-dev libunwind-dev libsrtp2-dev libasound2-dev \
+  libnice-dev gstreamer1.0-nice \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-  libgstreamer-plugins-bad1.0-dev gstreamer1.0-nice \
-  libnice-dev libgrpc++-dev libspdlog-dev libunwind-dev \
-  libsrtp2-dev libasound2-dev
+  libgstreamer-plugins-bad1.0-dev
 ```
 
-**Steps:**
+CMake looks up Protobuf, gRPC (CONFIG mode), spdlog, Threads, GStreamer and glib-2.0 — `pkg-config` is mandatory. `protobuf-compiler-grpc` ships the `grpc_cpp_plugin` used by `proto/` codegen.
+
+### Runtime Dependencies
+
+Required at runtime on Debian/Ubuntu, on top of `pip install -r requirements.txt`:
+
+```bash
+# GStreamer runtime plugins (media + WebRTC + Qt6 video sink)
+sudo apt install gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+  gstreamer1.0-qt6 gstreamer1.0-x gstreamer1.0-nice \
+  gstreamer1.0-pipewire gstreamer1.0-pulseaudio
+
+# Desktop integration
+sudo apt install dbus-x11 libnotify-bin xdg-utils libegl1
+
+# Spell check — libenchant is the bridge to hunspell, both are required
+sudo apt install libenchant-2-2 hunspell \
+  hunspell-en-us hunspell-de-de hunspell-ru hunspell-lt \
+  hunspell-es hunspell-ro hunspell-ar
+```
+
+**Notes:**
+- `libnotify-bin` provides `notify-send` used by `siproxylin/services/notification.py`
+- `xdg-utils` provides `xdg-open` for attachments/links
+- `libenchant-2-2` is required even if hunspell is installed — PyEnchant talks to libenchant, and libenchant loads hunspell dictionaries from `/usr/share/hunspell/` via `XDG_DATA_DIRS`. Installing hunspell alone is not enough.
+- Install only the `hunspell-*` dictionary packages for languages you actually need
+- Running the AppImage (as opposed to building from source) additionally needs FUSE — `libfuse2t64` on current Debian, or pass `--appimage-extract-and-run`
+
+### Python Environment
+
+```bash
+sudo apt install python3 python3-venv python3-pip
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
+```
+
+### Build and Run
+
 ```bash
 cd drunk_call_service && make clean && make && make install && cd ..
-pip install -r requirements.txt
-python main.py
+venv/bin/python main.py
 ```
 
 ---

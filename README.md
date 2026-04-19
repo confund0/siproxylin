@@ -22,16 +22,9 @@ It took an eternity to cherry-pick GStreamer and VCPKG dll files one by one to m
 
 ## Quick Start
 
+Install build + runtime system packages — see [docs/BUILD.md](docs/BUILD.md) for the full list (Debian/Ubuntu `apt` commands, split into build vs runtime vs spell-check).
+
 ```bash
-
-# Install GStreamer libraries:
-# gir1.2-gstreamer-1.0, gstreamer1.0-alsa, gstreamer1.0-gl, gstreamer1.0-gtk3, gstreamer1.0-libav, gstreamer1.0-nice, gstreamer1.0-pipewire, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-base, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly, gstreamer1.0-pulseaudio, gstreamer1.0-tools, gstreamer1.0-x, gstreamer1.0-x, libgstreamer-gl1.0-0, libgstreamer-plugins-bad1.0-0, libgstreamer-plugins-base1.0-0, libgstreamer-plugins-base1.0-0, libgstreamer-plugins-base1.0-dev, libgstreamer1.0-0, libgstreamer1.0-0, libgstreamer1.0-dev, libgtk-4-media-gstreamer, qtgstreamer-plugins-qt5, libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev libgrpc++ 
-
-# Install Qt6:
-# libqt6*
-
-# Install hunspell if you want the spell checker
-
 # Build C++ call service
 cd drunk_call_service
 make clean

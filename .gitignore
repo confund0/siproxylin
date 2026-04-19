@@ -2,6 +2,7 @@ venv
 logs
 __pycache__
 tmp
+.claude
 cleanup
 python-example
 omemo
