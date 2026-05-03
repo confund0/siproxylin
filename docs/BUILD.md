@@ -384,3 +384,67 @@ make release
 - Code is cross-platform ready, untested
 
 ---
+
+## Just a drop in section on how to run on Alpine Linux
+Alpine 3.21 and 3.22 ships Python 3.12 which causes very strange issues. 
+As a quick and safe solution I'd recommend:
+
+1. Install Debian 12 chroot
+2. Do the prep in the chroot (see below)
+3. Setup init to mount dev and proc
+4. Use bubble-wrap to provide in-chroot directory mappings and restrictions (sound, video, attachments, configs) 
+
+P.S. Debian 13 has strange behavior when creating GStreamer pipelines in chroot+bwrap.
+Stick with Debian 12 (bookworm) for now
+
+### The full package list to install in the chroot
+```
+# Debian 12 (bookworm) prep for Siproxylin
+# This was used to create chrooted installation on Alpine
+# Run for chrrot, but also serves as a reference
+
+# Basic OS prep
+apt update && apt upgrade -y
+apt install apt-file -y
+apt install bash-completion  -y
+apt install psmisc  -y
+apt install wget curl gpg -y
+apt install locales -y
+
+echo "***************************************"
+echo "* Setup locales before moving forward *"
+echo "***************************************"
+exit
+
+# Siproxylin deps
+apt install libegl1 -y
+apt install dbus-x11  -y
+apt install python3 -y
+apt install python3.11-venv  -y
+apt install gstreamer1.0-qt6 gstreamer1.0-x gstreamer1.0-pipewire gstreamer1.0-pulseaudio gstreamer1.0-nice -y
+apt install gstreamer1.0-plugins-bad -y
+apt install gstreamer1.0-plugins-good  -y
+apt install fonts-noto-color-emoji
+apt install xdg-utils -y
+apt install hunspell-en-gb hunspell-lt hunspell libenchant-2-2 -y
+apt install libnotify-bin  -y
+
+# Dev stuff to build call service
+apt install build-essential  -y
+apt install cmake -y
+apt install pkg-config  -y
+apt install libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev  -y
+apt install protobuf-compiler -y
+apt install libgrpc-dev  -y
+apt install libgrpc++-dev  -y
+apt install protobuf-compiler-grpc -y
+apt install libspdlog-dev  -y
+
+
+# mkdir -p /opt/siproxylin
+# cd /opt/siproxylin
+#
+# python3 -m venv venv
+# venv/bin/pip install -r requirements.txt
+```
+
