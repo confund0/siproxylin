@@ -160,32 +160,32 @@ struct SessionConfig {
     std::string speakers_device;    // Empty = default
 
     // Video devices
-    std::string camera_device;      // Empty = default camera
-    bool enable_video_receive;      // Enable video receive pipeline
-    std::string video_udp_host;     // UDP host for video streaming (e.g., "127.127.69.69")
-    int video_udp_port;             // UDP port for video streaming
+    std::string camera_device;          // Empty = default camera
+    bool enable_video_receive = false;  // Enable video receive pipeline
+    std::string video_udp_host;         // UDP host for video streaming (e.g., "127.127.69.69")
+    int video_udp_port = 0;             // UDP port for video streaming
 
     // Network configuration
-    bool relay_only;                // ICE transport policy
-    std::string stun_server;        // "stun://host:port"
+    bool relay_only = false;                // ICE transport policy
+    std::string stun_server;                // "stun://host:port"
     std::vector<std::string> turn_servers;  // "turn://user:pass@host:port"
 
     // Audio processing (WebRTC DSP)
-    bool echo_cancel;
-    int echo_suppression_level;        // 0=low, 1=moderate, 2=high
-    bool noise_suppression;
-    int noise_suppression_level;       // 0=low, 1=moderate, 2=high, 3=very-high
-    bool gain_control;
+    bool echo_cancel = false;
+    int echo_suppression_level = 0;        // 0=low, 1=moderate, 2=high
+    bool noise_suppression = false;
+    int noise_suppression_level = 0;       // 0=low, 1=moderate, 2=high, 3=very-high
+    bool gain_control = false;
 
     // Proxy settings
     std::string proxy_host;      // Empty = no proxy
-    int proxy_port;              // 0 = no proxy
+    int proxy_port = 0;          // 0 = no proxy
     std::string proxy_username;  // Optional
     std::string proxy_password;  // Optional
     std::string proxy_type;      // "HTTP" or "SOCKS5"
 
     // Implementation selection
-    MediaSession::Type preferred_type;  // Hint for factory
+    MediaSession::Type preferred_type = MediaSession::Type::WEBRTC;  // Hint for factory
 };
 
 /**
