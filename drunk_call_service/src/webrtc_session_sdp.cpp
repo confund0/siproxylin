@@ -464,6 +464,22 @@ bool WebRTCSession::set_remote_description(const SDPMessage &remote_sdp) {
                     LOG_INFO("[WebRTCSession] ✓ M-line order: AUDIO first (Dino style)");
                 }
             }
+
+            // Store the m-line index of the first audio and first video m-line.
+            // We request our send pads by these indexes ("sink_<mline>"), so that
+            // webrtcbin binds each pad to the transceiver of that m-line.
+            offer_audio_mline_ = -1;
+            offer_video_mline_ = -1;
+            for (guint i = 0; i < gst_sdp_message_medias_len(sdp_msg); i++) {
+                const char *media_type = gst_sdp_media_get_media(gst_sdp_message_get_media(sdp_msg, i));
+                if (offer_audio_mline_ < 0 && media_type && strcmp(media_type, "audio") == 0) {
+                    offer_audio_mline_ = static_cast<int>(i);
+                } else if (offer_video_mline_ < 0 && media_type && strcmp(media_type, "video") == 0) {
+                    offer_video_mline_ = static_cast<int>(i);
+                }
+            }
+            LOG_INFO("[WebRTCSession] ✓ Offer m-line index: audio={}, video={}",
+                     offer_audio_mline_, offer_video_mline_);
         }
         // For offerer mode receiving answer: parse negotiated payload/channels
         else if (is_outgoing_ && remote_sdp.type == SDPMessage::Type::ANSWER) {
@@ -837,172 +853,135 @@ void WebRTCSession::on_answer_created(GstPromise *promise) {
         }
     }
 }
+GstPad* WebRTCSession::request_answerer_sink_pad(guint mline, GstCaps *codec_caps, const char *media_label) {
+    // Find the transceiver that webrtcbin created for this m-line of the remote offer.
+    // "get-transceiver" takes a position in the transceiver list, not an m-line index,
+    // so we search the list by the "mlineindex" property.
+    GstWebRTCRTPTransceiver *mline_trans = nullptr;
+    GArray *transceivers = nullptr;
+    g_signal_emit_by_name(webrtc_, "get-transceivers", &transceivers);
+    if (transceivers) {
+        for (guint i = 0; i < transceivers->len; i++) {
+            GstWebRTCRTPTransceiver *t = g_array_index(transceivers, GstWebRTCRTPTransceiver *, i);
+            guint t_mline = G_MAXUINT;
+            g_object_get(t, "mlineindex", &t_mline, nullptr);
+            if (t_mline == mline) {
+                mline_trans = GST_WEBRTC_RTP_TRANSCEIVER(gst_object_ref(t));
+                break;
+            }
+        }
+        g_array_unref(transceivers);  // Unrefs the transceivers in the array, not our own ref
+    }
+
+    if (!mline_trans) {
+        LOG_ERROR("[WebRTCSession] No transceiver for {} m-line {} after remote offer!", media_label, mline);
+        return nullptr;
+    }
+
+    // Set direction and codec-preferences on the m-line transceiver BEFORE the pad request.
+    // webrtcbin refuses "sink_<mline>" when the m-line transceiver is recvonly
+    // (GStreamer 1.26 creates it recvonly from the remote offer).
+    g_object_set(mline_trans, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, nullptr);
+    if (codec_caps) {
+        g_object_set(mline_trans, "codec-preferences", codec_caps, nullptr);
+        gchar *caps_str = gst_caps_to_string(codec_caps);
+        LOG_INFO("[WebRTCSession] ✓ Set {} transceiver (m-line {}): SENDRECV, codec={}", media_label, mline, caps_str);
+        g_free(caps_str);
+    } else {
+        LOG_INFO("[WebRTCSession] ✓ Set {} transceiver (m-line {}): SENDRECV", media_label, mline);
+    }
+
+    // Request the pad by explicit name. A name "sink_<mline>" makes webrtcbin bind
+    // the pad to the transceiver of that m-line. "sink_%u" without caps creates
+    // a new transceiver without m-line on GStreamer 1.26.
+    GstPadTemplate *templ = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(webrtc_), "sink_%u");
+    if (!templ) {
+        LOG_ERROR("[WebRTCSession] webrtcbin has no sink_%u pad template!");
+        gst_object_unref(mline_trans);
+        return nullptr;
+    }
+
+    gchar *req_name = g_strdup_printf("sink_%u", mline);
+    GstPad *pad = gst_element_request_pad(webrtc_, templ, req_name, nullptr);
+    if (!pad) {
+        LOG_ERROR("[WebRTCSession] Failed to request {} pad {}!", media_label, req_name);
+        g_free(req_name);
+        gst_object_unref(mline_trans);
+        return nullptr;
+    }
+    g_free(req_name);
+
+    gchar *pad_name = gst_pad_get_name(pad);
+    LOG_INFO("[WebRTCSession] ✓ Requested {} pad: {}", media_label, pad_name);
+
+    // Check that the pad uses the m-line transceiver
+    GstWebRTCRTPTransceiver *pad_trans = nullptr;
+    g_object_get(pad, "transceiver", &pad_trans, nullptr);
+    if (pad_trans != mline_trans) {
+        guint pad_trans_mline = G_MAXUINT;
+        if (pad_trans) {
+            g_object_get(pad_trans, "mlineindex", &pad_trans_mline, nullptr);
+        }
+        LOG_ERROR("[WebRTCSession] {} pad {} is NOT bound to the m-line transceiver: "
+                  "pad transceiver={} (mlineindex={}), m-line transceiver={} (mlineindex={}). "
+                  "Answer will not send this media!",
+                  media_label, pad_name,
+                  static_cast<const void *>(pad_trans), pad_trans_mline,
+                  static_cast<const void *>(mline_trans), mline);
+    } else {
+        LOG_INFO("[WebRTCSession] ✓ {} pad {} bound to m-line {} transceiver", media_label, pad_name, mline);
+    }
+    g_free(pad_name);
+
+    if (pad_trans) {
+        gst_object_unref(pad_trans);
+    }
+    gst_object_unref(mline_trans);
+
+    return pad;  // Caller owns the returned pad ref
+}
+
 void WebRTCSession::on_offer_set_for_answer() {
     try {
-        LOG_INFO("[WebRTCSession] Offer set, requesting pads in SDP m-line order...");
+        LOG_INFO("[WebRTCSession] Offer set, requesting pads by SDP m-line index...");
 
-        // CRITICAL: Request pads in the SAME order as m-lines appear in SDP offer
+        // Each pad is requested as "sink_<mline>", so request order does not matter.
         // - Conversations: m-line 0=video, m-line 1=audio (video_first_mline_=true)
         // - Dino: m-line 0=audio, m-line 1=video (video_first_mline_=false)
-        // webrtcbin assigns transceivers sequentially: first request → sink_0 → m-line 0
+        LOG_INFO("[WebRTCSession] M-line order: {}", video_first_mline_ ? "VIDEO first" : "AUDIO first");
 
-        if (video_first_mline_ && offer_video_codec_caps_) {
-            // Conversations style: VIDEO first, AUDIO second
-            LOG_INFO("[WebRTCSession] Requesting VIDEO pad first (m-line 0)...");
+        // AUDIO pad (always present, the offer parser fails without an audio m-line)
+        if (offer_audio_mline_ < 0) {
+            LOG_ERROR("[WebRTCSession] No audio m-line index from offer!");
+            if (sdp_callback_) sdp_callback_(false, SDPMessage(), "No audio m-line in offer");
+            return;
+        }
 
-            // Request first pad for VIDEO (will map to m-line 0)
-            GstPad *video_pad = gst_element_request_pad_simple(webrtc_, "sink_%u");
+        GstPad *audio_pad = request_answerer_sink_pad(static_cast<guint>(offer_audio_mline_),
+                                                      offer_codec_caps_, "AUDIO");
+        if (!audio_pad) {
+            if (sdp_callback_) sdp_callback_(false, SDPMessage(), "Failed to request audio pad");
+            return;
+        }
+        if (offer_codec_caps_) {
+            gst_caps_unref(offer_codec_caps_);
+            offer_codec_caps_ = nullptr;
+        }
+        negotiated_pad_ = audio_pad;
+
+        // VIDEO pad (only if the offer has video)
+        if (offer_video_codec_caps_ && offer_video_mline_ >= 0) {
+            GstPad *video_pad = request_answerer_sink_pad(static_cast<guint>(offer_video_mline_),
+                                                          offer_video_codec_caps_, "VIDEO");
             if (!video_pad) {
-                LOG_ERROR("[WebRTCSession] Failed to request video pad!");
                 if (sdp_callback_) sdp_callback_(false, SDPMessage(), "Failed to request video pad");
                 return;
             }
-
-            gchar *pad_name = gst_pad_get_name(video_pad);
-            LOG_INFO("[WebRTCSession] ✓ Requested VIDEO pad: {}", pad_name);
-            g_free(pad_name);
-
-            // Configure video transceiver
-            GValue val = G_VALUE_INIT;
-            g_object_get_property(G_OBJECT(video_pad), "transceiver", &val);
-            GstWebRTCRTPTransceiver *video_trans = GST_WEBRTC_RTP_TRANSCEIVER(g_value_get_object(&val));
-            if (!video_trans) {
-                LOG_ERROR("[WebRTCSession] No transceiver for video pad!");
-                gst_object_unref(video_pad);
-                g_value_unset(&val);
-                if (sdp_callback_) sdp_callback_(false, SDPMessage(), "No video transceiver");
-                return;
-            }
-
-            g_object_set(video_trans, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, nullptr);
-            g_object_set(video_trans, "codec-preferences", offer_video_codec_caps_, nullptr);
-            gchar *video_caps_str = gst_caps_to_string(offer_video_codec_caps_);
-            LOG_INFO("[WebRTCSession] ✓ Set VIDEO transceiver: SENDRECV, codec={}", video_caps_str);
-            g_free(video_caps_str);
             gst_caps_unref(offer_video_codec_caps_);
             offer_video_codec_caps_ = nullptr;
-            g_value_unset(&val);
-
             negotiated_video_pad_ = video_pad;
-
-            // Request second pad for AUDIO (will map to m-line 1)
-            LOG_INFO("[WebRTCSession] Requesting AUDIO pad second (m-line 1)...");
-            GstPad *audio_pad = gst_element_request_pad_simple(webrtc_, "sink_%u");
-            if (!audio_pad) {
-                LOG_ERROR("[WebRTCSession] Failed to request audio pad!");
-                if (sdp_callback_) sdp_callback_(false, SDPMessage(), "Failed to request audio pad");
-                return;
-            }
-
-            pad_name = gst_pad_get_name(audio_pad);
-            LOG_INFO("[WebRTCSession] ✓ Requested AUDIO pad: {}", pad_name);
-            g_free(pad_name);
-
-            // Configure audio transceiver
-            GValue audio_val = G_VALUE_INIT;
-            g_object_get_property(G_OBJECT(audio_pad), "transceiver", &audio_val);
-            GstWebRTCRTPTransceiver *audio_trans = GST_WEBRTC_RTP_TRANSCEIVER(g_value_get_object(&audio_val));
-            if (!audio_trans) {
-                LOG_ERROR("[WebRTCSession] No transceiver for audio pad!");
-                gst_object_unref(audio_pad);
-                g_value_unset(&audio_val);
-                if (sdp_callback_) sdp_callback_(false, SDPMessage(), "No audio transceiver");
-                return;
-            }
-
-            g_object_set(audio_trans, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, nullptr);
-            if (offer_codec_caps_) {
-                g_object_set(audio_trans, "codec-preferences", offer_codec_caps_, nullptr);
-                gchar *audio_caps_str = gst_caps_to_string(offer_codec_caps_);
-                LOG_INFO("[WebRTCSession] ✓ Set AUDIO transceiver: SENDRECV, codec={}", audio_caps_str);
-                g_free(audio_caps_str);
-                gst_caps_unref(offer_codec_caps_);
-                offer_codec_caps_ = nullptr;
-            }
-            g_value_unset(&audio_val);
-
-            negotiated_pad_ = audio_pad;
-
         } else {
-            // Dino style: AUDIO first, VIDEO second (or audio-only)
-            LOG_INFO("[WebRTCSession] Requesting AUDIO pad first (m-line 0)...");
-
-            // Request first pad for AUDIO (will map to m-line 0)
-            GstPad *audio_pad = gst_element_request_pad_simple(webrtc_, "sink_%u");
-            if (!audio_pad) {
-                LOG_ERROR("[WebRTCSession] Failed to request audio pad!");
-                if (sdp_callback_) sdp_callback_(false, SDPMessage(), "Failed to request audio pad");
-                return;
-            }
-
-            gchar *pad_name = gst_pad_get_name(audio_pad);
-            LOG_INFO("[WebRTCSession] ✓ Requested AUDIO pad: {}", pad_name);
-            g_free(pad_name);
-
-            // Configure audio transceiver
-            GValue val = G_VALUE_INIT;
-            g_object_get_property(G_OBJECT(audio_pad), "transceiver", &val);
-            GstWebRTCRTPTransceiver *audio_trans = GST_WEBRTC_RTP_TRANSCEIVER(g_value_get_object(&val));
-            if (!audio_trans) {
-                LOG_ERROR("[WebRTCSession] No transceiver for audio pad!");
-                gst_object_unref(audio_pad);
-                g_value_unset(&val);
-                if (sdp_callback_) sdp_callback_(false, SDPMessage(), "No audio transceiver");
-                return;
-            }
-
-            g_object_set(audio_trans, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, nullptr);
-            if (offer_codec_caps_) {
-                g_object_set(audio_trans, "codec-preferences", offer_codec_caps_, nullptr);
-                gchar *audio_caps_str = gst_caps_to_string(offer_codec_caps_);
-                LOG_INFO("[WebRTCSession] ✓ Set AUDIO transceiver: SENDRECV, codec={}", audio_caps_str);
-                g_free(audio_caps_str);
-                gst_caps_unref(offer_codec_caps_);
-                offer_codec_caps_ = nullptr;
-            }
-            g_value_unset(&val);
-
-            negotiated_pad_ = audio_pad;
-
-            // Request second pad for VIDEO if present (will map to m-line 1)
-            if (offer_video_codec_caps_) {
-                LOG_INFO("[WebRTCSession] Requesting VIDEO pad second (m-line 1)...");
-                GstPad *video_pad = gst_element_request_pad_simple(webrtc_, "sink_%u");
-                if (!video_pad) {
-                    LOG_ERROR("[WebRTCSession] Failed to request video pad!");
-                    if (sdp_callback_) sdp_callback_(false, SDPMessage(), "Failed to request video pad");
-                    return;
-                }
-
-                pad_name = gst_pad_get_name(video_pad);
-                LOG_INFO("[WebRTCSession] ✓ Requested VIDEO pad: {}", pad_name);
-                g_free(pad_name);
-
-                // Configure video transceiver
-                GValue video_val = G_VALUE_INIT;
-                g_object_get_property(G_OBJECT(video_pad), "transceiver", &video_val);
-                GstWebRTCRTPTransceiver *video_trans = GST_WEBRTC_RTP_TRANSCEIVER(g_value_get_object(&video_val));
-                if (!video_trans) {
-                    LOG_ERROR("[WebRTCSession] No transceiver for video pad!");
-                    gst_object_unref(video_pad);
-                    g_value_unset(&video_val);
-                    if (sdp_callback_) sdp_callback_(false, SDPMessage(), "No video transceiver");
-                    return;
-                }
-
-                g_object_set(video_trans, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, nullptr);
-                g_object_set(video_trans, "codec-preferences", offer_video_codec_caps_, nullptr);
-                gchar *video_caps_str = gst_caps_to_string(offer_video_codec_caps_);
-                LOG_INFO("[WebRTCSession] ✓ Set VIDEO transceiver: SENDRECV, codec={}", video_caps_str);
-                g_free(video_caps_str);
-                gst_caps_unref(offer_video_codec_caps_);
-                offer_video_codec_caps_ = nullptr;
-                g_value_unset(&video_val);
-
-                negotiated_video_pad_ = video_pad;
-            } else {
-                LOG_INFO("[WebRTCSession] No video in offer (audio-only call)");
-            }
+            LOG_INFO("[WebRTCSession] No video in offer (audio-only call)");
         }
 
         // Create the answer - webrtcbin will reuse our transceiver

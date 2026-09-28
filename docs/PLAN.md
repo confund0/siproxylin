@@ -66,7 +66,8 @@ Goal: Siproxylin works with a Prosody server that is reachable only as a Tor oni
 
 ## Release tooling
 
-- CI restores an old C++ binary from cache after source changes (restore-keys too wide, proto/ not in the key). A release can ship a stale call service.
+- Next Linux release: check if CI builds the C++ call service or restores an old binary from cache. Suspected cause: restore-keys matches any old cache entry, and proto/ is not in the key. Not proven. Check the build log and the call service binary in the AppImage.
+- Windows release waits until the Linux release with the reconnect fix is confirmed in daily use.
 - generate-changelog.sh includes deps-v* tags. CHANGELOG.md already has a wrong deps-v0.0.27 section.
 - The pre-push hook rejects deps-v* tag pushes.
 - The changelog is made before the bump commit, so the bump commit and fixes before the tag are missing from the released changelog.
@@ -74,6 +75,15 @@ Goal: Siproxylin works with a Prosody server that is reachable only as a Tor oni
 - siproxylin.appdata.xml has placeholder URLs and no real releases.
 - dist/ is not in .gitignore.
 - .package-builder.sh calls log_error before it is defined, and prints "vv0.0.29".
+
+## Calls on GStreamer 1.26 (Debian 13)
+
+- Answerer with video: test a video call where video is on m-line 0 (Conversations), and test on GStreamer 1.22 (Debian 12, AppImage base).
+- Offerer: DTLS fails with "no shared cipher" when Siproxylin is the DTLS server. The phone (Conversations) offers DTLS 1.3 and 1.2, and for DTLS 1.2 only ECDHE-ECDSA suites, with an X25519MLKEM768 key share. GStreamer's DTLS certificate is RSA. Fix: give dtlsdec an ECDSA P-256 certificate (pem property). Do not change SDP setup roles.
+- The destructor does not free offer_video_codec_caps_ and negotiated_video_pad_.
+- The call service crashed once at EndSession. Nothing restarts it. Its stderr file is emptied on every start, so the crash trace is lost.
+- A failed outgoing call leaves "Another call is already in progress".
+- Log line "Offerer audio pipeline already created with payload=97" is wrong; the caps use 111.
 
 ## Known issues
 

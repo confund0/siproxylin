@@ -279,6 +279,8 @@ WebRTCSession::WebRTCSession()
     , negotiated_video_pad_(nullptr)
     , offer_video_codec_caps_(nullptr)
     , video_first_mline_(false)
+    , offer_audio_mline_(-1)
+    , offer_video_mline_(-1)
     , negotiated_payload_(-1)
     , negotiated_channels_(1)  // Default to mono (will be overridden by SDP negotiation)
     , negotiated_video_payload_(-1)  // Will be parsed from video offer SDP

@@ -79,6 +79,8 @@ private:
     GstPad* negotiated_video_pad_;  // Video pad used for SDP negotiation (answerer only)
     GstCaps* offer_video_codec_caps_;  // Video codec caps parsed from remote offer (answerer only)
     bool video_first_mline_;  // true if video is m-line 0 (Conversations), false if audio is m-line 0 (Dino)
+    int offer_audio_mline_;   // Index of the first audio m-line in the remote offer (-1 = none, answerer only)
+    int offer_video_mline_;   // Index of the first video m-line in the remote offer (-1 = none, answerer only)
 
     // Negotiated codec parameters from answer SDP (used to configure audio pipeline)
     int negotiated_payload_;   // RTP payload type from answer (e.g., 111)
@@ -173,6 +175,7 @@ private:
     bool setup_answerer_video_pipeline();  // Incoming calls - video send (answerer mode)
     bool setup_offerer_video_pipeline();   // Outgoing calls - video send (offerer mode)
     bool setup_offerer_audio_pipeline();    // Outgoing calls (offerer mode)
+    GstPad* request_answerer_sink_pad(guint mline, GstCaps *codec_caps, const char *media_label);  // Answerer: sink pad bound to the offer's m-line transceiver
     bool configure_webrtcbin();
     bool configure_proxy();
     bool add_turn_servers();
