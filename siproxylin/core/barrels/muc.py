@@ -89,7 +89,8 @@ class Bookmark:
 class MucBarrel:
     """Manages MUC operations for an account."""
 
-    def __init__(self, account_id: int, client, db, logger, signals: dict, account_data: dict):
+    def __init__(self, account_id: int, client, db, logger, signals: dict, account_data: dict,
+                 files_barrel=None):
         """
         Initialize MUC barrel.
 
@@ -100,6 +101,7 @@ class MucBarrel:
             logger: Account logger instance
             signals: Dict of Qt signal references for emitting events
             account_data: Dict with account data (for alias, bare_jid, etc.)
+            files_barrel: FileBarrel instance for file attachments in MAM history
         """
         self.account_id = account_id
         self.client = client  # Will be None initially, set by brewery after connection
@@ -107,6 +109,7 @@ class MucBarrel:
         self.logger = logger
         self.signals = signals
         self.account_data = account_data
+        self.files_barrel = files_barrel
 
         # Track rooms waiting for MAM retrieval (after self-presence received)
         self._pending_mam_rooms = set()
@@ -576,8 +579,40 @@ class MucBarrel:
                                 self.logger.debug(f"MAM message already exists (by timestamp+body), skipping")
                             continue
 
-                    # Insert message
                     conversation_id = self.db.get_or_create_conversation(self.account_id, jid_id, 1)  # type=1 MUC
+
+                    # File attachment: OOB URL (XEP-0066) or aesgcm:// body (XEP-0454), like 1:1 MAM
+                    attachment_url = None
+                    if archived_msg:
+                        try:
+                            attachment_url = archived_msg['oob']['url'] or None
+                        except (KeyError, TypeError):
+                            pass
+                    if not attachment_url and body and body.startswith('aesgcm://'):
+                        attachment_url = body
+
+                    if attachment_url and self.files_barrel:
+                        # Stored as a pending file; group chats never download automatically
+                        file_id = await self.files_barrel.handle_incoming_file(
+                            jid_id=jid_id,
+                            from_jid=room_jid,
+                            file_url=attachment_url,
+                            is_encrypted=attachment_url.startswith('aesgcm://'),
+                            timestamp=timestamp,
+                            conversation_id=conversation_id,
+                            direction=0,
+                            message_id=stanza_id,  # Sender's message ID (for reactions)
+                            origin_id=origin_id,  # Sender's origin-id (XEP-0359)
+                            stanza_id=archive_id,  # MAM archive result ID (for dedup)
+                            counterpart_resource=nick,  # MUC nickname
+                            auto_download=False,
+                            refresh=False  # MAM history does not refresh per message
+                        )
+                        if file_id:
+                            inserted_count += 1
+                        continue
+
+                    # Insert message
                     result = self.db.insert_message_atomic(
                         account_id=self.account_id,
                         counterpart_id=jid_id,

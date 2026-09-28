@@ -209,7 +209,8 @@ class XMPPAccount(QObject):
             db=self.db,
             logger=self.app_logger,
             signals=self._signals,
-            account_data=self.account_data
+            account_data=self.account_data,
+            files_barrel=self.files  # For file attachments in MAM history
         )
 
         if self.app_logger:
