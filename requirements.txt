@@ -14,7 +14,7 @@ aiodns>=3.0.0  # DNS SRV lookups for slixmpp
 aiohttp>=3.10.0
 
 # OMEMO encryption support
-slixmpp-omemo>=0.9.0
+slixmpp-omemo>=2.1.0,<2.2  # 2.2 changed encrypt_message() (returns one Message, not a dict)
 omemo
 
 # Spell checking (optional feature)
