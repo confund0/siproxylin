@@ -857,6 +857,10 @@ GstPad* WebRTCSession::request_answerer_sink_pad(guint mline, GstCaps *codec_cap
     // Find the transceiver that webrtcbin created for this m-line of the remote offer.
     // "get-transceiver" takes a position in the transceiver list, not an m-line index,
     // so we search the list by the "mlineindex" property.
+    //
+    // GStreamer 1.26 creates the offer transceivers in set-remote-description.
+    // GStreamer 1.22 creates them only when the state becomes STABLE (after the
+    // local answer is set), so at this point the list has no m-line transceiver.
     GstWebRTCRTPTransceiver *mline_trans = nullptr;
     GArray *transceivers = nullptr;
     g_signal_emit_by_name(webrtc_, "get-transceivers", &transceivers);
@@ -873,22 +877,29 @@ GstPad* WebRTCSession::request_answerer_sink_pad(guint mline, GstCaps *codec_cap
         g_array_unref(transceivers);  // Unrefs the transceivers in the array, not our own ref
     }
 
-    if (!mline_trans) {
-        LOG_ERROR("[WebRTCSession] No transceiver for {} m-line {} after remote offer!", media_label, mline);
-        return nullptr;
-    }
+    if (mline_trans) {
+        LOG_INFO("[WebRTCSession] {} m-line {}: using the transceiver from the remote offer (existing transceiver path)",
+                 media_label, mline);
 
-    // Set direction and codec-preferences on the m-line transceiver BEFORE the pad request.
-    // webrtcbin refuses "sink_<mline>" when the m-line transceiver is recvonly
-    // (GStreamer 1.26 creates it recvonly from the remote offer).
-    g_object_set(mline_trans, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, nullptr);
-    if (codec_caps) {
-        g_object_set(mline_trans, "codec-preferences", codec_caps, nullptr);
-        gchar *caps_str = gst_caps_to_string(codec_caps);
-        LOG_INFO("[WebRTCSession] ✓ Set {} transceiver (m-line {}): SENDRECV, codec={}", media_label, mline, caps_str);
-        g_free(caps_str);
+        // Set direction and codec-preferences on the m-line transceiver BEFORE the pad request.
+        // webrtcbin refuses "sink_<mline>" when the m-line transceiver is recvonly
+        // (GStreamer 1.26 creates it recvonly from the remote offer).
+        g_object_set(mline_trans, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, nullptr);
+        if (codec_caps) {
+            g_object_set(mline_trans, "codec-preferences", codec_caps, nullptr);
+            gchar *caps_str = gst_caps_to_string(codec_caps);
+            LOG_INFO("[WebRTCSession] ✓ Set {} transceiver (m-line {}): SENDRECV, codec={}", media_label, mline, caps_str);
+            g_free(caps_str);
+        } else {
+            LOG_INFO("[WebRTCSession] ✓ Set {} transceiver (m-line {}): SENDRECV", media_label, mline);
+        }
     } else {
-        LOG_INFO("[WebRTCSession] ✓ Set {} transceiver (m-line {}): SENDRECV", media_label, mline);
+        // No transceiver for this m-line yet (GStreamer 1.22). The named request below
+        // makes webrtcbin create a new SENDRECV transceiver locked to this m-line.
+        // create-answer then selects it by its codec-preferences.
+        LOG_INFO("[WebRTCSession] {} m-line {}: no transceiver from the remote offer yet, "
+                 "webrtcbin creates one at pad request (new transceiver path)",
+                 media_label, mline);
     }
 
     // Request the pad by explicit name. A name "sink_<mline>" makes webrtcbin bind
@@ -897,7 +908,7 @@ GstPad* WebRTCSession::request_answerer_sink_pad(guint mline, GstCaps *codec_cap
     GstPadTemplate *templ = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(webrtc_), "sink_%u");
     if (!templ) {
         LOG_ERROR("[WebRTCSession] webrtcbin has no sink_%u pad template!");
-        gst_object_unref(mline_trans);
+        if (mline_trans) gst_object_unref(mline_trans);
         return nullptr;
     }
 
@@ -906,7 +917,7 @@ GstPad* WebRTCSession::request_answerer_sink_pad(guint mline, GstCaps *codec_cap
     if (!pad) {
         LOG_ERROR("[WebRTCSession] Failed to request {} pad {}!", media_label, req_name);
         g_free(req_name);
-        gst_object_unref(mline_trans);
+        if (mline_trans) gst_object_unref(mline_trans);
         return nullptr;
     }
     g_free(req_name);
@@ -914,29 +925,59 @@ GstPad* WebRTCSession::request_answerer_sink_pad(guint mline, GstCaps *codec_cap
     gchar *pad_name = gst_pad_get_name(pad);
     LOG_INFO("[WebRTCSession] ✓ Requested {} pad: {}", media_label, pad_name);
 
-    // Check that the pad uses the m-line transceiver
     GstWebRTCRTPTransceiver *pad_trans = nullptr;
     g_object_get(pad, "transceiver", &pad_trans, nullptr);
-    if (pad_trans != mline_trans) {
-        guint pad_trans_mline = G_MAXUINT;
-        if (pad_trans) {
-            g_object_get(pad_trans, "mlineindex", &pad_trans_mline, nullptr);
+    guint pad_trans_mline = G_MAXUINT;
+    if (pad_trans) {
+        g_object_get(pad_trans, "mlineindex", &pad_trans_mline, nullptr);
+    }
+
+    if (mline_trans) {
+        // Existing transceiver path: check that the pad uses the m-line transceiver
+        if (pad_trans != mline_trans) {
+            LOG_ERROR("[WebRTCSession] {} pad {} is NOT bound to the m-line transceiver: "
+                      "pad transceiver={} (mlineindex={}), m-line transceiver={} (mlineindex={}). "
+                      "Answer will not send this media!",
+                      media_label, pad_name,
+                      static_cast<const void *>(pad_trans), pad_trans_mline,
+                      static_cast<const void *>(mline_trans), mline);
+        } else {
+            LOG_INFO("[WebRTCSession] ✓ {} pad {} bound to m-line {} transceiver", media_label, pad_name, mline);
         }
-        LOG_ERROR("[WebRTCSession] {} pad {} is NOT bound to the m-line transceiver: "
-                  "pad transceiver={} (mlineindex={}), m-line transceiver={} (mlineindex={}). "
-                  "Answer will not send this media!",
-                  media_label, pad_name,
-                  static_cast<const void *>(pad_trans), pad_trans_mline,
-                  static_cast<const void *>(mline_trans), mline);
+    } else if (pad_trans) {
+        // New transceiver path: set direction and codec-preferences on the pad's
+        // transceiver AFTER the request (the old behaviour that works on 1.22)
+        g_object_set(pad_trans, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV, nullptr);
+        if (codec_caps) {
+            g_object_set(pad_trans, "codec-preferences", codec_caps, nullptr);
+            gchar *caps_str = gst_caps_to_string(codec_caps);
+            LOG_INFO("[WebRTCSession] ✓ Set {} transceiver (m-line {}): SENDRECV, codec={}", media_label, mline, caps_str);
+            g_free(caps_str);
+        } else {
+            LOG_INFO("[WebRTCSession] ✓ Set {} transceiver (m-line {}): SENDRECV", media_label, mline);
+        }
+
+        if (pad_trans_mline != mline) {
+            LOG_ERROR("[WebRTCSession] {} pad {} transceiver={} has mlineindex={}, expected {}. "
+                      "Answer may not send this media!",
+                      media_label, pad_name, static_cast<const void *>(pad_trans),
+                      pad_trans_mline, mline);
+        } else {
+            LOG_INFO("[WebRTCSession] ✓ {} pad {} bound to new transceiver locked to m-line {}",
+                     media_label, pad_name, mline);
+        }
     } else {
-        LOG_INFO("[WebRTCSession] ✓ {} pad {} bound to m-line {} transceiver", media_label, pad_name, mline);
+        LOG_ERROR("[WebRTCSession] {} pad {} has no transceiver! Answer will not send this media!",
+                  media_label, pad_name);
     }
     g_free(pad_name);
 
     if (pad_trans) {
         gst_object_unref(pad_trans);
     }
-    gst_object_unref(mline_trans);
+    if (mline_trans) {
+        gst_object_unref(mline_trans);
+    }
 
     return pad;  // Caller owns the returned pad ref
 }
