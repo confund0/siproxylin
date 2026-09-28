@@ -116,7 +116,7 @@ Each "barrel" handles one feature domain:
 | **PresenceBarrel** | Roster, subscriptions, presence | RFC 6121 |
 | **OmemoBarrel** | E2E encryption device management | XEP-0384 |
 | **CallBarrel** | Audio/video calls via C++ media service | XEP-0353, 0166 |
-| **FileBarrel** | File uploads and attachments | XEP-0363, 0454 |
+| **FileBarrel** | File uploads and attachments; received files are stored as pending and downloaded through the account proxy | XEP-0363, 0454 |
 | **AvatarBarrel** | Avatar fetching and caching | XEP-0084, 0153 |
 | **MucBarrel** | Multi-user chat rooms | XEP-0045, 0402 |
 

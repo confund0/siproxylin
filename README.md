@@ -196,6 +196,8 @@ For production, two command-line parameters are available:
 
 Siproxylin supports **proxies per account**. Even the **registration wizard** asks if you'd like to use a proxy. SOCKS5 and HTTP are both supported, and if you register an account using a proxy, it's automatically saved with that account's settings.
 
+**Received files** are downloaded through the account proxy, and the proxy resolves the host name. If the proxy setting is broken, the download fails; it never falls back to a direct connection. Files download automatically only from roster contacts with a subscription and from your own other devices, up to 25 MB. Files from other senders and from group chats show "Click to download" (up to 256 MB). Only https links are fetched. File uploads (HTTP Upload) do not use the proxy yet.
+
 ### Use Cases
 
 1. **Don't want to expose your private XMPP server?** Add Wireguard directly on your server and use **wireproxy** with the SOCKS5 socket.
