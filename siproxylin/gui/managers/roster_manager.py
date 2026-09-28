@@ -97,8 +97,13 @@ class RosterManager:
         if is_current_chat:
             # Refresh the chat view
             # Only send markers for actual new messages, not for marker/receipt updates
-            self.chat_view.refresh(send_markers=(not is_marker))
-            logger.debug(f"Chat view refreshed for {event_type}")
+            if is_marker:
+                # Marker/receipt and file state updates: delayed refresh, many updates give one refresh
+                self.chat_view.refresh_later()
+                logger.debug(f"Chat view refresh scheduled for {event_type}")
+            else:
+                self.chat_view.refresh(send_markers=True)
+                logger.debug(f"Chat view refreshed for {event_type}")
 
         # Check if this is a new conversation (not currently in chat list)
         # Only refresh roster for new conversations to avoid expensive reloads

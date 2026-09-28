@@ -16,6 +16,7 @@ from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt
 
 from ....db.database import get_db
 from ...widgets.message_delegate import MessageBubbleDelegate
+from .messages import parse_download_error
 
 
 logger = logging.getLogger('siproxylin.chat_view.message_list_model')
@@ -111,6 +112,12 @@ class MessageListModel(QAbstractListModel):
             return msg.get('call_duration')
         elif role == MessageBubbleDelegate.ROLE_CALL_TYPE:
             return msg.get('call_type')
+        elif role == MessageBubbleDelegate.ROLE_FILE_TRANSFER_ID:
+            return msg.get('file_transfer_id')
+        elif role == MessageBubbleDelegate.ROLE_FILE_STATE:
+            return msg.get('file_state')
+        elif role == MessageBubbleDelegate.ROLE_DOWNLOAD_ERROR:
+            return msg.get('download_error')
 
         return None
 
@@ -308,6 +315,9 @@ class MessageListModel(QAbstractListModel):
                     ft.message_id AS ft_message_id,
                     ft.origin_id AS ft_origin_id,
                     ft.stanza_id AS ft_stanza_id,
+                    ft.state AS ft_state,
+                    ft.info AS ft_info,
+                    ft.counterpart_resource AS ft_counterpart_resource,
                     -- Call fields
                     c.id AS call_id,
                     c.direction AS call_direction,
@@ -359,6 +369,9 @@ class MessageListModel(QAbstractListModel):
                     ft.message_id AS ft_message_id,
                     ft.origin_id AS ft_origin_id,
                     ft.stanza_id AS ft_stanza_id,
+                    ft.state AS ft_state,
+                    ft.info AS ft_info,
+                    ft.counterpart_resource AS ft_counterpart_resource,
                     -- Call fields
                     c.id AS call_id,
                     c.direction AS call_direction,
@@ -511,6 +524,9 @@ class MessageListModel(QAbstractListModel):
             'file_size': file_size,
             'file_icon': file_icon,
             'file_size_text': file_size_text,
+            'file_transfer_id': row['ft_id'],
+            'file_state': row['ft_state'],
+            'download_error': parse_download_error(row['ft_info']),
             # Message fields (defaults for files)
             'body': None,
             'marked': 0,  # Files don't have markers

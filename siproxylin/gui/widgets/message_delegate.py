@@ -104,6 +104,16 @@ class MessageBubbleDelegate(QStyledItemDelegate):
     ROLE_SEPARATOR_TEXT = Qt.UserRole + 22  # Text to display (e.g., "Today", "Yesterday", "Fri, 29 Jan")
     ROLE_TIMESTAMP_RAW = Qt.UserRole + 23   # Raw Unix timestamp (for Info dialog full date/time)
     ROLE_OMEMO_CAPABLE = Qt.UserRole + 24   # True if this chat supports OMEMO (has devices)
+    # File download roles
+    ROLE_FILE_TRANSFER_ID = Qt.UserRole + 25  # file_transfer.id (None for messages and calls)
+    ROLE_FILE_STATE = Qt.UserRole + 26        # file_transfer.state (see FILE_STATE_*)
+    ROLE_DOWNLOAD_ERROR = Qt.UserRole + 27    # Short download error reason, or None
+
+    # file_transfer.state values
+    FILE_STATE_PENDING = 0      # Not downloaded yet ("click to download")
+    FILE_STATE_DOWNLOADING = 1  # Download (or upload) is running
+    FILE_STATE_COMPLETE = 2     # Done, path is set
+    FILE_STATE_FAILED = 3       # Download (or upload) failed
 
     def __init__(self, parent=None, theme_name='dark', db=None, account_id=None):
         super().__init__(parent)
@@ -174,6 +184,29 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         """
         self.account_id = account_id
         self.clear_reaction_cache()  # Clear cache when switching accounts
+
+    @classmethod
+    def can_request_download(cls, index):
+        """True if the item is a file without a local path that can be downloaded now."""
+        if not index.isValid():
+            return False
+        if index.data(cls.ROLE_FILE_TRANSFER_ID) is None:
+            return False
+        if index.data(cls.ROLE_FILE_PATH):
+            return False
+        return index.data(cls.ROLE_FILE_STATE) in (cls.FILE_STATE_PENDING, cls.FILE_STATE_FAILED)
+
+    def _get_file_state_text(self, file_state, download_error):
+        """State text for a file row without a local path."""
+        if file_state == self.FILE_STATE_PENDING:
+            return "Click to download"
+        if file_state == self.FILE_STATE_DOWNLOADING:
+            return "Downloading..."
+        if file_state == self.FILE_STATE_FAILED:
+            if download_error:
+                return f"Download failed: {download_error} - click to retry"
+            return "Download failed - click to retry"
+        return "File not available"
 
     def _get_file_icon(self, mime_type):
         """Get appropriate emoji icon for file type."""
@@ -477,10 +510,15 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         self._reaction_cache[content_item_id] = seen_emojis
         return seen_emojis
 
-    def _get_content_document(self, body, is_file, file_path, file_name, mime_type, font, text_width, text_color=None, direction=None):
+    def _get_content_document(self, body, is_file, file_path, file_name, mime_type, font, text_width, text_color=None, direction=None,
+                              file_state=None, download_error=None):
         """Get or create cached QTextDocument for content."""
-        # Create cache key (v7 = with text_color and direction for URL color)
-        cache_key = ('v7', body if not is_file else file_path, text_width, font.toString(), text_color.name() if text_color else None, direction)
+        # Create cache key (v8 = files use all values that change the look)
+        if is_file:
+            content_key = ('file', file_path, file_name, mime_type, file_state, download_error)
+        else:
+            content_key = ('text', body)
+        cache_key = ('v8', content_key, text_width, font.toString(), text_color.name() if text_color else None, direction)
 
         if cache_key in self._doc_cache:
             return self._doc_cache[cache_key]
@@ -489,8 +527,22 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         doc = QTextDocument()
         doc.setDefaultFont(font)
 
-        if is_file:
+        if is_file and not file_path:
+            # File without a local path (not downloaded): name line and state line.
+            # No image or video preview here.
+            from html import escape
+            icon_str = self._get_file_icon(mime_type)
+            state_text = self._get_file_state_text(file_state, download_error)
+            html = f'<p>{escape(icon_str)} {escape(file_name or "file")}<br />{escape(state_text)}</p>'
+            doc.setHtml(html)
+            # Measure without wrapping; paint() elides long lines
+            doc.setTextWidth(10000)
+            natural_size = doc.size()
+            width = min(int(doc.idealWidth() + 2 * doc.documentMargin()), text_width)
+            height = int(natural_size.height())
+        elif is_file:
             from pathlib import Path
+            from html import escape
             if mime_type and mime_type.startswith('image/') and file_path and Path(file_path).exists():
                 file_url = QUrl.fromLocalFile(file_path).toString()
                 html = f'<img src="{file_url}" style="max-width: 300px;" />'
@@ -503,11 +555,11 @@ class MessageBubbleDelegate(QStyledItemDelegate):
                     html = f'<img src="{thumb_url}" style="max-width: 300px; max-height: 400px;" />'
                 else:
                     # Fallback if thumbnail generation failed
-                    html = f'<p>🎬 {file_name or "video"}</p>'
+                    html = f'<p>🎬 {escape(file_name or "video")}</p>'
             else:
                 # Non-image/video file: will be rendered with custom paint, not QTextDocument
                 # Return dummy dimensions - actual rendering happens in paint()
-                html = f'<p>📎 {file_name or "file"}</p>'
+                html = f'<p>📎 {escape(file_name or "file")}</p>'
             doc.setHtml(html)
             content_size = doc.size()
             width = int(content_size.width())
@@ -622,6 +674,9 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         file_size = index.data(self.ROLE_FILE_SIZE)
         file_icon = index.data(self.ROLE_FILE_ICON)         # Pre-computed
         file_size_text = index.data(self.ROLE_FILE_SIZE_TEXT)  # Pre-computed
+        file_transfer_id = index.data(self.ROLE_FILE_TRANSFER_ID)
+        file_state = index.data(self.ROLE_FILE_STATE)
+        download_error = index.data(self.ROLE_DOWNLOAD_ERROR)
 
         # Carbon copy flag
         is_carbon = index.data(self.ROLE_IS_CARBON) or False
@@ -638,8 +693,11 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         call_type = index.data(self.ROLE_CALL_TYPE)
 
         # Check content type
+        # A file row without a path is a file that is not downloaded yet
         is_call = call_state is not None
-        is_file = bool(file_path) and not is_call
+        is_file = (bool(file_path) or file_transfer_id is not None) and not is_call
+        is_image = is_file and bool(file_path) and self._is_image_file(mime_type)
+        is_video = is_file and bool(file_path) and self._is_video_file(mime_type)
 
         # === Render calls as separate widgets (not message bubbles) ===
         if is_call:
@@ -653,7 +711,7 @@ class MessageBubbleDelegate(QStyledItemDelegate):
             timestamp_text += " 🔒"
 
         # For non-image/video files, prepend file size to timestamp (right-aligned together)
-        if is_file and not self._is_image_file(mime_type) and not self._is_video_file(mime_type):
+        if is_file and not is_image and not is_video:
             if file_size_text:
                 timestamp_text = f"({file_size_text})  {timestamp_text}"
 
@@ -684,7 +742,8 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         # Calculate bubble rect (needs to know about file content and reactions)
         bubble_rect = self._calculate_bubble_rect(
             painter, option.rect, body, timestamp_text, marker_text, direction, msg_type, nickname,
-            is_file, file_path, file_name, mime_type, reactions
+            is_file, file_path, file_name, mime_type, reactions,
+            file_state=file_state, download_error=download_error
         )
 
         # Draw bubble background
@@ -747,7 +806,7 @@ class MessageBubbleDelegate(QStyledItemDelegate):
 
         if is_file:
             # Files: distinguish between images/videos and other files
-            if self._is_image_file(mime_type) or self._is_video_file(mime_type):
+            if is_image or is_video:
                 # Images/Videos: use QTextDocument for inline display
                 doc, doc_width, doc_height = self._get_content_document(body, is_file, file_path, file_name, mime_type, base_font, max_text_width, text_color, direction)
                 painter.save()
@@ -756,7 +815,7 @@ class MessageBubbleDelegate(QStyledItemDelegate):
                 painter.restore()
 
                 # For videos: paint play icon overlay using QPainter (cross-platform reliable)
-                if self._is_video_file(mime_type):
+                if is_video:
                     # Calculate center of the video thumbnail
                     thumbnail_rect = QRect(body_rect.topLeft(), QSize(doc_width, doc_height))
                     center_x = thumbnail_rect.center().x()
@@ -814,6 +873,16 @@ class MessageBubbleDelegate(QStyledItemDelegate):
                     Qt.AlignLeft | Qt.AlignTop,
                     filename_line
                 )
+
+                # File not downloaded yet: draw the state text on a second line
+                if not file_path:
+                    state_text = self._get_file_state_text(file_state, download_error)
+                    state_text = fm.elidedText(state_text, Qt.ElideRight, body_rect.width())
+                    state_rect = QRect(body_rect.left(), body_rect.top() + fm.height(), body_rect.width(), fm.height())
+                    painter.save()
+                    painter.setPen(self.timestamp_color)
+                    painter.drawText(state_rect, Qt.AlignLeft | Qt.AlignTop, state_text)
+                    painter.restore()
 
                 # Line 2: File size will be prepended to timestamp
                 # Modify timestamp_text to include file size
@@ -938,15 +1007,20 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         file_path = index.data(self.ROLE_FILE_PATH)
         file_name = index.data(self.ROLE_FILE_NAME)
         mime_type = index.data(self.ROLE_MIME_TYPE)
+        file_transfer_id = index.data(self.ROLE_FILE_TRANSFER_ID)
+        file_state = index.data(self.ROLE_FILE_STATE)
+        download_error = index.data(self.ROLE_DOWNLOAD_ERROR)
 
         # Call data (Phase 4)
         call_state = index.data(self.ROLE_CALL_STATE)
         call_duration = index.data(self.ROLE_CALL_DURATION)
         call_type = index.data(self.ROLE_CALL_TYPE)
 
-        # Check content type
+        # Check content type (same as paint())
         is_call = call_state is not None
-        is_file = bool(file_path) and not is_call
+        is_file = (bool(file_path) or file_transfer_id is not None) and not is_call
+        is_image = is_file and bool(file_path) and self._is_image_file(mime_type)
+        is_video = is_file and bool(file_path) and self._is_video_file(mime_type)
 
         # Carbon copy flag
         is_carbon = index.data(self.ROLE_IS_CARBON) or False
@@ -993,14 +1067,15 @@ class MessageBubbleDelegate(QStyledItemDelegate):
             timestamp_height = timestamp_fm.height() + 4  # +4 for spacing
             total_height = call_height + timestamp_height + 8  # +8 for vertical padding
             return QSize(option.rect.width(), total_height)
-        elif is_file and not self._is_image_file(mime_type) and not self._is_video_file(mime_type):
+        elif is_file and file_path and not is_image and not is_video:
             # Non-image/video files: just 1 line for icon+filename
             # (size is on timestamp line, handled separately)
             text_rect_height = fm.height()
         else:
-            # Text, images, and videos: use cached QTextDocument
+            # Text, images, videos and files without a path: use cached QTextDocument
             _, _, text_rect_height = self._get_content_document(
-                body, is_file, file_path, file_name, mime_type, font, text_width, None, direction
+                body, is_file, file_path, file_name, mime_type, font, text_width, None, direction,
+                file_state=file_state, download_error=download_error
             )
 
         # Add timestamp height
@@ -1019,7 +1094,7 @@ class MessageBubbleDelegate(QStyledItemDelegate):
             nickname_height = nickname_fm.height() + 6  # 6px spacing
 
         # Use larger vertical margin for file attachments (non-images/videos)
-        vertical_margin = self.margin_vertical_file if (is_file and not self._is_image_file(mime_type) and not self._is_video_file(mime_type)) else self.margin_vertical
+        vertical_margin = self.margin_vertical_file if (is_file and not is_image and not is_video) else self.margin_vertical
 
         total_height = (
             text_rect_height +
@@ -1033,7 +1108,8 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         return QSize(option.rect.width(), total_height)
 
     def _calculate_bubble_rect(self, painter, item_rect, body, timestamp_text, marker_text, direction, msg_type, nickname,
-                               is_file=False, file_path=None, file_name=None, mime_type=None, reactions=None, font=None):
+                               is_file=False, file_path=None, file_name=None, mime_type=None, reactions=None, font=None,
+                               file_state=None, download_error=None):
         """Calculate the rectangle for the bubble."""
         if font is None:
             font = painter.font()
@@ -1046,7 +1122,8 @@ class MessageBubbleDelegate(QStyledItemDelegate):
 
         # Calculate content dimensions using QTextDocument (consistent with paint())
         _, text_rect_width, text_rect_height = self._get_content_document(
-            body, is_file, file_path, file_name, mime_type, font, text_width, None, direction
+            body, is_file, file_path, file_name, mime_type, font, text_width, None, direction,
+            file_state=file_state, download_error=download_error
         )
 
         # Calculate timestamp width
@@ -1274,7 +1351,7 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         file_path = index.data(self.ROLE_FILE_PATH)
         file_name = index.data(self.ROLE_FILE_NAME)
         mime_type = index.data(self.ROLE_MIME_TYPE)
-        is_file = bool(file_path)
+        is_file = bool(file_path) or index.data(self.ROLE_FILE_TRANSFER_ID) is not None
 
         # Only handle text messages (not files)
         if is_file:

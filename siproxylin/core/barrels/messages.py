@@ -13,6 +13,7 @@ Responsibilities:
 import logging
 from typing import Optional
 from .message_reactions import MessageReactions
+from ...utils.download_policy import may_auto_download
 
 
 class MessageBarrel:
@@ -429,9 +430,10 @@ class MessageBarrel:
                     if self.logger:
                         self.logger.debug(f"Skipping file_transfer - duplicate from THIS device")
                 else:
-                    # Download and create file_transfer for:
+                    # Store a pending file_transfer for:
                     # - Files from peers (direction=0)
                     # - Files from our OTHER devices (direction=1, is_from_other_device=True)
+                    # Group chats never download automatically; the user clicks the file.
                     await self.files_barrel.handle_incoming_file(
                         jid_id=jid_id,
                         from_jid=room,  # Use room JID as sender for MUC files
@@ -443,7 +445,9 @@ class MessageBarrel:
                         is_from_other_device=is_from_other_device,  # Mark if from other device
                         message_id=message_id,  # For deduplication
                         origin_id=origin_id,  # For deduplication
-                        stanza_id=stanza_id   # For deduplication
+                        stanza_id=stanza_id,  # For deduplication
+                        counterpart_resource=nick,  # MUC nickname
+                        auto_download=may_auto_download(direction, is_muc=True, trusted=False)
                     )
             else:
                 # Regular text message (not a file)
@@ -556,6 +560,11 @@ class MessageBarrel:
             # Handle file attachment OR regular message (mutually exclusive, as separate content items)
             if metadata.has_attachment:
                 # File attachment - don't create message record, only file_transfer
+                # Automatic download only for our own files or a trusted sender
+                auto_download = may_auto_download(
+                    direction, is_muc=False,
+                    trusted=(direction == 0 and self.files_barrel.is_trusted_sender(jid_id))
+                )
                 await self.files_barrel.handle_incoming_file(
                     jid_id=jid_id,
                     from_jid=from_jid,
@@ -567,7 +576,8 @@ class MessageBarrel:
                     is_from_other_device=is_from_other_device,  # Mark if from other device (carbon)
                     message_id=message_id,  # For deduplication
                     origin_id=origin_id,  # For deduplication
-                    stanza_id=stanza_id   # For deduplication
+                    stanza_id=stanza_id,  # For deduplication
+                    auto_download=auto_download
                 )
             else:
                 # Regular text message (not a file)
@@ -1094,9 +1104,10 @@ class MessageBarrel:
                     # No OOB extension or empty URL
                     pass
 
-            # Fallback: Check if body is an attachment URL (aesgcm:// or https://)
+            # Fallback: an aesgcm:// body is an encrypted file (XEP-0454, no OOB).
+            # A body with only an https link stays a text message; links are never fetched.
             if not has_attachment and body:
-                if body.startswith('aesgcm://') or (body.startswith('https://') and len(body.split()) == 1):
+                if body.startswith('aesgcm://'):
                     has_attachment = True
                     attachment_url = body
 
@@ -1106,6 +1117,11 @@ class MessageBarrel:
             # Handle file attachment OR regular message (mutually exclusive, like live messages)
             if has_attachment:
                 # File attachment from MAM - create file_transfer record
+                # Same rule as live messages: our own files or a trusted sender
+                auto_download = may_auto_download(
+                    direction, is_muc=False,
+                    trusted=(direction == 0 and self.files_barrel.is_trusted_sender(jid_id))
+                )
                 await self.files_barrel.handle_incoming_file(
                     jid_id=jid_id,
                     from_jid=contact_jid,
@@ -1117,7 +1133,9 @@ class MessageBarrel:
                     is_from_other_device=is_carbon,
                     message_id=stanza_id,  # Sender's message ID (for reactions)
                     origin_id=origin_id,  # Sender's origin-id (XEP-0359)
-                    stanza_id=archive_id  # MAM archive ID (for dedup)
+                    stanza_id=archive_id,  # MAM archive ID (for dedup)
+                    auto_download=auto_download,
+                    refresh=False  # the caller refreshes once per MAM page
                 )
                 inserted_count += 1
             else:

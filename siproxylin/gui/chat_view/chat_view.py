@@ -69,6 +69,13 @@ class ChatViewWidget(QWidget):
         # Format: {(account_id, jid): file_path_str}
         self.file_buffers = {}
 
+        # Delayed refresh for marker and file state updates.
+        # Many updates in a short time (for example MAM catch-up with files) give one refresh.
+        self._marker_refresh_timer = QTimer(self)
+        self._marker_refresh_timer.setSingleShot(True)
+        self._marker_refresh_timer.setInterval(250)
+        self._marker_refresh_timer.timeout.connect(lambda: self.refresh(send_markers=False))
+
         # Setup UI - QStackedWidget for view modes
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -402,6 +409,7 @@ class ChatViewWidget(QWidget):
             self.header.update_blocked_status(is_blocked)
 
         # Load messages from database using message widget
+        self._marker_refresh_timer.stop()  # Full load follows, no delayed refresh needed
         self.message_widget.load_messages(account_id, jid, self.current_is_muc, self.current_conversation_id)
 
         # Update input placeholder with shield indicator (after OMEMO capability is determined)
@@ -434,6 +442,9 @@ class ChatViewWidget(QWidget):
         """
         # logger.debug(f"refresh() called: account={self.current_account_id}, jid={self.current_jid}, send_markers={send_markers}")
 
+        # This refresh also covers a waiting delayed refresh
+        self._marker_refresh_timer.stop()
+
         # Don't refresh if not on chat page (e.g., on welcome page)
         if self.stack.currentIndex() != 1:
             logger.debug("Skipping refresh - not on chat page")
@@ -441,6 +452,16 @@ class ChatViewWidget(QWidget):
 
         # Delegate to message widget
         self.message_widget.refresh(send_markers)
+
+    def refresh_later(self):
+        """
+        Refresh the message display after a short delay.
+
+        Used for marker and file state updates. Calls in the delay time
+        give only one refresh. Do not use it for new messages.
+        """
+        if not self._marker_refresh_timer.isActive():
+            self._marker_refresh_timer.start()
 
     def update_theme(self, theme_name: str):
         """

@@ -178,7 +178,8 @@ class XMPPAccount(QObject):
             client=None,
             db=self.db,
             logger=self.app_logger,
-            signals=self._signals
+            signals=self._signals,
+            account_data=self.account_data  # Shared dict: downloads use the current proxy settings
         )
 
         # Initialize MessageBarrel (handles message operations)
@@ -279,6 +280,8 @@ class XMPPAccount(QObject):
 
     def disconnect(self):
         """Disconnect from XMPP server - delegates to ConnectionBarrel."""
+        # Stop file downloads (also used for account disable and deletion)
+        self.files.cancel_all()
         call_bridge = self.calls.call_bridge if hasattr(self, 'calls') else None
         self.connection.disconnect(call_bridge=call_bridge)
 

@@ -4,6 +4,7 @@ Message display widget for Siproxylin.
 Displays message history with timestamps, encryption indicators, file transfers, and calls.
 """
 
+import json
 import logging
 import time
 from datetime import datetime, timedelta
@@ -62,6 +63,51 @@ def get_bubble_timestamp(timestamp):
 
     # Everything else: "HH:MM"
     return msg_dt.strftime('%H:%M')
+
+
+def parse_download_error(info):
+    """
+    Get the download error reason from file_transfer.info.
+
+    info is JSON text with the key "download_error". It can be NULL or
+    not valid JSON. Returns the reason text or None.
+    """
+    if not info:
+        return None
+    try:
+        data = json.loads(info)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    reason = data.get('download_error')
+    return str(reason) if reason else None
+
+
+def request_file_download(account_manager, account_id, file_transfer_id):
+    """
+    Ask the FileBarrel of the account to download a received file.
+
+    Returns True if the request was given to the FileBarrel.
+    """
+    if not account_manager or not account_id or not file_transfer_id:
+        logger.warning(f"Cannot request download: account={account_id}, file_transfer_id={file_transfer_id}")
+        return False
+
+    account = account_manager.get_account(account_id)
+    files_barrel = getattr(account, 'files', None) if account else None
+    request_download = getattr(files_barrel, 'request_download', None)
+    if not callable(request_download):
+        logger.warning(f"Cannot request download: no FileBarrel.request_download for account {account_id}")
+        return False
+
+    try:
+        request_download(int(file_transfer_id))
+        logger.info(f"Requested download of file_transfer {file_transfer_id} (account {account_id})")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to request download of file_transfer {file_transfer_id}: {e}")
+        return False
 
 
 class MessageDisplayWidget(QObject):
@@ -352,6 +398,9 @@ class MessageDisplayWidget(QObject):
                     ft.message_id AS ft_message_id,
                     ft.origin_id AS ft_origin_id,
                     ft.stanza_id AS ft_stanza_id,
+                    ft.state AS ft_state,
+                    ft.info AS ft_info,
+                    ft.counterpart_resource AS ft_counterpart_resource,
                     -- Call fields
                     c.id AS call_id,
                     c.direction AS call_direction,
@@ -449,6 +498,9 @@ class MessageDisplayWidget(QObject):
                     ft.message_id AS ft_message_id,
                     ft.origin_id AS ft_origin_id,
                     ft.stanza_id AS ft_stanza_id,
+                    ft.state AS ft_state,
+                    ft.info AS ft_info,
+                    ft.counterpart_resource AS ft_counterpart_resource,
                     -- Call fields
                     c.id AS call_id,
                     c.direction AS call_direction,
@@ -702,6 +754,11 @@ class MessageDisplayWidget(QObject):
                 timestamp = get_bubble_timestamp(row_timestamp)
                 encrypted = bool(row['ft_encryption'])
                 is_carbon = bool(row['ft_is_carbon'])
+                file_transfer_id = row['ft_id']
+                file_state = row['ft_state']
+                download_error = parse_download_error(row['ft_info'])
+                # MUC: the sender nickname is the file resource
+                file_nickname = (row['ft_counterpart_resource'] or '') if self.current_is_muc else ''
 
                 # Get message ID for reactions
                 # XEP-0444: MUC reactions MUST use stanza_id (server-assigned)
@@ -728,8 +785,11 @@ class MessageDisplayWidget(QObject):
                 item.setData(row_timestamp, MessageBubbleDelegate.ROLE_TIMESTAMP_RAW)
                 item.setData(encrypted, MessageBubbleDelegate.ROLE_ENCRYPTED)
                 item.setData(0, MessageBubbleDelegate.ROLE_MARKED)  # Files don't have markers
-                item.setData(0, MessageBubbleDelegate.ROLE_TYPE)
-                item.setData("", MessageBubbleDelegate.ROLE_NICKNAME)
+                item.setData(1 if self.current_is_muc else 0, MessageBubbleDelegate.ROLE_TYPE)
+                item.setData(file_nickname, MessageBubbleDelegate.ROLE_NICKNAME)
+                item.setData(file_transfer_id, MessageBubbleDelegate.ROLE_FILE_TRANSFER_ID)
+                item.setData(file_state, MessageBubbleDelegate.ROLE_FILE_STATE)
+                item.setData(download_error, MessageBubbleDelegate.ROLE_DOWNLOAD_ERROR)
                 item.setData(is_carbon, MessageBubbleDelegate.ROLE_IS_CARBON)
                 item.setData(message_id, MessageBubbleDelegate.ROLE_MESSAGE_ID)
                 item.setData(content_item_id, MessageBubbleDelegate.ROLE_CONTENT_ITEM_ID)
@@ -921,7 +981,9 @@ class MessageDisplayWidget(QObject):
             # Skip refresh when in history zone (user viewing old messages)
             # This preserves loaded history and prevents scroll jumps
             if not self.in_live_zone:
-                logger.debug("Skipping refresh (in history zone)")
+                # No full reload here, but file rows can change state (download done or failed)
+                logger.debug("Skipping refresh (in history zone), updating file rows only")
+                self._update_file_rows()
                 return
 
             # Clear reaction cache so reactions are re-queried from DB
@@ -932,6 +994,75 @@ class MessageDisplayWidget(QObject):
                 self._send_displayed_markers()
         else:
             logger.warning("refresh() called but no active conversation")
+
+    def _update_file_rows(self):
+        """
+        Update file rows in the model from the database, without a full reload.
+
+        Only rows that are not complete (state pending, downloading or failed)
+        can change. Used when the view is in the history zone or in a search view.
+        """
+        states = (MessageBubbleDelegate.FILE_STATE_PENDING,
+                  MessageBubbleDelegate.FILE_STATE_DOWNLOADING,
+                  MessageBubbleDelegate.FILE_STATE_FAILED)
+
+        # Find items to check: {file_transfer_id: [item, ...]}
+        items_by_id = {}
+        for row in range(self.message_model.rowCount()):
+            item = self.message_model.item(row)
+            if item is None:
+                continue
+            file_transfer_id = item.data(MessageBubbleDelegate.ROLE_FILE_TRANSFER_ID)
+            if file_transfer_id is None:
+                continue
+            if item.data(MessageBubbleDelegate.ROLE_FILE_STATE) not in states:
+                continue
+            items_by_id.setdefault(file_transfer_id, []).append(item)
+
+        if not items_by_id:
+            return
+
+        ids = list(items_by_id.keys())
+        placeholders = ','.join('?' * len(ids))
+        rows = self.db.fetchall(f"""
+            SELECT id, path, state, info, size, mime_type
+            FROM file_transfer
+            WHERE id IN ({placeholders})
+        """, tuple(ids))
+
+        changed = 0
+        for row in rows or []:
+            file_path = row['path']
+            file_state = row['state']
+            download_error = parse_download_error(row['info'])
+            mime_type = row['mime_type'] or ''
+            file_size = row['size'] or 0
+
+            for item in items_by_id.get(row['id'], []):
+                if (item.data(MessageBubbleDelegate.ROLE_FILE_PATH) == file_path and
+                        item.data(MessageBubbleDelegate.ROLE_FILE_STATE) == file_state and
+                        item.data(MessageBubbleDelegate.ROLE_DOWNLOAD_ERROR) == download_error and
+                        item.data(MessageBubbleDelegate.ROLE_FILE_SIZE) == file_size and
+                        item.data(MessageBubbleDelegate.ROLE_MIME_TYPE) == mime_type):
+                    continue
+
+                file_icon = self.message_delegate._get_file_icon(mime_type)
+                file_size_text = self.message_delegate._format_file_size(file_size) if file_size else "Unknown size"
+                item.setData(file_path, MessageBubbleDelegate.ROLE_FILE_PATH)
+                item.setData(file_state, MessageBubbleDelegate.ROLE_FILE_STATE)
+                item.setData(download_error, MessageBubbleDelegate.ROLE_DOWNLOAD_ERROR)
+                item.setData(mime_type, MessageBubbleDelegate.ROLE_MIME_TYPE)
+                item.setData(file_size, MessageBubbleDelegate.ROLE_FILE_SIZE)
+                item.setData(file_icon, MessageBubbleDelegate.ROLE_FILE_ICON)
+                item.setData(file_size_text, MessageBubbleDelegate.ROLE_FILE_SIZE_TEXT)
+
+                # Row size can change (file becomes an image or video): ask the view for a new layout
+                self.message_delegate.sizeHintChanged.emit(item.index())
+                changed += 1
+
+        if changed:
+            logger.debug(f"Updated {changed} file rows in place")
+            self.message_area.viewport().update()
 
     def update_theme(self, theme_name: str):
         """
@@ -983,6 +1114,7 @@ class MessageDisplayWidget(QObject):
                         ft.id AS ft_id, ft.direction AS ft_direction, ft.path, ft.file_name, ft.mime_type, ft.size,
                         ft.encryption AS ft_encryption, ft.message_id AS ft_message_id, ft.origin_id AS ft_origin_id,
                         ft.stanza_id AS ft_stanza_id, ft.is_carbon AS ft_is_carbon,
+                        ft.state AS ft_state, ft.info AS ft_info, ft.counterpart_resource AS ft_counterpart_resource,
                         c.id AS call_id, c.direction AS call_direction, c.state AS call_state, c.type AS call_type,
                         c.time AS call_time, c.end_time AS call_end_time,
                         quoted_m.body AS quoted_body,
@@ -1012,6 +1144,7 @@ class MessageDisplayWidget(QObject):
                     ft.id AS ft_id, ft.direction AS ft_direction, ft.path, ft.file_name, ft.mime_type, ft.size,
                     ft.encryption AS ft_encryption, ft.message_id AS ft_message_id, ft.origin_id AS ft_origin_id,
                     ft.stanza_id AS ft_stanza_id, ft.is_carbon AS ft_is_carbon,
+                    ft.state AS ft_state, ft.info AS ft_info, ft.counterpart_resource AS ft_counterpart_resource,
                     c.id AS call_id, c.direction AS call_direction, c.state AS call_state, c.type AS call_type,
                     c.time AS call_time, c.end_time AS call_end_time,
                     quoted_m.body AS quoted_body,
@@ -1039,6 +1172,7 @@ class MessageDisplayWidget(QObject):
                         ft.id AS ft_id, ft.direction AS ft_direction, ft.path, ft.file_name, ft.mime_type, ft.size,
                         ft.encryption AS ft_encryption, ft.message_id AS ft_message_id, ft.origin_id AS ft_origin_id,
                         ft.stanza_id AS ft_stanza_id, ft.is_carbon AS ft_is_carbon,
+                        ft.state AS ft_state, ft.info AS ft_info, ft.counterpart_resource AS ft_counterpart_resource,
                         c.id AS call_id, c.direction AS call_direction, c.state AS call_state, c.type AS call_type,
                         c.time AS call_time, c.end_time AS call_end_time,
                         quoted_m.body AS quoted_body,
@@ -1197,6 +1331,12 @@ class MessageDisplayWidget(QObject):
         file_path = index.data(MessageBubbleDelegate.ROLE_FILE_PATH)
         mime_type = index.data(MessageBubbleDelegate.ROLE_MIME_TYPE)
 
+        # File not downloaded yet (pending or failed): start the download
+        if MessageBubbleDelegate.can_request_download(index):
+            file_transfer_id = index.data(MessageBubbleDelegate.ROLE_FILE_TRANSFER_ID)
+            request_file_download(self.account_manager, self.current_account_id, file_transfer_id)
+            return
+
         # Handle image files
         if file_path and mime_type and mime_type.startswith('image/'):
             from pathlib import Path
@@ -1246,6 +1386,9 @@ class MessageDisplayWidget(QObject):
 
                 if mime_type and (mime_type.startswith('image/') or mime_type.startswith('video/')) and file_path:
                     # Set pointing hand cursor for images and videos
+                    self.message_area.viewport().setCursor(QCursor(Qt.PointingHandCursor))
+                elif MessageBubbleDelegate.can_request_download(index):
+                    # File can be downloaded with a click
                     self.message_area.viewport().setCursor(QCursor(Qt.PointingHandCursor))
                 else:
                     # Reset to default cursor

@@ -655,7 +655,8 @@ class Database:
                                      url: Optional[str] = None,
                                      message_id: Optional[str] = None,
                                      origin_id: Optional[str] = None,
-                                     stanza_id: Optional[str] = None):
+                                     stanza_id: Optional[str] = None,
+                                     counterpart_resource: Optional[str] = None):
         """
         Atomically insert file_transfer + content_item with deduplication.
 
@@ -681,6 +682,7 @@ class Database:
             message_id: For deduplication
             origin_id: For deduplication
             stanza_id: For deduplication
+            counterpart_resource: Sender resource (MUC nickname), optional
 
         Returns:
             tuple: (file_transfer_id, content_item_id) or (None, None) if duplicate
@@ -755,12 +757,12 @@ class Database:
             # Insert file_transfer record
             cursor = self.execute("""
                 INSERT INTO file_transfer (
-                    account_id, counterpart_id, direction, time, local_time,
+                    account_id, counterpart_id, counterpart_resource, direction, time, local_time,
                     file_name, path, url, mime_type, size, state, encryption, provider, is_carbon,
                     message_id, origin_id, stanza_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                account_id, counterpart_id, direction, time, local_time,
+                account_id, counterpart_id, counterpart_resource, direction, time, local_time,
                 file_name, path, url, mime_type, size, state, encryption, provider, is_carbon,
                 message_id, origin_id, stanza_id
             ))

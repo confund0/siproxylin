@@ -11,7 +11,7 @@ slixmpp>=1.8.5; platform_system != "Windows"
 aiodns>=3.0.0  # DNS SRV lookups for slixmpp
 
 # HTTP client for file uploads (required by slixmpp xep_0363)
-aiohttp>=3.8.0
+aiohttp>=3.10.0
 
 # OMEMO encryption support
 slixmpp-omemo>=0.9.0
@@ -21,7 +21,8 @@ omemo
 pyenchant>=3.2.0
 
 # Proxy support (optional feature - HTTP CONNECT and SOCKS5)
-python-socks[asyncio]>=2.4.0
+python-socks[asyncio]>=2.4.3
+aiohttp-socks>=0.10.0  # Proxy for file downloads (aiohttp)
 
 # YAML for pretty-print DiscoInfo
 PyYAML>=6.0.3

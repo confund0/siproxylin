@@ -5,6 +5,7 @@ Shows metadata and reactions for a message.
 """
 
 from datetime import datetime
+from html import escape
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QDialogButtonBox,
     QTableWidget, QTableWidgetItem, QTabWidget, QWidget,
@@ -116,7 +117,7 @@ def show_message_info_dialog(parent, info_data, db, current_account_id):
                     error_text = msg_row['error_text']
 
             if error_text:
-                error_label = create_selectable_label(f"<b>Error Details:</b> <span style='color: #c0392b;'>{error_text}</span>")
+                error_label = create_selectable_label(f"<b>Error Details:</b> <span style='color: #c0392b;'>{escape(error_text)}</span>")
                 metadata_layout.addWidget(error_label)
 
     # Message IDs section
@@ -156,15 +157,16 @@ def show_message_info_dialog(parent, info_data, db, current_account_id):
     if content_item_id:
         metadata_layout.addWidget(create_selectable_label(f"<b>Content Item ID:</b> {content_item_id}"))
 
-    # File info if applicable
-    if file_path:
-        metadata_layout.addWidget(create_selectable_label(f"<b>File Name:</b> {file_name}"))
-        metadata_layout.addWidget(create_selectable_label(f"<b>MIME Type:</b> {mime_type}"))
+    # File info if applicable (also for files that are not downloaded yet)
+    # File name, MIME type and body come from the sender: escape them for rich text
+    if file_path or file_name:
+        metadata_layout.addWidget(create_selectable_label(f"<b>File Name:</b> {escape(file_name or '')}"))
+        metadata_layout.addWidget(create_selectable_label(f"<b>MIME Type:</b> {escape(mime_type or '')}"))
 
     # Message body (truncated if too long)
     if body:
         display_body = body if len(body) < 200 else body[:200] + "..."
-        metadata_layout.addWidget(create_selectable_label(f"<b>Body:</b><br>{display_body}"))
+        metadata_layout.addWidget(create_selectable_label(f"<b>Body:</b><br>{escape(display_body)}"))
 
     metadata_layout.addStretch()
     tabs.addTab(metadata_widget, "Metadata")

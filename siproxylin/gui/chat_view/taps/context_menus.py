@@ -71,12 +71,23 @@ class ContextMenuManager:
         is_carbon = index.data(MessageBubbleDelegate.ROLE_IS_CARBON)
 
         # Check if this is a file attachment or text message
+        # A file row can have no path (not downloaded yet)
         file_path = index.data(MessageBubbleDelegate.ROLE_FILE_PATH)
+        file_transfer_id = index.data(MessageBubbleDelegate.ROLE_FILE_TRANSFER_ID)
+        is_file = bool(file_path) or file_transfer_id is not None
         body = index.data(MessageBubbleDelegate.ROLE_BODY)
         message_id = index.data(MessageBubbleDelegate.ROLE_MESSAGE_ID)
 
         # Create menu
         menu = QMenu(self.parent)
+
+        # File not downloaded yet (pending or failed): add Download option
+        if MessageBubbleDelegate.can_request_download(index):
+            download_action = QAction("Download", self.parent)
+            download_action.triggered.connect(
+                lambda: self._request_download(current_account_id, file_transfer_id)
+            )
+            menu.addAction(download_action)
 
         # For all text messages: add Reply option
         if body and message_id:
@@ -101,12 +112,12 @@ class ContextMenuManager:
         mime_type = index.data(MessageBubbleDelegate.ROLE_MIME_TYPE) or ""
         is_image = mime_type.startswith('image/')
 
-        if (body or file_path) and not is_image:
+        if (body or is_file) and not is_image:
             copy_action = QAction("Copy Message", self.parent)
             if body:
                 # Copy message text
                 copy_action.triggered.connect(lambda: self._copy_to_clipboard(body))
-            elif file_path:
+            elif is_file:
                 # Copy file name
                 file_name = index.data(MessageBubbleDelegate.ROLE_FILE_NAME) or "file"
                 copy_action.triggered.connect(lambda: self._copy_to_clipboard(file_name))
@@ -177,7 +188,7 @@ class ContextMenuManager:
             menu.addAction(properties_action)
 
         # Info option for all messages
-        if body or file_path:
+        if body or is_file:
             # Extract all data NOW before index becomes invalid
             content_item_id = index.data(MessageBubbleDelegate.ROLE_CONTENT_ITEM_ID)
 
@@ -198,7 +209,7 @@ class ContextMenuManager:
                         origin_id = msg_row['origin_id']
                         stanza_id = msg_row['stanza_id']
                         db_message_id = msg_row['message_id']
-                elif file_path:  # File transfer
+                elif is_file:  # File transfer
                     ft_row = self.db.fetchone("""
                         SELECT ft.origin_id, ft.stanza_id, ft.message_id
                         FROM file_transfer ft
@@ -331,6 +342,11 @@ class ContextMenuManager:
 
         # Show menu at cursor position
         menu.exec_(input_field.mapToGlobal(position))
+
+    def _request_download(self, current_account_id, file_transfer_id):
+        """Start the download of a received file that is not downloaded yet."""
+        from .messages import request_file_download
+        request_file_download(self.account_manager, current_account_id, file_transfer_id)
 
     def _save_file_as(self, source_path, default_name):
         """Open file save dialog and copy file from internal storage to chosen location."""
