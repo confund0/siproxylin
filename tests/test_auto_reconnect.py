@@ -210,6 +210,21 @@ class AutoReconnectTests(unittest.TestCase):
             self.assertEqual(client.reconnect_attempts, 11)
         run(body)
 
+    def test_connect_loop_wait_is_capped_by_max_delay(self):
+        async def body(fake):
+            client = make_client(reconnect_max_delay=30)
+            client._current_connection_attempt = asyncio.get_event_loop().create_future()
+            client._connect_loop_wait = 200  # slixmpp would make it 300
+            async def fake_loop(c):
+                return None
+
+            with mock.patch.object(DrunkXMPP, '_connect_loop', autospec=True,
+                                   side_effect=fake_loop):
+                future = client.reschedule_connection_attempt()
+                await future
+            self.assertEqual(client._connect_loop_wait, 30)
+        run(body)
+
     def test_manual_connect_cancels_pending_reconnect(self):
         async def body(fake):
             client = make_client()

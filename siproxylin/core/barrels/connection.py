@@ -192,7 +192,7 @@ class ConnectionBarrel:
                 on_subscription_request_callback=callbacks.get('on_subscription_request_callback'),
                 on_subscription_changed_callback=callbacks.get('on_subscription_changed_callback'),
                 enable_omemo=bool(self.account_data.get('omemo_enabled', 1)),
-                reconnect_max_delay=300,
+                reconnect_max_delay=30,
                 keepalive_interval=60,
                 proxy_type=proxy_type,
                 proxy_host=proxy_host,

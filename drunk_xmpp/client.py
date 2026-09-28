@@ -815,6 +815,15 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             self.connect()
         self.reconnect_attempts = attempts
 
+    def reschedule_connection_attempt(self):
+        """
+        slixmpp's connect loop backoff grows up to 300 s while the server is down.
+        Cap it by reconnect_max_delay, so we reconnect soon after the server is back.
+        """
+        future = super().reschedule_connection_attempt()
+        self._connect_loop_wait = min(self._connect_loop_wait, self.reconnect_max_delay)
+        return future
+
     def _cancel_auto_reconnect(self):
         """Cancel a pending auto-reconnect task (if any)."""
         task = self._auto_reconnect_task

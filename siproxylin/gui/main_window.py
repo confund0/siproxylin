@@ -340,7 +340,14 @@ class MainWindow(QMainWindow):
             # Existing account - handle enable/disable
             account = self.account_manager.get_account(account_id)
             if account:
-                if enabled:
+                # Value before this save: every branch below reloads account_data
+                was_enabled = bool(account.account_data.get('enabled', 1))
+                if enabled and not was_enabled:
+                    # Account was disabled in this session and is enabled again: connect
+                    logger.debug(f"Connecting re-enabled account {account_id}")
+                    if account.reload_settings():
+                        account.connect()
+                elif enabled:
                     # Reload account settings (disconnects and reconnects if connected)
                     logger.debug(f"Reloading account {account_id}")
                     account.reload_and_reconnect()
@@ -348,6 +355,7 @@ class MainWindow(QMainWindow):
                     # Disconnect disabled account
                     logger.debug(f"Disconnecting disabled account {account_id}")
                     account.disconnect()
+                    account.reload_settings()
 
         # Update UI components
         self.menu_manager.populate_edit_menu()

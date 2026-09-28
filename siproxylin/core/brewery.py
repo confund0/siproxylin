@@ -47,6 +47,15 @@ from .barrels.muc import MucBarrel
 logger = logging.getLogger('siproxylin.account_manager')
 
 
+# Account fields that do not need a reconnect when they change.
+# Fields the app writes during a session are here too, so they never cause one.
+# Any other changed field reconnects (safe default for new fields).
+NO_RECONNECT_FIELDS = frozenset({
+    'typing_notifications', 'read_receipts',
+    'roster_version', 'mam_earliest_synced', 'last_connected', 'created_at',
+})
+
+
 class XMPPAccount(QObject):
     """
     Wrapper for a single XMPP account connection.
@@ -290,6 +299,19 @@ class XMPPAccount(QObject):
         """Check if connected to XMPP server."""
         return self.connection.is_connected()
 
+    def reload_settings(self) -> bool:
+        """Reload account settings from the database. Returns False if the account is gone."""
+        account_data = self.db.fetchone("SELECT * FROM account WHERE id = ?", (self.account_id,))
+        if not account_data:
+            if self.app_logger:
+                self.app_logger.error("Failed to reload account settings - account not found")
+            return False
+
+        # Update account_data dict in-place (maintains shared reference with barrels)
+        self.account_data.clear()
+        self.account_data.update(dict(account_data))
+        return True
+
     def reload_and_reconnect(self):
         """
         Reload account settings from database and reconnect if currently connected.
@@ -300,15 +322,19 @@ class XMPPAccount(QObject):
         from PySide6.QtCore import Qt
 
         # Reload settings from database first
-        account_data = self.db.fetchone("SELECT * FROM account WHERE id = ?", (self.account_id,))
-        if not account_data:
-            if self.app_logger:
-                self.app_logger.error("Failed to reload account settings - account not found")
+        old_data = dict(self.account_data)
+        if not self.reload_settings():
             return
 
-        # Update account_data dict in-place (maintains shared reference with barrels)
-        self.account_data.clear()
-        self.account_data.update(dict(account_data))
+        # No reconnect when no connection setting changed (keeps downloads and calls running)
+        changed = {key for key in set(old_data) | set(self.account_data)
+                   if old_data.get(key) != self.account_data.get(key)} - NO_RECONNECT_FIELDS
+        if not changed:
+            if self.app_logger:
+                self.app_logger.info("Account settings reloaded, no connection setting changed - no reconnect")
+            return
+        if self.app_logger:
+            self.app_logger.debug(f"Changed account settings: {sorted(changed)}")
 
         # If connected, disconnect and wait for event before reconnecting
         if self.connected:
@@ -324,6 +350,12 @@ class XMPPAccount(QObject):
 
             self.connection_state_changed.connect(on_disconnect_complete, Qt.ConnectionType.SingleShotConnection)
             self.disconnect()
+        elif self.connection.client is not None and not self.connection.client.user_disconnected:
+            # Offline but auto-reconnect runs: the old client would keep the old settings.
+            # connect() stops the old client and makes a new one with the new settings.
+            if self.app_logger:
+                self.app_logger.info("Reloading account settings while offline - reconnecting with new settings")
+            self.connect()
         else:
             if self.app_logger:
                 self.app_logger.debug("Account settings reloaded (was not connected)")
