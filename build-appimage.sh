@@ -312,6 +312,39 @@ package_appimage() {
 # MAIN BUILD PROCESS
 # =============================================================================
 
+# Replace the bundled GStreamer dtls plugin with our patched one.
+# GStreamer before 1.28 makes an RSA default DTLS certificate; peers with
+# ECDSA-only suites (current Conversations) then fail when we are the DTLS
+# server. Fails the build if the patched plugin is missing or unpatched.
+install_patched_dtls_plugin() {
+    local appdir="$1"
+    local patched="drunk_call_service/bin/gst-plugins/libgstdtls.so"
+    local target="$appdir/usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstdtls.so"
+    local marker="ECDSA P-256 private key"
+
+    log_step "COPY" "Installing patched GStreamer dtls plugin..."
+
+    if pkg-config --atleast-version=1.28 gstreamer-1.0; then
+        log_info "GStreamer 1.28 or newer: bundled dtls plugin already uses ECDSA"
+        return 0
+    fi
+    if [ ! -f "$patched" ]; then
+        log_error "Patched dtls plugin not found: $patched"
+        exit 1
+    fi
+    if [ ! -f "$target" ]; then
+        log_error "Bundled dtls plugin not found: $target"
+        exit 1
+    fi
+
+    cp "$patched" "$target"
+    if ! grep -q -a -F "$marker" "$target"; then
+        log_error "$target does not contain the ECDSA patch"
+        exit 1
+    fi
+    log_success "Patched dtls plugin installed: $target"
+}
+
 main() {
     print_header "$PKG_NAME AppImage Builder"
 
@@ -340,6 +373,16 @@ main() {
             log_error "Failed to build C++ call service"
             exit 1
         fi
+    fi
+    print_separator
+
+    # Step 3.1: Patched GStreamer dtls plugin (ECDSA default certificate).
+    # Always run: the binary check above skips make when a binary exists.
+    # make skips the plugin build when its stamp is up to date.
+    log_step "3.1/11" "Building patched GStreamer dtls plugin..."
+    if ! make -C drunk_call_service gst-dtls; then
+        log_error "Failed to build the patched GStreamer dtls plugin"
+        exit 1
     fi
     print_separator
 
@@ -404,6 +447,7 @@ main() {
 
     copy_python_code "$APPDIR" "usr/share/$PKG_ID"
     copy_go_binary "$APPDIR" "linux" "usr/local/bin"
+    install_patched_dtls_plugin "$APPDIR"
     # Note: Icon and desktop file handled by setup_appdir_root() in Step 8
     print_separator
 

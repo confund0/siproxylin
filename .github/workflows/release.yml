@@ -28,18 +28,18 @@ jobs:
         restore-keys: |
           appimage-build-apt-
 
-    - name: Cache C++ call service binary
-      uses: actions/cache@v4
-      with:
-        path: drunk_call_service/bin/drunk-call-service-linux
-        key: cpp-binary-${{ hashFiles('drunk_call_service/**/*.cpp', 'drunk_call_service/**/*.h', 'drunk_call_service/CMakeLists.txt', 'drunk_call_service/Makefile') }}
-        restore-keys: |
-          cpp-binary-
-
     - name: Install system dependencies
       run: |
+        # deb-src: make builds the patched dtls plugin from the Debian source
+        sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources
         apt-get update
         apt-get install -y \
+          dpkg-dev \
+          meson \
+          ninja-build \
+          libssl-dev \
+          pkg-config \
+          patch \
           wget \
           ca-certificates \
           git \
