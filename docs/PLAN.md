@@ -5,7 +5,6 @@ Open and planned items only. Done work is in the git log.
 ## Now (main)
 
 - Auto-reconnect follow-ups
-  - Test the auto-reconnect against a local Prosody: stop Prosody while a client is connected.
   - The GUI shows "disconnected" during auto-reconnect. The account menu "Disconnect" then does nothing, so the user cannot stop the reconnect. Show "connecting" and let "Disconnect" stop it.
   - While the server is down, slixmpp's own connect loop waits 5, 15, 35 ... up to 300 seconds between attempts. Reconnect can come minutes after the server is back.
   - reload_and_reconnect() while offline: the old client keeps reconnecting with the old settings.
@@ -78,8 +77,12 @@ Goal: Siproxylin works with a Prosody server that is reachable only as a Tor oni
 
 ## Calls on GStreamer 1.26 (Debian 13)
 
-- Answerer with video: test a video call where video is on m-line 0 (Conversations), and test on GStreamer 1.22 (Debian 12, AppImage base).
-- Offerer: DTLS fails with "no shared cipher" when Siproxylin is the DTLS server. The phone (Conversations) offers DTLS 1.3 and 1.2, and for DTLS 1.2 only ECDHE-ECDSA suites, with an X25519MLKEM768 key share. GStreamer's DTLS certificate is RSA. Fix: give dtlsdec an ECDSA P-256 certificate (pem property). Do not change SDP setup roles.
+- Answerer with video: test a video call where video is on m-line 0 (Conversations).
+- Outgoing call logs "Creating offer..." twice. Check if the offer is created twice.
+- Move the base to Debian 13 (trixie): daily chroot and AppImage build. Debian 12 is dropped. The AppImage must bundle the patched dtls plugin.
+- CI (release.yml) runs `make release`, which now needs deb-src lines, dpkg-dev, meson, ninja-build and libssl-dev in the build container. The call service binary cache key does not cover the patch and the plugin.
+- build-appimage.sh must copy bin/gst-plugins/libgstdtls.so over the bundled system libgstdtls.so, on every build, and fail if the file lacks the ECDSA marker. appimage.yml sets GST_PLUGIN_SYSTEM_PATH to the AppDir plugins only.
+- docs/BUILD.md Alpine chroot section still says Debian 12.
 - The destructor does not free offer_video_codec_caps_ and negotiated_video_pad_.
 - The call service crashed once at EndSession. Nothing restarts it. Its stderr file is emptied on every start, so the crash trace is lost.
 - A failed outgoing call leaves "Another call is already in progress".

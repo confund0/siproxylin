@@ -59,6 +59,9 @@
 #include <iostream>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
 
 // Platform-specific includes
 #ifdef _WIN32
@@ -222,6 +225,67 @@ void glib_main_loop_thread(GMainLoop* loop) {
 }
 
 /**
+ * Log which file provides the GStreamer "dtls" plugin.
+ *
+ * GStreamer before 1.28 makes an RSA default DTLS certificate, and peers
+ * that offer only ECDHE-ECDSA suites fail with "no shared cipher".
+ * `make` builds a patched plugin (ECDSA P-256 default certificate) to
+ * bin/gst-plugins/libgstdtls.so, and the Python bridge adds that dir to
+ * GST_PLUGIN_PATH. Here we check that the loaded plugin file is a patched
+ * one: it must contain the log string that the patch added.
+ */
+static void log_dtls_plugin(guint gst_major, guint gst_minor) {
+    namespace fs = std::filesystem;
+    static const char* kEcdsaMarker = "ECDSA P-256 private key";
+
+    GstPlugin* plugin = gst_registry_find_plugin(gst_registry_get(), "dtls");
+    if (!plugin) {
+        LOG_ERROR("GStreamer dtls plugin not found - DTLS-SRTP calls will fail");
+        return;
+    }
+    const gchar* filename_c = gst_plugin_get_filename(plugin);
+    std::string filename = filename_c ? filename_c : "";
+    gst_object_unref(plugin);
+
+    LOG_INFO("GStreamer dtls plugin: {}", filename.empty() ? "(static)" : filename);
+
+    // GStreamer 1.28 and newer: the default certificate is ECDSA already
+    if (gst_major > 1 || (gst_major == 1 && gst_minor >= 28)) {
+        return;
+    }
+
+    bool patched = false;
+    if (!filename.empty()) {
+        std::ifstream file(filename, std::ios::binary);
+        std::string data((std::istreambuf_iterator<char>(file)),
+                         std::istreambuf_iterator<char>());
+        patched = data.find(kEcdsaMarker) != std::string::npos;
+    }
+
+    bool ours = false;
+    #if !defined(_WIN32) && !defined(__APPLE__)
+    {
+        std::error_code ec;
+        fs::path expected = fs::canonical("/proc/self/exe", ec).parent_path()
+                            / "gst-plugins" / "libgstdtls.so";
+        if (!ec && !filename.empty()) {
+            ours = fs::equivalent(expected, fs::path(filename), ec) && !ec;
+        }
+    }
+    #endif
+
+    if (patched) {
+        LOG_INFO("GStreamer dtls plugin has the ECDSA default certificate patch ({})",
+                 ours ? "bin/gst-plugins" : "not from bin/gst-plugins");
+    } else {
+        LOG_WARN("GStreamer {}.{} < 1.28 and the dtls plugin {} is not the patched one "
+                 "(bin/gst-plugins/libgstdtls.so): the default DTLS certificate is RSA, "
+                 "and peers that offer only ECDSA suites fail with 'no shared cipher'",
+                 gst_major, gst_minor, filename);
+    }
+}
+
+/**
  * Main entry point.
  *
  * Threading model:
@@ -321,6 +385,7 @@ int main(int argc, char* argv[]) {
     guint gst_major, gst_minor, gst_micro, gst_nano;
     gst_version(&gst_major, &gst_minor, &gst_micro, &gst_nano);
     LOG_INFO("GStreamer version: {}.{}.{}.{}", gst_major, gst_minor, gst_micro, gst_nano);
+    log_dtls_plugin(gst_major, gst_minor);
 
     // ========================================================================
     // Phase 4: Start GLib main loop thread (CRITICAL - MUST start before sessions)

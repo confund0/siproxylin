@@ -158,6 +158,9 @@ class GoCallService:
                     self.logger.debug(f"Full PATH: {env['PATH']}")
                 else:
                     self.logger.error("No valid paths to add - call service will not start")
+            else:
+                # Linux/macOS: use the patched dtls plugin if make built one
+                self._add_patched_gst_plugins(env, binary_path)
 
             # Load log level from logging settings
             logging_config_path = paths.config_dir / 'logging.json'
@@ -240,6 +243,34 @@ class GoCallService:
 
         self._running = False
         self.logger.info("Go service stopped")
+
+    def _add_patched_gst_plugins(self, env: Dict[str, str], binary_path: str):
+        """
+        Put the patched GStreamer plugins next to the service binary first
+        in the plugin search path of the child process (Linux/macOS only).
+
+        `make` builds bin/gst-plugins/libgstdtls.so when GStreamer < 1.28
+        (ECDSA default DTLS certificate). GStreamer scans GST_PLUGIN_PATH
+        before the system plugin dir and keeps the first plugin file with a
+        given name, so our libgstdtls.so replaces the system one.
+        GST_PLUGIN_PATH_1_0 wins over GST_PLUGIN_PATH when both are set,
+        so we add our dir to the variable that GStreamer really reads.
+        """
+        plugin_dir = Path(binary_path).resolve().parent / "gst-plugins"
+        if not (plugin_dir / "libgstdtls.so").is_file():
+            self.logger.debug(f"No patched GStreamer plugins in {plugin_dir}")
+            return
+
+        var = "GST_PLUGIN_PATH_1_0" if "GST_PLUGIN_PATH_1_0" in env else "GST_PLUGIN_PATH"
+        existing = env.get(var, "")
+        parts = [str(plugin_dir)] + [p for p in existing.split(os.pathsep) if p]
+        env[var] = os.pathsep.join(parts)
+        self.logger.info(f"Patched GStreamer dtls plugin: {plugin_dir / 'libgstdtls.so'}")
+        self.logger.info(f"{var}={env[var]}")
+
+        if env.get("GST_REGISTRY_UPDATE") == "no":
+            self.logger.warning("GST_REGISTRY_UPDATE=no: GStreamer may use a stale "
+                                "registry cache and ignore the patched dtls plugin")
 
     def _find_go_binary(self) -> Optional[str]:
         """

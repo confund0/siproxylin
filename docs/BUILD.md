@@ -1,6 +1,6 @@
 # Build & Packaging Documentation
 
-> **Last Updated:** 2026-03-13
+> **Last Updated:** 2026-09-28
 > **Platforms:** Linux (primary), Windows 10/11, macOS (experimental)
 
 ---
@@ -29,6 +29,35 @@ sudo apt install build-essential cmake pkg-config \
 ```
 
 CMake looks up Protobuf, gRPC (CONFIG mode), spdlog, Threads, GStreamer and glib-2.0 — `pkg-config` is mandatory. `protobuf-compiler-grpc` ships the `grpc_cpp_plugin` used by `proto/` codegen.
+
+### Patched GStreamer dtls Plugin (GStreamer < 1.28)
+
+Why: GStreamer before 1.28 makes an RSA default DTLS certificate, so peers that offer only ECDSA suites (for example Conversations) fail the DTLS handshake with "no shared cipher".
+
+What the build does: on Linux, `make` (release and debug) first runs the `gst-dtls` target. It reads the installed GStreamer version. If it is 1.28 or newer, the step is skipped, because GStreamer 1.28 already uses an ECDSA default certificate, and an old patched plugin in `bin/gst-plugins/` is removed. Otherwise it downloads the official Debian source of the installed `gstreamer1.0-plugins-bad` version with `apt-get source` (no root needed), applies the patch from `drunk_call_service/patches/gstreamer/` (a backport of the upstream 1.28 change), builds only the dtls plugin with meson and ninja, checks that the result contains the ECDSA change, and copies it to `drunk_call_service/bin/gst-plugins/`. A stamp file with the Debian version and the patch checksum makes later `make` runs skip this step until the installed package or the patch changes. `make clean` removes the source, the build and the plugin. The Windows targets do not run this step. `make SKIP_GST_DTLS=1` builds without the plugin (ECDSA-only peers then fail).
+
+At runtime the Python bridge puts `bin/gst-plugins/` (next to the service binary) first in the GStreamer plugin path of the call service, only if the patched plugin is there. The call service log shows the file of the loaded dtls plugin and a warning if GStreamer is older than 1.28 and the plugin is not the patched one.
+
+One-time setup on Debian (as root):
+
+1. Apt needs source packages. For each `deb` line in the apt sources, add a `deb-src` line with the same URL, suite and components. Also do this for the security suite, because the installed version often comes from there. Example for the one-line format:
+
+```
+deb-src https://deb.debian.org/debian stable main contrib
+```
+
+   In the deb822 format (`debian.sources`), add `deb-src` to the `Types:` field instead.
+
+2. Install the build tools for the plugin:
+
+```bash
+sudo apt install dpkg-dev meson ninja-build pkg-config libssl-dev \
+  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+```
+
+3. Run `apt-get update`.
+
+`make check-deps` checks these tools and that apt can find the source package. `build-essential` and `gstreamer1.0-plugins-bad` from the lists above are needed as well.
 
 ### Runtime Dependencies
 
@@ -95,10 +124,13 @@ make test      # Run unit tests
 make clean     # Remove build artifacts
 make install   # Install binary to bin/
 make check-deps # Verify all build dependencies (Linux/macOS)
+make gst-dtls  # Build the patched GStreamer dtls plugin (Linux, GStreamer < 1.28; part of release and debug)
 make help      # Show all available targets
 ```
 
 **Binary location:** `drunk_call_service/bin/drunk-call-service-{linux|windows|darwin}`
+
+**Patched dtls plugin location:** `drunk_call_service/bin/gst-plugins/libgstdtls.so` (only with GStreamer < 1.28)
 
 **Windows builds:**
 ```bash
@@ -439,6 +471,14 @@ apt install libgrpc-dev  -y
 apt install libgrpc++-dev  -y
 apt install protobuf-compiler-grpc -y
 apt install libspdlog-dev  -y
+
+# Patched GStreamer dtls plugin (GStreamer < 1.28), see "Patched GStreamer dtls Plugin"
+# 1. In the apt sources, add a deb-src line for each deb line (same URL, suite, components):
+#      deb-src https://deb.debian.org/debian stable main contrib
+#    deb822 format (debian.sources): add deb-src to Types
+apt install dpkg-dev meson ninja-build pkg-config libssl-dev -y
+apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev -y
+apt update
 
 
 # mkdir -p /opt/siproxylin
