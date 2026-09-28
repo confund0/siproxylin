@@ -29,6 +29,7 @@ Features:
 
 import logging
 import asyncio
+import inspect
 import json
 import sys
 import traceback
@@ -480,6 +481,14 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         # Track user-initiated disconnect (don't auto-reconnect if True)
         self.user_disconnected = False
 
+        # Auto-reconnect state (see _on_disconnected)
+        # slixmpp does not reconnect after a hard drop (TCP reset, server restart,
+        # proxy circuit closed), so we schedule connect() ourselves.
+        self._auth_failed = False  # Set on auth failure, no auto-reconnect
+        self._stream_conflict = False  # Set on <conflict/> stream error, no auto-reconnect
+        self._auto_reconnect_task: Optional[asyncio.Task] = None
+        self._manual_address: Optional[tuple] = None  # (host, port) from last connect(), None = SRV
+
         # Track actual connection state (updated by event handlers)
         self._connection_state = False
 
@@ -587,6 +596,8 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.add_event_handler("session_end", self._on_session_end)
         self.add_event_handler("disconnected", self._on_disconnected)
         self.add_event_handler("failed_auth", self._on_failed_auth)
+        self.add_event_handler("failed_all_auth", self._on_failed_all_auth)
+        self.add_event_handler("stream_error", self._on_stream_error)
         self.add_event_handler("groupchat_message", self._on_groupchat_message)
         self.add_event_handler("groupchat_subject", self._on_groupchat_subject)
         self.add_event_handler("groupchat_config_status", self._on_groupchat_config_status)
@@ -728,11 +739,116 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         # Do NOT clear joined_rooms/omemo_ready here - XEP-0198 may resume session
         # State is only cleared in session_end handler when session truly ends
 
+        # slixmpp only reconnects after a ping timeout (XEP-0199 keepalive).
+        # A hard drop (TCP reset/EOF, server restart, proxy closed) only fires
+        # 'disconnected', so we schedule the reconnect ourselves.
+        self._schedule_auto_reconnect(event)
+
+    def _auto_reconnect_blocked(self) -> Optional[str]:
+        """
+        Check if auto-reconnect must not run now.
+
+        Returns:
+            Reason string if blocked, None if auto-reconnect may run
+        """
+        if self.user_disconnected:
+            return "user-initiated disconnect"
+        if self._auth_failed:
+            return "authentication failed"
+        if self._stream_conflict:
+            return "resource conflict (another client took over the session)"
+        attempt = getattr(self, '_current_connection_attempt', None)
+        if attempt is not None and not attempt.done():
+            # slixmpp reconnect() (keepalive path) or connect() already runs
+            return "connection attempt already in progress"
+        if getattr(self, 'transport', None) is not None:
+            return "transport is already up"
+        return None
+
+    def _schedule_auto_reconnect(self, reason=None):
+        """
+        Schedule connect() after a backoff delay (unexpected disconnect only).
+
+        Delay is 1, 2, 4, ... seconds, capped by reconnect_max_delay.
+        If TCP connect fails, slixmpp's connect loop retries with its own backoff.
+        """
+        blocked = self._auto_reconnect_blocked()
+        if blocked:
+            self.logger.debug(f"Auto-reconnect not scheduled: {blocked}")
+            return
+        if self._auto_reconnect_task is not None and not self._auto_reconnect_task.done():
+            self.logger.debug("Auto-reconnect already scheduled")
+            return
+
+        delay = max(1, min(self.reconnect_max_delay, 2 ** min(self.reconnect_attempts, 16)))
+        self.reconnect_attempts += 1
+        self.logger.info(f"Connection lost ({reason}), auto-reconnect in {delay}s "
+                         f"(attempt {self.reconnect_attempts})")
+        self._auto_reconnect_task = asyncio.ensure_future(self._auto_reconnect(delay))
+
+    async def _auto_reconnect(self, delay: float):
+        """Wait for the backoff delay, check again, then call connect()."""
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            self.logger.debug("Auto-reconnect cancelled")
+            raise
+
+        # Clear the handle first: connect() cancels a pending task, not this one
+        self._auto_reconnect_task = None
+
+        # State may have changed during the sleep (user disconnect, keepalive reconnect)
+        blocked = self._auto_reconnect_blocked()
+        if blocked:
+            self.logger.debug(f"Auto-reconnect skipped: {blocked}")
+            return
+
+        # Use the same address as the last connect(), like slixmpp reconnect() does
+        # (custom_address exists in newer slixmpp, 1.14 has it; _manual_address is our fallback)
+        address = getattr(self, 'custom_address', None) or self._manual_address
+        self.logger.info(f"Auto-reconnecting (attempt {self.reconnect_attempts})...")
+        # connect() resets reconnect_attempts; keep the counter for the backoff
+        attempts = self.reconnect_attempts
+        if address:
+            self.connect((address[0], address[1]))
+        else:
+            self.connect()
+        self.reconnect_attempts = attempts
+
+    def _cancel_auto_reconnect(self):
+        """Cancel a pending auto-reconnect task (if any)."""
+        task = self._auto_reconnect_task
+        self._auto_reconnect_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            self.logger.debug("Pending auto-reconnect cancelled")
+
     async def _on_failed_auth(self, event):
         """Handler for authentication failure."""
         self.logger.critical("XMPP authentication failed! Check JID/password.")
-        # Don't retry on auth failure
+        # Don't retry on auth failure (blocks auto-reconnect until next connect())
+        self._auth_failed = True
+        self._cancel_auto_reconnect()
         self.abort()
+
+    def _on_failed_all_auth(self, event):
+        """Handler for 'no usable SASL mechanism left' (slixmpp then calls disconnect())."""
+        # Sync handler: the flag must be set before slixmpp's disconnect() runs
+        self._auth_failed = True
+        self._cancel_auto_reconnect()
+
+    def _on_stream_error(self, error):
+        """Handler for stream errors (RFC 6120 section 4.9)."""
+        try:
+            condition = error['condition']
+        except Exception:
+            condition = ''
+        self.logger.warning(f"Stream error from server: {condition}")
+        if condition == 'conflict':
+            # Another stream took over our resource. Auto-reconnect would kick
+            # the other client, which then kicks us again (endless loop).
+            self._stream_conflict = True
+            self._cancel_auto_reconnect()
 
     def _asyncio_exception_handler(self, loop, context):
         """
@@ -2656,20 +2772,37 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         Override connect to clear user_disconnected flag.
 
         When user explicitly calls connect(), clear the user_disconnected flag
-        so automatic reconnection (via XEP-0199 keepalive) can work if connection drops.
+        so automatic reconnection (XEP-0199 keepalive and _on_disconnected) can work
+        if connection drops. Also clears the auth failure flag and cancels a pending
+        auto-reconnect.
 
         Args:
             address: Optional tuple (host, port) for manual server override
             **kwargs: Additional arguments (host, port) passed by slixmpp internals
         """
         self.user_disconnected = False
+        self._auth_failed = False
+        self._stream_conflict = False
+        self._cancel_auto_reconnect()
         self.reconnect_attempts = 0  # Reset reconnect counter on manual connect
         self.logger.info("Connecting to XMPP server...")
 
         # XEP-0199 keepalive auto-enables on session_start/session_resumed events
 
+        # Remember the address for auto-reconnect (fallback if slixmpp has no custom_address)
+        if address:
+            self._manual_address = (address[0], address[1])
+        elif kwargs.get('host') and kwargs.get('port'):
+            self._manual_address = (kwargs['host'], kwargs['port'])
+        else:
+            self._manual_address = None
+
         if address:
             # Called as connect((host, port))
+            # slixmpp 1.8.x (Windows pin) has ClientXMPP.connect(address=...),
+            # newer versions have ClientXMPP.connect(host=..., port=...)
+            if 'address' in inspect.signature(ClientXMPP.connect).parameters:
+                return super().connect(address=(address[0], int(address[1])))
             return super().connect(host=address[0], port=address[1])
         elif kwargs:
             # Called with host/port kwargs (from slixmpp internals)
@@ -2677,6 +2810,29 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         else:
             # Called as connect() - SRV discovery
             return super().connect()
+
+    def stop_auto_reconnect(self):
+        """
+        Stop all automatic reconnection without firing any event.
+
+        Sets user_disconnected, cancels a pending auto-reconnect, cancels a
+        running slixmpp connect loop (only when the transport is down) and
+        disables XEP-0199 keepalive. The next connect() enables it all again.
+        Use it for a client that is replaced or dropped while it is offline.
+        """
+        self.user_disconnected = True
+
+        # slixmpp's disconnect() does not cancel the connect loop when
+        # the transport is already down, so we do it here.
+        self._cancel_auto_reconnect()
+        if getattr(self, 'transport', None) is None and hasattr(self, 'cancel_connection_attempt'):
+            self.cancel_connection_attempt()
+
+        # Disable XEP-0199 keepalive to prevent automatic reconnection
+        # This ensures user stays offline until they manually reconnect
+        if hasattr(self, 'plugin') and 'xep_0199' in self.plugin:
+            self.plugin['xep_0199'].disable_keepalive()
+            self.logger.debug("XEP-0199 keepalive disabled")
 
     def disconnect(self, wait=2.0, reason=None, ignore_send_queue=False, disable_auto_reconnect=False):
         """
@@ -2686,22 +2842,19 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             wait: Seconds to wait for disconnect (default 2.0)
             reason: Optional disconnect reason string
             ignore_send_queue: Whether to ignore pending messages
-            disable_auto_reconnect: If True, disable XEP-0199 keepalive to prevent automatic reconnection.
-                                    Use this for user-initiated disconnects (GUI button, /quit command).
+            disable_auto_reconnect: If True, disable XEP-0199 keepalive and cancel any pending
+                                    auto-reconnect to prevent automatic reconnection.
+                                    Use this for every disconnect that must stay down (GUI button,
+                                    /quit command, temporary clients, shutdown).
                                     If False (default), keeps auto-reconnect enabled - used by slixmpp's
                                     internal reconnect() flow and for testing reconnection behavior.
+                                    The 'disconnected' event then schedules an auto-reconnect.
         """
         self._connection_state = False  # Mark as disconnected immediately
 
         if disable_auto_reconnect:
-            self.user_disconnected = True
             self.logger.info("Disconnecting from XMPP server (user-initiated, will not auto-reconnect)...")
-
-            # Disable XEP-0199 keepalive to prevent automatic reconnection
-            # This ensures user stays offline until they manually reconnect
-            if hasattr(self, 'plugin') and 'xep_0199' in self.plugin:
-                self.plugin['xep_0199'].disable_keepalive()
-                self.logger.debug("XEP-0199 keepalive disabled")
+            self.stop_auto_reconnect()
         else:
             self.logger.info("Disconnecting from XMPP server (auto-reconnect may occur)...")
 

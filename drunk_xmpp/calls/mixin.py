@@ -30,6 +30,12 @@ class CallsMixin:
         Register XEP-0353 event handlers.
         Called from DrunkXMPP._on_session_start.
         """
+        # session_start fires again after every reconnect. Register only once,
+        # else one incoming call fires the handlers several times.
+        if getattr(self, '_call_handlers_registered', False):
+            return
+        self._call_handlers_registered = True
+
         # Register XEP-0353 Jingle Message Initiation handlers
         self.add_event_handler('jingle_message_propose', self._on_jingle_message_propose)
         self.add_event_handler('jingle_message_proceed', self._on_jingle_message_proceed)

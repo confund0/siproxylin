@@ -150,6 +150,19 @@ class ConnectionBarrel:
         # Get client certificate path (validated by GUI before saving)
         client_cert_path = self.account_data.get('client_cert_path')
 
+        # Stop the old client before we replace it. After a connection drop it may
+        # still run auto-reconnect, and two clients would log in with one account.
+        if self.client is not None:
+            try:
+                if self.client.transport is not None:
+                    self.client.disconnect(disable_auto_reconnect=True)
+                else:
+                    # Offline: no disconnect() here, it would fire a late 'disconnected' event
+                    self.client.stop_auto_reconnect()
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(f"Failed to stop old client: {e}")
+
         # Create DrunkXMPP client
         try:
             self.client = DrunkXMPP(
@@ -440,7 +453,8 @@ class ConnectionBarrel:
             # Cleanup
             if client:
                 try:
-                    client.disconnect(wait=True)
+                    # Temporary client: never auto-reconnect after the test
+                    client.disconnect(wait=True, disable_auto_reconnect=True)
                     await asyncio.sleep(1.0)  # Give time for cleanup
 
                     # Cancel any remaining connection attempts

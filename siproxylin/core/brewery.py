@@ -511,6 +511,12 @@ class XMPPAccount(QObject):
         if self.app_logger:
             self.app_logger.error(f"XMPP connection failed: {error_msg}")
 
+        # With a server override, slixmpp first tries direct TLS on the port, then STARTTLS.
+        # Direct TLS on a STARTTLS port fails with WRONG_VERSION_NUMBER. This is expected,
+        # the STARTTLS attempt follows, so it must not show an error dialog.
+        if 'WRONG_VERSION_NUMBER' in error_msg:
+            return
+
         # Only show GUI error for SSL/TLS errors (cert issues), not transient network errors
         if 'SSL' in error_msg or 'certificate' in error_msg.lower() or 'TLS' in error_msg:
             self.connected = False

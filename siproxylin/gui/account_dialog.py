@@ -734,6 +734,11 @@ class AccountDialog(QDialog):
                 logger.warning(f"Disconnect timeout for account {self.account_id}, proceeding anyway")
             finally:
                 account.connection_state_changed.disconnect(on_disconnected)
+        elif account and account.connection.client:
+            # Not connected, but the client may still run auto-reconnect after a
+            # connection drop. Stop it, so it does not log in during deletion.
+            logger.info(f"Stopping auto-reconnect of account {self.account_id} before deletion...")
+            account.connection.client.stop_auto_reconnect()
 
         # Step 1: Delete from server if requested
         if delete_from_server:

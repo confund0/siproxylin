@@ -742,7 +742,7 @@ async def main():
 
             elif command == "/keepalive?":
                 logger.info("Testing auto-reconnect: disconnecting but keeping auto-reconnect enabled...")
-                logger.info("XEP-0199 should trigger reconnection after ping timeout (~90s)")
+                logger.info("Auto-reconnect should start after a short backoff delay")
                 client.disconnect(disable_auto_reconnect=False)
                 logger.info("✓ Disconnected. Watch for automatic reconnection...")
 
@@ -2148,7 +2148,7 @@ async def main():
 
         except KeyboardInterrupt:
             logger.info("\nReceived Ctrl+C, disconnecting...")
-            client.disconnect()
+            client.disconnect(disable_auto_reconnect=True)
             break
         except Exception as e:
             logger.exception(f"Error: {e}")
