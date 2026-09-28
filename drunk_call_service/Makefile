@@ -11,15 +11,14 @@ BUILD_DIR := build
 BIN_DIR := bin
 VCPKG_ROOT ?= C:/vcpkg
 
-# Patched GStreamer dtls plugin (Linux only, GStreamer 1.26).
+# Patched GStreamer dtls plugin (Linux only, GStreamer < 1.28).
 # GStreamer before 1.28 makes an RSA default DTLS certificate. Peers that offer
 # only ECDHE-ECDSA suites (for example Conversations) then fail with
 # "no shared cipher". The patch makes the default certificate ECDSA P-256,
 # the same as GStreamer 1.28. We build the plugin from the Debian source of
 # the installed gst-plugins-bad, because the service links against Debian's
-# GStreamer. Only GStreamer 1.26 is patched: 1.28 has the fix, and older
-# versions (1.22 on Debian 12) build as before the patch. Set SKIP_GST_DTLS=1
-# to skip this step (calls with ECDSA-only peers then fail).
+# GStreamer. Set SKIP_GST_DTLS=1 to skip this step (calls with ECDSA-only
+# peers then fail).
 GST_DTLS_PKG := gstreamer1.0-plugins-bad
 GST_DTLS_PATCH := patches/gstreamer/0001-dtls-use-ECDSA-default-certificate.patch
 GST_DTLS_SRC_DIR := $(BUILD_DIR)/gst-plugins-bad-src
@@ -67,19 +66,17 @@ gst-dtls:
 		exit 1; \
 	fi; \
 	gst_ver=$$(pkg-config --modversion gstreamer-1.0); \
-	case "$$gst_ver" in \
-	1.26.*) ;; \
-	*) \
-		echo "gst-dtls: GStreamer $$gst_ver, the patch is only for 1.26, the system plugin is used"; \
+	if pkg-config --atleast-version=1.28 gstreamer-1.0; then \
+		echo "gst-dtls: GStreamer $$gst_ver >= 1.28 already uses an ECDSA default certificate, patch not needed"; \
 		if [ -e "$(GST_DTLS_OUT)" ]; then \
-			echo "gst-dtls: removing old $(GST_DTLS_OUT)"; \
+			echo "gst-dtls: removing old $(GST_DTLS_OUT), the system plugin is used"; \
 		fi; \
 		rm -f "$(GST_DTLS_OUT)" "$(GST_DTLS_STAMP)"; \
-		exit 0 ;; \
-	esac; \
+		exit 0; \
+	fi; \
 	if ! command -v dpkg-query >/dev/null 2>&1 || ! command -v apt-get >/dev/null 2>&1; then \
 		echo "ERROR: gst-dtls: dpkg-query/apt-get not found. This step needs a Debian system."; \
-		echo "  GStreamer $$gst_ver needs the patched dtls plugin for ECDSA-only peers."; \
+		echo "  GStreamer $$gst_ver < 1.28 needs the patched dtls plugin for ECDSA-only peers."; \
 		echo "  Run 'make SKIP_GST_DTLS=1' to build without it."; \
 		exit 1; \
 	fi; \
@@ -110,7 +107,7 @@ gst-dtls:
 		echo " $$missing"; \
 		exit 1; \
 	fi; \
-	echo "gst-dtls: GStreamer $$gst_ver, building patched dtls plugin from Debian source $$src_pkg $$src_ver"; \
+	echo "gst-dtls: GStreamer $$gst_ver < 1.28, building patched dtls plugin from Debian source $$src_pkg $$src_ver"; \
 	src_stamp="$(GST_DTLS_SRC_DIR)/.source-stamp"; \
 	if [ ! -f "$$src_stamp" ] || [ "$$(cat "$$src_stamp")" != "$$stamp" ]; then \
 		if ! apt-get source --print-uris --only-source "$$src_pkg=$$src_ver" >/dev/null 2>&1; then \
@@ -243,7 +240,7 @@ deps:
 	@echo "TODO: Implement automatic download from https://github.com/webrtc-sdk/libwebrtc/releases"
 	@echo "For now, manually download and extract to third_party/libwebrtc/"
 	@echo ""
-	@echo "Patched dtls plugin (target gst-dtls, Debian, GStreamer 1.26):"
+	@echo "Patched dtls plugin (target gst-dtls, Debian, GStreamer < 1.28):"
 	@echo "  1. For each 'deb' line in the apt sources, add a 'deb-src' line with the"
 	@echo "     same URL, suite and components, for example:"
 	@echo "       deb-src https://deb.debian.org/debian stable main contrib"
@@ -262,8 +259,8 @@ check-deps:
 	@pkg-config --exists grpc++ || { echo "ERROR: libgrpc++-dev not found"; exit 1; }
 	@pkg-config --exists protobuf || { echo "ERROR: libprotobuf-dev not found"; exit 1; }
 	@if [ "$(SKIP_GST_DTLS)" != "1" ] && [ "$$(uname -s)" = "Linux" ] && \
-	    pkg-config --exists gstreamer-1.0 && case "$$(pkg-config --modversion gstreamer-1.0)" in 1.26.*) true;; *) false;; esac; then \
-		echo "GStreamer $$(pkg-config --modversion gstreamer-1.0): checking gst-dtls dependencies..."; \
+	    pkg-config --exists gstreamer-1.0 && ! pkg-config --atleast-version=1.28 gstreamer-1.0; then \
+		echo "GStreamer $$(pkg-config --modversion gstreamer-1.0) < 1.28: checking gst-dtls dependencies..."; \
 		command -v apt-get >/dev/null 2>&1 || { echo "ERROR: apt-get not found (gst-dtls needs Debian, or use SKIP_GST_DTLS=1)"; exit 1; }; \
 		command -v dpkg-source >/dev/null 2>&1 || { echo "ERROR: dpkg-source not found (install dpkg-dev)"; exit 1; }; \
 		command -v meson >/dev/null 2>&1 || { echo "ERROR: meson not found (install meson)"; exit 1; }; \
@@ -294,7 +291,7 @@ help:
 	@echo "  make deps      - Show dependency notes (patched dtls plugin: packages, deb-src)"
 	@echo "  make check-deps - Verify all build dependencies"
 	@echo "  make install   - Install binary to bin/"
-	@echo "  make gst-dtls  - Build patched GStreamer dtls plugin (Linux, GStreamer 1.26;"
+	@echo "  make gst-dtls  - Build patched GStreamer dtls plugin (Linux, GStreamer < 1.28;"
 	@echo "                   part of release and debug; needs Debian deb-src)"
 	@echo ""
 	@echo "Build outputs:"

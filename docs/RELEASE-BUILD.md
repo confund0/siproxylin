@@ -6,18 +6,19 @@ Status: planned. The old tooling (build-appimage.sh, .package-builder.sh, .githu
 
 - The AppImage that GitHub CI publishes is built from the same inputs as the one the maintainer tested.
 - The build runs without manual steps, locally and in CI, with one script.
-- Base system: Debian 13 (trixie). The Debian 12 build keeps working, for a rollback.
+- Base system: Debian 12 (bookworm), glibc 2.36, so the AppImage runs on Debian 12, Ubuntu 22.04 and newer. The maintainer's daily system is Debian 13; the release is still tested as the built AppImage.
+- Debian 12 is in LTS. Check the LTS coverage of the bundled packages; move the base to Debian 13 when it gets thin.
 
 ## Flow
 
-1. Local rehearsal in the maintainer's Debian 13 chroot:
+1. Local rehearsal in the maintainer's Debian 12 chroot (/opt/chroots/debian-12):
    - Update the system with apt (the maintainer decides when updates come in).
    - Check out the release commit in the app directory.
    - Run scripts/build-release.sh. It builds the call service, builds the patched dtls plugin from the Debian source, builds the AppImage and writes release-manifest.txt.
    - Test the AppImage (chroot and bwrap).
    - Commit release-manifest.txt with the release commit and tag it.
 2. Push the commit and the tag.
-3. GitHub CI (.github/workflows/build-release.yml) runs scripts/build-release.sh in a clean Debian 13 container, checks the manifest, and uploads the AppImage to the GitHub release.
+3. GitHub CI (.github/workflows/build-release.yml) runs scripts/build-release.sh in a clean Debian 12 container, checks the manifest, and uploads the AppImage to the GitHub release.
 
 AppImages are never uploaded by hand. CI builds and publishes them.
 
@@ -41,9 +42,9 @@ Later, if CI fails often because Debian removed old versions from its mirrors: i
 
 ## Patched dtls plugin
 
-- GStreamer 1.26 makes an RSA default DTLS certificate; peers with ECDSA-only suites (Conversations) fail. The patch in drunk_call_service/patches/gstreamer/ is the upstream 1.28 change.
+- GStreamer before 1.28 makes an RSA default DTLS certificate. When Siproxylin is the DTLS server (for example on outgoing calls, when the peer answers with setup active), peers with ECDSA-only suites (current Conversations) fail with "no shared cipher". This affects 1.22 (Debian 12) and 1.26 (Debian 13). The patch in drunk_call_service/patches/gstreamer/ is the upstream 1.28 change; it applies to the 1.22 and the 1.26 Debian source.
 - make (target gst-dtls) downloads the Debian source of the installed gst-plugins-bad with apt-get source, applies the patch, builds only the dtls plugin and puts it in drunk_call_service/bin/gst-plugins/. This needs deb-src entries and dpkg-dev, meson, ninja-build, libssl-dev.
-- Only GStreamer 1.26 is patched. 1.28 has the fix; 1.22 (Debian 12) builds as before the patch.
+- GStreamer 1.28 and newer have the fix; there the step is skipped.
 - The AppImage must contain the patched plugin in place of the system one. The build fails if the plugin in the AppDir does not contain the ECDSA marker.
 - Every release builds the plugin from the current Debian source, so Debian fixes to the plugin come in with each release.
 
