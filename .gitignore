@@ -3,6 +3,8 @@ logs
 __pycache__
 tmp
 .claude
+CLAUDE.md
+docs/PLAN.md
 cleanup
 python-example
 omemo
