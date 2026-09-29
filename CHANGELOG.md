@@ -4,6 +4,224 @@ All notable changes to Siproxylin are documented in this file.
 
 ---
 
+## [0.0.30 - Drunk dial] - 2026-09-29
+
+> (42016a4208)
+
+    Updated version to v0.0.30 "Drunk dial" and README
+    
+    Added the v0.0.30 news entry. Corrected the README: calls are audio and
+    video with Conversations, Monal and Dino; there is no Jami TURN
+    fallback; the proxy does not cover all call sockets yet; the call
+    service is C++, not Go.
+
+> (b3985676b8)
+
+    Fixed file uploads bypassing the account proxy
+    
+    slixmpp's HTTP Upload plugin (XEP-0363) opens its own aiohttp session
+    with no proxy and local DNS, so the upload server learned the real IP.
+    A new slixmpp patch replaces that session with the proxied session
+    from http_download.make_session (remote DNS, no direct connection on a
+    bad proxy). The upload code passes the account's proxy through a
+    context variable; plain and OMEMO uploads are covered. Uploads have no
+    total time limit.
+    
+    Added the missing asyncio import in file_uploads.py.
+
+> (fd75819ba8)
+
+    Added the patched dtls plugin to the AppImage build
+    
+    No AppImage contained the patched GStreamer dtls plugin, so outgoing
+    calls to current Conversations failed with "no shared cipher".
+    build-appimage.sh now always runs the gst-dtls make target and puts
+    the patched plugin over the bundled one; the build fails if the plugin
+    is missing or not patched.
+    
+    appimage.yml bundled packages from bookworm main only. Added
+    bookworm-updates and bookworm-security.
+    
+    release.yml enables deb-src and installs the tools for the dtls plugin
+    build. Removed the C++ binary cache: its restore-keys fallback could
+    restore an old binary.
+    
+    Deleted docs/RELEASE-BUILD.md.
+
+> (de8d76d170)
+
+    Fixed the dtls plugin build to patch all GStreamer versions before 1.28
+    
+    The previous commit limited the patch to GStreamer 1.26. Outgoing calls
+    from the Debian 12 build (GStreamer 1.22) to Conversations also failed
+    with "no shared cipher" when Siproxylin was the DTLS server. The patch
+    applies to the 1.22 Debian source, and with it calls work in both
+    directions.
+    
+    Updated docs/RELEASE-BUILD.md: the release base stays Debian 12.
+
+> (c25cc13c9c)
+
+    Updated the dtls plugin build to GStreamer 1.26 only and added the release build plan
+    
+    make patched and built the dtls plugin on every GStreamer before 1.28.
+    On Debian 12 (GStreamer 1.22) this broke the build. Now only GStreamer
+    1.26 is patched; other versions use the system plugin, so the Debian 12
+    build works as before the patch.
+    
+    Added docs/RELEASE-BUILD.md: one build script for the local rehearsal
+    and CI, a manifest with the exact versions of the rehearsal, and CI
+    that fails when its versions differ.
+
+> (bf61b8ab8c)
+
+    Updated slixmpp and slixmpp-omemo versions in requirements.txt
+    
+    Linux now needs slixmpp 1.17.0 or newer. slixmpp-omemo is pinned
+    below 2.2: version 2.2 changed encrypt_message() to return one
+    Message instead of a dict per namespace, and all OMEMO sends failed.
+
+> (17e6598156)
+
+    Updated minimum slixmpp version on Linux to 1.17.0
+
+> (53a52f15ce)
+
+    Fixed slow reconnect and reconnect issues when account settings are saved
+    
+    slixmpp's connect loop waited up to 300 s between attempts while the
+    server was down. The wait is now capped by reconnect_max_delay, which is
+    now 30 s.
+    
+    Saving account settings while offline only updated the settings dict.
+    The old client kept reconnecting with the old proxy and server. Now a
+    new client with the new settings is made, unless the user disconnected
+    the account.
+    
+    An account disabled and then enabled again in the same session did not
+    connect. The save handler now connects it.
+    
+    Saving only typing notifications or read receipts no longer reconnects
+    the account. Any other changed setting still reconnects.
+
+> (b9b629cdd4)
+
+    Fixed group chat MAM storing file messages as text
+    
+    MAM history of group chats stored every message as text, so files
+    showed up as links. An aesgcm:// link cannot be opened in a browser.
+    Messages with an OOB URL or an aesgcm:// body are now stored as
+    pending files, like in 1:1 MAM. Group chats still need a click to
+    download.
+
+> (3ca0d0d265)
+
+    Updated docs for proxied attachment downloads
+
+> (94fd99d3b2)
+
+    Received files were downloaded automatically, bypassing proxy
+    
+    This was a potential IP leak. Now fixed:
+    
+    - Added aiohttp-socks. Downloads go through the account proxy with
+      remote DNS. A bad proxy setting fails the download, never a direct
+      connection.
+    - Received files are stored as pending first. Automatic download only
+      for own messages and trusted roster contacts, up to 25 MB. Group chats
+      and other senders: click to download, up to 256 MB.
+    - Only https, at most 3 redirects, aesgcm decryption while streaming.
+    - Removed the MAM rule that stored a single https link as a file.
+    - Downloads are cancelled on disconnect, disable and account deletion.
+    - Added pending and failed file rows, a "Download" context menu item and
+      escaping of file names in the GUI.
+
+> (3e9c5b1c9b)
+
+    Updated docs
+
+> (a22e48e65f)
+
+    Added a patched GStreamer dtls plugin with an ECDSA default certificate
+    
+    GStreamer before 1.28 makes an RSA default DTLS certificate. Peers that
+    offer only ECDHE-ECDSA suites, such as Conversations, fail with "no
+    shared cipher" when Siproxylin is the DTLS server.
+    
+    make now gets the Debian source of the installed gst-plugins-bad with
+    apt-get source, applies the upstream 1.28 ECDSA patch, and builds only
+    the dtls plugin to bin/gst-plugins. It is skipped on GStreamer 1.28 and
+    newer. The bridge adds that dir to GST_PLUGIN_PATH, and the call service
+    logs which dtls plugin file it loaded.
+    
+    Updated docs/BUILD.md with the deb-src and package prerequisites.
+
+> (a51f0de11c)
+
+    Fixed incoming calls on GStreamer 1.22 after the sink pad change
+    
+    GStreamer 1.22 creates the offer transceivers only after the answer is
+    set, so the m-line lookup found nothing and the answer failed. When no
+    transceiver exists yet, the answerer now requests "sink_<mline>" and
+    sets SENDRECV and codec-preferences on the new transceiver. The 1.26
+    path is unchanged. The log shows which path was used.
+
+> (5be909ee07)
+
+    Fixed one-way media when Siproxylin answers a call on GStreamer 1.26
+    
+    The answerer requested its send pad as "sink_%u". GStreamer 1.26 then
+    created a new transceiver without an m-line, and the answer used the
+    recvonly transceiver of the remote offer. So the answer SDP had
+    a=recvonly and no audio was sent.
+    
+    The answerer now requests the pad as "sink_<mline>" and binds it to the
+    transceiver of that offer m-line. It sets SENDRECV and codec-preferences
+    on that transceiver before the pad request, and logs an error if the pad
+    is bound to another transceiver. The offerer path, SDP content and DTLS
+    roles are unchanged.
+    
+    Updated docs/PLAN.md with the DTLS cipher finding for outgoing calls.
+
+> (d2f4f9df3d)
+
+    Added docs/PLAN.md with open items for reconnect, leaks, release tooling and onion support
+
+> (177414ba6b)
+
+    Fixed auto-reconnect after a hard connection drop
+    
+    reset, EOF, server restart or closed proxy, the account stayed
+    disconnected. DrunkXMPP now schedules connect() with backoff on
+    'disconnected', except after a user disconnect, an authentication
+    failure or a resource conflict. The connection barrel now stops the
+    old client before it creates a new one. The connection test client,
+    account deletion and the test CLI no longer start a reconnect.
+    
+    Also fixed:
+    - connect() with a manual server address on slixmpp 1.8.5 (Windows),
+      which expects address=(host, port).
+    - XEP-0353 call handlers were registered again on every session start,
+      so one call fired the handlers several times after reconnects.
+    - The failed direct TLS attempt on a STARTTLS port showed a
+      "Connection Failed" dialog on every connect with a server override.
+
+> (62e8bff3eb)
+
+    Adding few words on how to run the app on Alpine Linux
+
+> (c29c895bed)
+
+    SessionConfig default-init fix that resolves the phantom-video-transceiver-on-audio-only-offers bug (uninitialised POD reading non-zero garbage under bwrap)
+
+> (0f35c8e3b8)
+
+    Updated docs (standalone installation instructions)
+
+> (630c7f4a3f)
+
+    Update README.md
+
 ## [0.0.29 - Glass bottle] - 2026-04-14
 
 > (137e1c05ff)
