@@ -6,9 +6,19 @@
 
 ## Breaking News!
 
+**2026-09-29 v0.0.30 "Drunk dial" released: outgoing calls fixed, files through the proxy**
+
+Outgoing calls to current Conversations work again. GStreamer before 1.28 used an RSA certificate for DTLS. Current Conversations offers only ECDSA suites. The AppImage now includes a patched GStreamer dtls plugin with an ECDSA certificate.
+
+Received files now download through the account proxy. The proxy resolves the host name, so there is no direct connection. Files download automatically only from roster contacts with a subscription and from your own devices, up to 25 MB. Group chats and other senders show "Click to download", up to 256 MB. Only https links are fetched. Sent files (plain and OMEMO) now also go through the account proxy.
+
+The app now reconnects automatically after a network loss. The wait between tries is at most 30 s.
+
+File messages from the group chat archive (MAM) now show as files.
+
 **2026-04-14 v0.0.29 released, supporting video calls** 
 
-It's still very first release, the video window looks super primitive, for now using default GStreamer window which seems too complicated to decorate for Wayland, _but it does work_. Windows package has been removed as users reported issues that will require some fixes, Windows will in next versions.
+It's still very first release, the video window looks super primitive, for now using default GStreamer window which seems too complicated to decorate for Wayland, _but it does work_. Windows package has been removed as users reported issues that will require some fixes. Windows will come back in a later version.
 
 **2026-03-29 first successful tests of video calls** 
 
@@ -29,7 +39,6 @@ Install build + runtime system packages — see [docs/BUILD.md](docs/BUILD.md) f
 cd drunk_call_service
 make clean
 make
-make install
 cd -
 
 # Get Python dependencies
@@ -39,6 +48,8 @@ venv/bin/pip install -r requirements.txt
 # Run the app
 venv/bin/python main.py
 ```
+
+On GStreamer before 1.28, `make` also builds a patched dtls plugin from the Debian source. See [docs/BUILD.md](docs/BUILD.md).
 
 ### AppImage builds
 
@@ -56,16 +67,17 @@ chmod +x Siproxylin-*.AppImage
 
 - ✅ **Text messaging** - 1-to-1 and group chats (MUC)
 - ✅ **OMEMO encryption** - End-to-end encrypted messaging (XEP-0384)
-- ✅ **Audio calls** - Works with Dino and Conversations.im
-- ✅ **File attachments** - HTTP Upload (XEP-0363)
-- ✅ **Message features** - Reactions, replies, corrections, threading
-- ✅ **Per-account proxy** - SOCKS5/HTTP proxy support with zero IP leaks
+- ✅ **Audio calls** - Works with Conversations, Monal and Dino (calls always go through a TURN relay)
+- ✅ **File attachments** - HTTP Upload (XEP-0363). Received and sent files go through the account proxy
+- ✅ **Message features** - Reactions, replies, corrections
+- ⚠️ **Per-account proxy** - SOCKS5/HTTP proxy for XMPP, registration, received and sent files. Not yet on all call sockets
 - ✅ **Account registration** - XEP-0077 with CAPTCHA support (XEP-0158)
 - ✅ **Multi-language spell checking** - en, de, ru, lt, es, ro, ar
 - ✅ **Themes** - Multiple color schemes (matters at night!)
-- ⏳ **Video calls** - **Works on Linux** since v0.0.29, Windows still in progress, MacOS planned
+- ✅ **Video calls** - Linux (since v0.0.29). Works with Conversations, Monal and Dino. Windows and macOS later
 - ⏳ **Screen sharing** - Planned
-- ⏳ **macOS** - Linux and Windows already working
+- ⏳ **Windows** - A build exists but lags behind (older slixmpp 1.8.5). The release waits until Linux is stable
+- ⏳ **macOS** - Planned
 
 ---
 
@@ -127,7 +139,7 @@ Making a fully working client, for a single person who's not even an experienced
 
 ## The Disclaimer
 
-No matter how badly I want this app to be perfect, I'm afraid it's not there yet. After all these hours spent testing, code reviewing, and three massive refactoring iterations, I still have some doubts and occasionally find issues. Even the most motivated developer using best-in-class AI assistance can start drifting into quick patches when dealing with a larger codebase, and we're talking about **100+ Python files and 35,000+ lines of code**. It took 7 weeks, which means 5k lines per week, or 1,000 lines per day.
+No matter how badly I want this app to be perfect, I'm afraid it's not there yet. After all these hours spent testing, code reviewing, and three massive refactoring iterations, I still have some doubts and occasionally find issues. Even the most motivated developer using best-in-class AI assistance can start drifting into quick patches when dealing with a larger codebase, and we're talking about **150+ Python files and 55,000+ lines of code**. It took 7 weeks, which means 5k lines per week, or 1,000 lines per day.
 
 So definitely **use it with caution**, and please don't be shy about reporting issues, I bet you'll find quite a few.
 
@@ -135,7 +147,8 @@ So definitely **use it with caution**, and please don't be shy about reporting i
 
 ## Known Issues
 
-- **Platform:** Currently Linux-only (Windows/MacOS support planned)
+- **Platform:** Currently Linux-only. A Windows build exists but lags behind; macOS is planned.
+- **Call leaks:** The proxy is not applied on all sockets of the call service yet.
 - **Unread counters:** Sometimes pops up after app restart, investigating
 - **Unclear process of MUC membership:** There is lack of information on how members-only MUC are handled, currently it relies on the mercy of auto-approve by server
 
@@ -159,9 +172,9 @@ I'll confess: I borrowed Dino's DB structure to start, just to not reinvent the 
 
 **Jingle** was difficult. Siproxylin uses XEP-0353 from slixmpp, however XEP-0166, XEP-0167, XEP-0176, XEP-0320 have been added to `./drunk_call_hook/` on the fly. **XEP-0158** (media support for CAPTCHA) also wasn't there and had to be added. A few bugs popped up when dealing with slixmpp — runtime patches have been made for them (see `./drunk_xmpp/slixmpp_patches`).
 
-DrunkXMPP is loaded by Siproxylin Core (`./siproxylin/core/`), which connects with the Qt6-based GUI (`./siproxylin/gui/`). When a call comes in, Jingle requests are passed to CallBridge (`./drunk_call_hook/`), which translates them into **gRPC** requests and passes them to the C++ service (`./drunk_call_service/`), which uses **GStreamer** to handle WebRTC, tricke-ICE, TURN, and audio/video (screen sharing coming soon).
+DrunkXMPP is loaded by Siproxylin Core (`./siproxylin/core/`), which connects with the Qt6-based GUI (`./siproxylin/gui/`). When a call comes in, Jingle requests are passed to CallBridge (`./drunk_call_hook/`), which translates them into **gRPC** requests and passes them to the C++ service (`./drunk_call_service/`), which uses **GStreamer** to handle WebRTC, trickle-ICE, TURN, and audio/video (screen sharing coming soon).
 
-Siproxylin starts as a single Python process with two threads: one for keeping a heartbeat between CallBridge and the Go service, and another for everything else. The Go service is started by CallBridge at application startup. Each component writes logs (defaults to INFO, can be disabled via global and per-account settings), and the app has a built-in log viewer for convenience.
+Siproxylin starts as a single Python process with two threads: one keeps a heartbeat between CallBridge and the C++ call service, the other does everything else. CallBridge starts the call service when the app starts. Each component writes logs (defaults to INFO, can be disabled via global and per-account settings), and the app has a built-in log viewer for convenience.
 
 **Supported XEPs:** 29 total (see Help → About in the app)
 
@@ -174,7 +187,7 @@ If you run `python3 main.py` (use venv with requirements.txt), the app runs in "
   ├── cache/      # Avatars
   ├── config/     # User preferences
   ├── data/       # Database, attachments
-  └── logs/       # main.log, xmpp-protocol.log, account-{id}-app.log, drunk-call-service.log
+  └── logs/       # main.log, xmpp-protocol.log, account-{id}-app.log, drunk-call-service.log, drunk-call-service-stdout.log, drunk-call-service.err
 ```
 
 For production, two command-line parameters are available:
@@ -196,7 +209,7 @@ For production, two command-line parameters are available:
 
 Siproxylin supports **proxies per account**. Even the **registration wizard** asks if you'd like to use a proxy. SOCKS5 and HTTP are both supported, and if you register an account using a proxy, it's automatically saved with that account's settings.
 
-**Received files** are downloaded through the account proxy, and the proxy resolves the host name. If the proxy setting is broken, the download fails; it never falls back to a direct connection. Files download automatically only from roster contacts with a subscription and from your own other devices, up to 25 MB. Files from other senders and from group chats show "Click to download" (up to 256 MB). Only https links are fetched. File uploads (HTTP Upload) do not use the proxy yet.
+**Received files** are downloaded through the account proxy, and the proxy resolves the host name. If the proxy setting is broken, the download fails; it never falls back to a direct connection. Files download automatically only from roster contacts with a subscription and from your own other devices, up to 25 MB. Files from other senders and from group chats show "Click to download" (up to 256 MB). Only https links are fetched. Sent files (HTTP Upload, plain and OMEMO) also go through the account proxy.
 
 ### Use Cases
 
@@ -204,18 +217,17 @@ Siproxylin supports **proxies per account**. Even the **registration wizard** as
 2. **Sensitive group chats** - Joining a group about stuff like flat earth, alcoholism or BDSM for beginers? Install Tor and point Siproxylin to its SOCKS5 socket.
 3. **Corporate network** - Only way out is via Squid proxy? Route your account through the HTTP proxy and enjoy texts and calls.
 
-**Leak testing:** ~~I tested with tcpdump and found **zero IP leaks** — it seems to be solid~~
-~~That includes the calls, proxy settings are passed via gRPC and applied in the Go code~~
+**Leak testing:** With the old Go service, tcpdump showed no IP leaks. The new C++ service does not yet apply the proxy on all call sockets. Do not trust calls to hide your IP until this is fixed.
 
 ---
 
 ## Calls
 
-Siproxylin supports **audio calls** with most XMPP clients supporting trickle-ICE. We had issues with incoming calls from Conversations but it seems to be solved since switching from Go/Pion to C++/GStreamer/webrtcbin
+Siproxylin supports **audio and video calls**. They are tested with Conversations (Android), Monal (iOS) and Dino (Linux). Incoming calls from Conversations work since the switch from Go/Pion to C++/GStreamer/webrtcbin. Outgoing calls to current Conversations work since v0.0.30: current Conversations offers only ECDSA suites, and GStreamer before 1.28 used an RSA certificate, so Siproxylin now ships a patched dtls plugin.
 
 ### Call Privacy
 
-Siproxylin **forces calls to be relayed** to avoid IP leaks. The call window shows technical details: advertised IP addresses of both ends and the connection choice. Siproxylin requests TURN details from your XMPP server (XEP-0215), and if not received, should fall back to the public Jami TURN servers (fallback wasn't properly tested).
+Siproxylin **forces calls to be relayed** to avoid IP leaks. The call window shows technical details: advertised IP addresses of both ends and the connection choice. Siproxylin requests TURN details from your XMPP server (XEP-0215). If your server gives no TURN details, the call cannot connect, because Siproxylin allows only relayed connections. Your XMPP server must offer a TURN server (XEP-0215).
 
 ---
 
@@ -286,6 +298,7 @@ Found a bug? Have a feature request? [Open an issue](https://github.com/confund0
 - GStreamer - LGPL-2.1+
 - gRPC - Apache-2.0
 - cryptography - BSD-3-Clause/Apache-2.0
+- slixmpp-omemo, aiohttp, aiohttp-socks, python-socks, qasync
 
 All dependencies are compatible with AGPL-3.0.
 
