@@ -6,6 +6,14 @@
 
 ## Breaking News!
 
+**2026-09-29 v0.0.31 "On the rocks" released: notifications and read marks fixed**
+
+No more notifications with an old message after a reconnect: messages you sent from your phone while Siproxylin was offline no longer count as new. A received file now shows its name in the notification. An open chat in a window in the background shows notifications again.
+
+Messages you send from another device (for example your phone) now show delivered and read marks too, in light blue, also when they were read while Siproxylin was offline.
+
+The check before a message is sent again now works; outside the UTC time zone it could send a message twice.
+
 **2026-09-29 v0.0.30 "Drunk dial" released: outgoing calls fixed, files through the proxy**
 
 Outgoing calls to current Conversations work again. GStreamer before 1.28 used an RSA certificate for DTLS. Current Conversations offers only ECDSA suites. The AppImage now includes a patched GStreamer dtls plugin with an ECDSA certificate.

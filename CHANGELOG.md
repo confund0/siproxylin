@@ -4,6 +4,56 @@ All notable changes to Siproxylin are documented in this file.
 
 ---
 
+## [0.0.31 - On the rocks] - 2026-09-29
+
+> (648e089bc9)
+
+    Updated delivery marks for messages sent from another device
+    
+    Carbons showed a document symbol that the bundled emoji font does not
+    have, and never showed delivered or read. They now show the normal
+    marks in a new theme colour (light blue; violet in the light theme).
+    The marks are one point larger, and the read green of the light gray
+    theme is brighter.
+
+> (a11ce1bfb1)
+
+    Fixed read state of messages sent from another device and the resend check
+    
+    Receipts and chat markers from the peer for messages sent by our other
+    device arrive inside carbons. They were passed to the message callback
+    and dropped. They now go to the receipt and marker handlers.
+    
+    The receipt handler looked up messages by origin-id only. Conversations
+    sends OMEMO messages without an origin-id, so it now also matches the
+    message id, for outgoing messages only.
+    
+    The MAM catch-up skipped receipts and markers (no body). It now applies
+    the peer's receipts and displayed markers from the archive, without
+    storing them and without a notification. The group chat catch-up and
+    the resend check ignore these entries.
+    
+    The archive check before a resend awaited an async generator and
+    always failed with a TypeError. It now reads the pages correctly and
+    builds its time window in UTC.
+
+> (7780759fde)
+
+    Fixed notifications for own messages and for an open chat in the background
+    
+    The MAM catch-up sent a new-message signal for every stored page, also
+    when the page held only our own messages sent from another device. The
+    notification then showed the newest received text, an old message. Now
+    the catch-up notifies only when a message from the contact was stored;
+    otherwise it only refreshes the chat view.
+    
+    The notification text took the newest received text message and
+    ignored files. When a file is newer, it now shows "File: <name>".
+    
+    An open chat skipped the notification also when the app window was not
+    active. Now it skips it only while the window is active and not
+    minimized.
+
 ## [0.0.30 - Drunk dial] - 2026-09-29
 
 > (42016a4208)
