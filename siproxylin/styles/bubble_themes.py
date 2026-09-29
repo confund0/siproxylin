@@ -16,6 +16,7 @@ BUBBLE_THEMES = {
         'received_text': '#212121',     # Dark text
         'timestamp': '#666666',         # Medium gray
         'marker_read': '#0088cc',       # Blue for read markers
+        'marker_carbon': '#8a4fc8',     # Violet for carbon marks (read is already blue here)
         'unencrypted_sent_bg': '#ffcccc',     # Light red (warning)
         'unencrypted_received_bg': '#ffe0e0', # Very light red
         'url_sent': '#0066cc',          # Medium blue - classic hyperlink
@@ -28,7 +29,8 @@ BUBBLE_THEMES = {
         'received_bg': '#c0c0c0',       # Lighter gray (subtle contrast against #d0d0d0 bg)
         'received_text': '#2a2a2a',     # Very dark gray (good contrast)
         'timestamp': '#606060',         # Darker gray
-        'marker_read': '#4a7a4a',       # Darker green for read markers
+        'marker_read': '#2a9d2a',       # Green for read markers (brighter than before)
+        'marker_carbon': '#2f8fd8',     # Blue for carbon marks (sent from another device)
         'unencrypted_sent_bg': '#d4a8a8',     # Muted red-gray
         'unencrypted_received_bg': '#d0a8a8', # Lighter red-gray
         'url_sent': '#0055aa',          # Darker blue - better contrast
@@ -42,6 +44,7 @@ BUBBLE_THEMES = {
         'received_text': '#e0e0e0',     # Light gray
         'timestamp': '#b0b0b0',         # Medium light gray
         'marker_read': '#66ff66',       # Bright green for read markers
+        'marker_carbon': '#7fd4ff',     # Blue for carbon marks (sent from another device)
         'unencrypted_sent_bg': '#6b3d3d',     # Dark red
         'unencrypted_received_bg': '#4a2828', # Darker red
         'url_sent': '#66b3ff',          # Light blue - readable on dark green
@@ -55,6 +58,7 @@ BUBBLE_THEMES = {
         'received_text': '#cccc00',     # Dimmed yellow text (less shouting)
         'timestamp': '#66ff66',         # Bright green
         'marker_read': '#00ff00',       # Extra bright green for read markers
+        'marker_carbon': '#7fd4ff',     # Blue for carbon marks (sent from another device)
         'unencrypted_sent_bg': '#4d1a1a',     # Dark terminal red
         'unencrypted_received_bg': '#1a0a0a', # Subtle dark background
         'url_sent': '#00ffff',          # Cyan - classic terminal link color
@@ -68,6 +72,7 @@ BUBBLE_THEMES = {
         'received_text': '#ebdbb2',     # Gruvbox light cream foreground
         'timestamp': '#a89984',         # Gruvbox gray (muted)
         'marker_read': '#b8bb26',       # Gruvbox bright green for read markers
+        'marker_carbon': '#7fd4ff',     # Gruvbox blue for carbon marks (sent from another device)
         'unencrypted_sent_bg': '#504040',     # Gruvbox gray with red tint
         'unencrypted_received_bg': '#3c1f1e', # Gruvbox dark with red tint
         'url_sent': '#83a598',          # Gruvbox bright blue
@@ -96,6 +101,7 @@ def get_bubble_colors(theme_name: str) -> dict:
         'received_text': QColor(colors['received_text']),
         'timestamp': QColor(colors['timestamp']),
         'marker_read': QColor(colors['marker_read']),
+        'marker_carbon': QColor(colors['marker_carbon']),
         'unencrypted_sent_bg': QColor(colors['unencrypted_sent_bg']),
         'unencrypted_received_bg': QColor(colors['unencrypted_received_bg']),
         'url_sent': QColor(colors['url_sent']),

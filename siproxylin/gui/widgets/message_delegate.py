@@ -166,6 +166,7 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         self.received_text_color = colors['received_text']
         self.timestamp_color = colors['timestamp']
         self.marker_read_color = colors['marker_read']
+        self.marker_carbon_color = colors['marker_carbon']
         self.unencrypted_sent_bg_color = colors['unencrypted_sent_bg']
         self.unencrypted_received_bg_color = colors['unencrypted_received_bg']
         self.url_sent_color = colors['url_sent']
@@ -716,13 +717,10 @@ class MessageBubbleDelegate(QStyledItemDelegate):
                 timestamp_text = f"({file_size_text})  {timestamp_text}"
 
         # Determine marker text for sent messages
-        # Carbons (sent from another device) show 🗎 instead of delivery markers
+        # Carbons (sent from another device) use the same marks, drawn in the carbon colour
         marker_text = ""
         if direction == 1:
-            if is_carbon:
-                # Carbon copy (sent from another device) - show document icon
-                marker_text = "🗎"
-            elif is_file:
+            if is_file:
                 # Files don't show markers (state is tracked in file_transfer table, not via marked field)
                 pass
             elif marked == 0:
@@ -921,13 +919,16 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         # Draw markers separately with monospace font and custom color
         if marker_text:
             # Use monospace font for tighter spacing
-            marker_font = QFont("monospace", timestamp_font.pointSize())
+            marker_font = QFont("monospace", timestamp_font.pointSize() + 1)
             marker_font.setStyleHint(QFont.Monospace)
             marker_fm = QFontMetrics(marker_font)
             painter.setFont(marker_font)
 
-            # Use different color for read markers
-            if marked == 7:
+            # Carbons (sent from another device): all marks in the carbon colour.
+            # Own messages: read marks in the read colour.
+            if is_carbon:
+                painter.setPen(self.marker_carbon_color)
+            elif marked == 7:
                 painter.setPen(self.marker_read_color)
             else:
                 painter.setPen(self.timestamp_color)
@@ -1033,9 +1034,7 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         # Determine marker text for width calculation (same logic as paint())
         marker_text = ""
         if direction == 1:
-            if is_carbon:
-                marker_text = "🗎"      # CARBON (sent from another device)
-            elif is_file:
+            if is_file:
                 pass  # Files don't show markers
             elif marked == 0:
                 marker_text = "⌛"      # PENDING
@@ -1135,7 +1134,7 @@ class MessageBubbleDelegate(QStyledItemDelegate):
         # Calculate marker width (using monospace font)
         marker_width = 0
         if marker_text:
-            marker_font = QFont("monospace", timestamp_font.pointSize())
+            marker_font = QFont("monospace", timestamp_font.pointSize() + 1)
             marker_font.setStyleHint(QFont.Monospace)
             marker_fm = QFontMetrics(marker_font)
             marker_width = marker_fm.horizontalAdvance(marker_text) + 2  # +2 for spacing
@@ -1369,8 +1368,9 @@ class MessageBubbleDelegate(QStyledItemDelegate):
             timestamp_text += " 🔒"
 
         # Build marker text
+        # Same marks for carbons (only the colour differs in paint())
         marker_text = ""
-        if direction == 1 and not is_carbon and not is_file:
+        if direction == 1 and not is_file:
             if marked == 0:
                 marker_text = "⌛"
             elif marked == 1:
@@ -1381,8 +1381,6 @@ class MessageBubbleDelegate(QStyledItemDelegate):
                 marker_text = "✔✔"
             elif marked == 8:
                 marker_text = "⚠"
-        elif direction == 1 and is_carbon:
-            marker_text = "🗎"
 
         # Get reactions
         content_item_id = index.data(self.ROLE_CONTENT_ITEM_ID)
