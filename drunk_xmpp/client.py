@@ -1872,6 +1872,22 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             self.logger.warning("Carbon received wrapper had no forwarded message")
             return
 
+        # Receipts and chat markers from the peer for messages of our other device.
+        # slixmpp's XEP-0184/XEP-0333 handlers see only top-level elements,
+        # so give the inner message to our handlers ('from' is the peer).
+        has_receipt = actual_msg.xml.find('{urn:xmpp:receipts}received') is not None
+        has_marker = any(
+            actual_msg.xml.find('{urn:xmpp:chat-markers:0}%s' % name) is not None
+            for name in ('received', 'displayed', 'acknowledged')
+        )
+        if has_receipt or has_marker:
+            if has_receipt:
+                self._on_receipt_received(actual_msg)
+            if has_marker:
+                self._on_marker_received(actual_msg)
+            if not actual_msg['body']:
+                return
+
         from_jid = actual_msg['from'].bare
 
         # Build metadata object (similar to private message handler)

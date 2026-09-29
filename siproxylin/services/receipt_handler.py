@@ -62,7 +62,7 @@ class ReceiptHandler:
         except Exception as e:
             logger.error(f"Failed to update server ACK for {message_id}: {e}")
 
-    def on_delivery_receipt(self, account_id: int, counterpart_jid: str, message_id: str):
+    def on_delivery_receipt(self, account_id: int, counterpart_jid: str, message_id: str) -> bool:
         """
         Handle delivery receipt (XEP-0184).
         Updates marked=2 if message is currently marked<=1.
@@ -70,7 +70,11 @@ class ReceiptHandler:
         Args:
             account_id: Account ID
             counterpart_jid: Sender's bare JID
-            message_id: Message origin_id (our sent message ID)
+            message_id: origin_id or message_id of our sent message
+                (messages from our other devices may have no origin-id)
+
+        Returns:
+            True if a message was updated
         """
         try:
             # Get counterpart JID ID
@@ -81,7 +85,7 @@ class ReceiptHandler:
 
             if not jid_row:
                 logger.warning(f"Delivery receipt: JID {counterpart_jid} not found")
-                return
+                return False
 
             counterpart_id = jid_row['id']
 
@@ -92,22 +96,24 @@ class ReceiptHandler:
                 SET marked = 2
                 WHERE account_id = ?
                   AND counterpart_id = ?
-                  AND origin_id = ?
+                  AND (origin_id = ? OR message_id = ?)
+                  AND direction = 1
                   AND marked <= 1
                 """,
-                (account_id, counterpart_id, message_id)
+                (account_id, counterpart_id, message_id, message_id)
             )
 
             if updated.rowcount > 0:
                 self.db.commit()
                 logger.info(f"Delivery receipt: marked message {message_id} as RECEIVED (marked=2)")
-            else:
-                logger.debug(f"Delivery receipt: message {message_id} already marked or not found")
+                return True
+            logger.debug(f"Delivery receipt: message {message_id} already marked or not found")
 
         except Exception as e:
             logger.error(f"Failed to update delivery receipt for {message_id}: {e}")
+        return False
 
-    def on_displayed_marker(self, account_id: int, counterpart_jid: str, message_id: str):
+    def on_displayed_marker(self, account_id: int, counterpart_jid: str, message_id: str) -> bool:
         """
         Handle displayed marker (XEP-0333).
         Updates marked=7 for ALL messages up to and including this message (cumulative).
@@ -115,7 +121,11 @@ class ReceiptHandler:
         Args:
             account_id: Account ID
             counterpart_jid: Sender's bare JID
-            message_id: Message origin_id (our sent message ID that was displayed)
+            message_id: origin_id or message_id of our sent message that was displayed
+                (messages from our other devices may have no origin-id)
+
+        Returns:
+            True if a message was updated
         """
         try:
             # Get counterpart JID ID
@@ -126,7 +136,7 @@ class ReceiptHandler:
 
             if not jid_row:
                 logger.warning(f"Displayed marker: JID {counterpart_jid} not found")
-                return
+                return False
 
             counterpart_id = jid_row['id']
 
@@ -137,14 +147,15 @@ class ReceiptHandler:
                 FROM message
                 WHERE account_id = ?
                   AND counterpart_id = ?
-                  AND origin_id = ?
+                  AND (origin_id = ? OR message_id = ?)
+                  AND direction = 1
                 """,
-                (account_id, counterpart_id, message_id)
+                (account_id, counterpart_id, message_id, message_id)
             )
 
             if not marked_msg:
                 logger.warning(f"Displayed marker: message {message_id} not found")
-                return
+                return False
 
             marked_time = marked_msg['time']
 
@@ -169,11 +180,12 @@ class ReceiptHandler:
                 logger.info(
                     f"Displayed marker: marked {count} message(s) up to {message_id} as READ (marked=7)"
                 )
-            else:
-                logger.debug(f"Displayed marker: no messages to update for {message_id}")
+                return True
+            logger.debug(f"Displayed marker: no messages to update for {message_id}")
 
         except Exception as e:
             logger.error(f"Failed to update displayed marker for {message_id}: {e}")
+        return False
 
     def on_received_marker(self, account_id: int, counterpart_jid: str, message_id: str):
         """

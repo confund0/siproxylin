@@ -1338,7 +1338,10 @@ async def main():
                 try:
                     # For 1-1 chats, pass with_jid to filter to this specific contact
                     # For MUC rooms, the jid parameter is sufficient (room archive)
-                    history = await client.retrieve_history(jid, max_messages=max_messages, with_jid=jid)
+                    # retrieve_history yields pages; skip receipt/marker entries
+                    history = []
+                    async for page in client.retrieve_history(jid, max_messages=max_messages, with_jid=jid):
+                        history.extend(m for m in page if not m.get('marker_type'))
                     logger.info(f"✓ Retrieved {len(history)} messages:")
                     logger.info("")
                     for i, msg in enumerate(history, 1):

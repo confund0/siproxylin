@@ -523,6 +523,10 @@ class MucBarrel:
                 # Store messages in database for this page
                 inserted_count = 0
                 for msg_data in page:
+                    # Skip receipt/marker entries (only for 1-1 chats, not stored)
+                    if msg_data.get('marker_type'):
+                        continue
+
                     # Extract data from MAM result
                     sender_jid = msg_data['jid']  # Bare JID
                     nick = msg_data.get('nick', '')  # MUC sender nickname (from resource)

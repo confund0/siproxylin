@@ -7,7 +7,7 @@ Implements Phase 4: Message Retry Logic (TODO-retry-logic.md).
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, TYPE_CHECKING
 from PySide6.QtCore import QObject, Signal
 
@@ -173,12 +173,13 @@ class MessageRetryHandler(QObject):
             counterpart_jid = msg['counterpart_jid']
 
             # Query MAM: ±10 minutes around message timestamp
-            start_time = datetime.fromtimestamp(msg['time'] - self.MAM_QUERY_WINDOW_SECONDS)
-            end_time = datetime.fromtimestamp(msg['time'] + self.MAM_QUERY_WINDOW_SECONDS)
+            start_time = datetime.fromtimestamp(msg['time'] - self.MAM_QUERY_WINDOW_SECONDS, tz=timezone.utc)
+            end_time = datetime.fromtimestamp(msg['time'] + self.MAM_QUERY_WINDOW_SECONDS, tz=timezone.utc)
 
             acc_logger.debug(f"Querying MAM from {start_time} to {end_time}")
 
-            history = await xmpp_client.retrieve_history(
+            # retrieve_history is an async generator: it yields pages
+            history = xmpp_client.retrieve_history(
                 jid=counterpart_jid,
                 start=start_time,
                 end=end_time,
@@ -187,12 +188,19 @@ class MessageRetryHandler(QObject):
 
             # Look for our origin_id in the results
             origin_id = msg['origin_id']
-            for archived_msg in history:
-                # Check if message IDs match
-                archived_stanza = archived_msg['message']
-                if archived_stanza.get('id') == origin_id:
-                    acc_logger.debug(f"Found message in MAM with origin_id {origin_id}")
-                    return True
+            try:
+                async for page in history:
+                    for archived_msg in page:
+                        # Skip receipt/marker entries (no stanza)
+                        if archived_msg.get('marker_type'):
+                            continue
+                        # Check if message IDs match
+                        archived_stanza = archived_msg['message']
+                        if archived_stanza.get('id') == origin_id:
+                            acc_logger.debug(f"Found message in MAM with origin_id {origin_id}")
+                            return True
+            finally:
+                await history.aclose()
 
             acc_logger.debug(f"Message with origin_id {origin_id} not found in MAM")
             return False

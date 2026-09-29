@@ -921,16 +921,18 @@ class MessageBarrel:
                         self.logger.debug(f"Processing page {page_count} with {len(page)} messages for {contact_jid}")
 
                     # Process and commit this page
-                    inserted_count, received_count = await self._process_and_store_mam_messages(
+                    inserted_count, received_count, markers_applied = await self._process_and_store_mam_messages(
                         page, contact_jid, jid_id
                     )
                     total_inserted += inserted_count
 
                     # Emit signal after each page to update UI incrementally.
                     # Only messages from the contact count as new (notification);
-                    # our own messages from other devices only refresh the view.
+                    # our own messages from other devices and markers only refresh the view.
                     if inserted_count > 0:
                         self.signals['message_received'].emit(self.account_id, contact_jid, received_count == 0)
+                    elif markers_applied > 0:
+                        self.signals['message_received'].emit(self.account_id, contact_jid, True)
 
                 if total_inserted > 0:
                     if self.logger:
@@ -1023,7 +1025,9 @@ class MessageBarrel:
             jid_id: JID ID from database
 
         Returns:
-            Number of messages inserted
+            (inserted_count, received_count, markers_applied):
+            items inserted, inserted items from the contact, and receipt/marker
+            entries that changed the state of a stored message
         """
         from datetime import datetime, timezone
 
@@ -1058,7 +1062,23 @@ class MessageBarrel:
         # Store messages
         inserted_count = 0
         received_count = 0  # inserted items from the contact (direction 0)
+        markers_applied = 0  # receipts/markers that changed a stored message
         for msg_data in history:
+            # Receipt or marker entry: apply it like a live one, do not store it.
+            # It does not count for the duplicate early stop (it is never stored).
+            marker_type = msg_data.get('marker_type')
+            if marker_type:
+                marker_for_id = msg_data.get('marker_for_id')
+                if marker_type == 'received':
+                    changed = self.receipt_handler.on_delivery_receipt(self.account_id, contact_jid, marker_for_id)
+                elif marker_type == 'displayed':
+                    changed = self.receipt_handler.on_displayed_marker(self.account_id, contact_jid, marker_for_id)
+                else:
+                    changed = False
+                if changed:
+                    markers_applied += 1
+                continue
+
             sender_jid = msg_data.get('jid')  # Bare JID of sender
             body = msg_data.get('body', '')
             timestamp = msg_data.get('timestamp')
@@ -1168,7 +1188,7 @@ class MessageBarrel:
                         received_count += 1
 
         self.db.commit()
-        return inserted_count, received_count
+        return inserted_count, received_count, markers_applied
 
     async def _retrieve_private_chat_history(self, contact_jid: str, jid_id: int, latest_time: int, max_messages: Optional[int]):
         """
@@ -1204,14 +1224,16 @@ class MessageBarrel:
                 self.logger.debug(f"Processing catchup page {page_count} with {len(page)} messages for {contact_jid}")
 
             # Process and commit this page
-            inserted_count, received_count = await self._process_and_store_mam_messages(page, contact_jid, jid_id)
+            inserted_count, received_count, markers_applied = await self._process_and_store_mam_messages(page, contact_jid, jid_id)
             total_inserted += inserted_count
 
             # Emit signal after each page to update UI incrementally.
             # Only messages from the contact count as new (notification);
-            # our own messages from other devices only refresh the view.
+            # our own messages from other devices and markers only refresh the view.
             if inserted_count > 0:
                 self.signals['message_received'].emit(self.account_id, contact_jid, received_count == 0)
+            elif markers_applied > 0:
+                self.signals['message_received'].emit(self.account_id, contact_jid, True)
 
         if total_inserted > 0:
             if self.logger:

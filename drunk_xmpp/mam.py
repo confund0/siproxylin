@@ -58,6 +58,9 @@ class MAMMixin:
                 - 'is_encrypted': Whether message was OMEMO encrypted
                 - 'archive_id': MAM archive result ID (becomes server_id in storage)
                 - 'message': Original message stanza
+            1-1 receipts and displayed markers from the peer come as entries with
+            'marker_type' ('received' or 'displayed'), 'marker_for_id', 'jid',
+            'archive_id' and 'timestamp' only. Other callers must skip them.
 
         Raises:
             RuntimeError: If MAM is not supported by the server/room
@@ -189,6 +192,28 @@ class MAMMixin:
                                 if sender_bare == self.boundjid.bare:
                                     self.logger.debug(f"Skipping MAM carbon (own encrypted message) from {from_jid} [archive_id={archive_id}, origin_id={origin_id}, message_id={message_id}]")
                                     continue
+
+                # 1-1 receipt (XEP-0184) or displayed marker (XEP-0333) from the peer:
+                # pass it as a marker entry, so our messages (also from other devices)
+                # get their state after catch-up. It has no body and is not stored.
+                if not body and not is_muc and sender_bare != self.boundjid.bare:
+                    marker_type = None
+                    marker_for_id = None
+                    displayed = archived_msg.xml.find('{urn:xmpp:chat-markers:0}displayed')
+                    receipt = archived_msg.xml.find('{urn:xmpp:receipts}received')
+                    if displayed is not None and displayed.get('id'):
+                        marker_type, marker_for_id = 'displayed', displayed.get('id')
+                    elif receipt is not None and receipt.get('id'):
+                        marker_type, marker_for_id = 'received', receipt.get('id')
+                    if marker_type:
+                        page_buffer.append({
+                            'marker_type': marker_type,
+                            'marker_for_id': marker_for_id,
+                            'jid': sender_bare,
+                            'archive_id': archive_id or message_id,
+                            'timestamp': timestamp,
+                        })
+                        continue
 
                 # Skip empty messages
                 if not body:
