@@ -921,14 +921,16 @@ class MessageBarrel:
                         self.logger.debug(f"Processing page {page_count} with {len(page)} messages for {contact_jid}")
 
                     # Process and commit this page
-                    inserted_count = await self._process_and_store_mam_messages(
+                    inserted_count, received_count = await self._process_and_store_mam_messages(
                         page, contact_jid, jid_id
                     )
                     total_inserted += inserted_count
 
-                    # Emit signal after each page to update UI incrementally
+                    # Emit signal after each page to update UI incrementally.
+                    # Only messages from the contact count as new (notification);
+                    # our own messages from other devices only refresh the view.
                     if inserted_count > 0:
-                        self.signals['message_received'].emit(self.account_id, contact_jid, False)
+                        self.signals['message_received'].emit(self.account_id, contact_jid, received_count == 0)
 
                 if total_inserted > 0:
                     if self.logger:
@@ -1010,7 +1012,7 @@ class MessageBarrel:
                 import traceback
                 self.logger.error(traceback.format_exc())
 
-    async def _process_and_store_mam_messages(self, history: list, contact_jid: str, jid_id: int) -> int:
+    async def _process_and_store_mam_messages(self, history: list, contact_jid: str, jid_id: int) -> tuple:
         """
         Process and store MAM messages in database.
         Shared logic between _retrieve_private_chat_history() and load_private_chat_history_on_demand().
@@ -1055,6 +1057,7 @@ class MessageBarrel:
 
         # Store messages
         inserted_count = 0
+        received_count = 0  # inserted items from the contact (direction 0)
         for msg_data in history:
             sender_jid = msg_data.get('jid')  # Bare JID of sender
             body = msg_data.get('body', '')
@@ -1138,6 +1141,8 @@ class MessageBarrel:
                     refresh=False  # the caller refreshes once per MAM page
                 )
                 inserted_count += 1
+                if direction == 0:
+                    received_count += 1
             else:
                 # Regular text message (not a file)
                 result = self.db.insert_message_atomic(
@@ -1159,9 +1164,11 @@ class MessageBarrel:
 
                 if result != (None, None):
                     inserted_count += 1
+                    if direction == 0:
+                        received_count += 1
 
         self.db.commit()
-        return inserted_count
+        return inserted_count, received_count
 
     async def _retrieve_private_chat_history(self, contact_jid: str, jid_id: int, latest_time: int, max_messages: Optional[int]):
         """
@@ -1197,12 +1204,14 @@ class MessageBarrel:
                 self.logger.debug(f"Processing catchup page {page_count} with {len(page)} messages for {contact_jid}")
 
             # Process and commit this page
-            inserted_count = await self._process_and_store_mam_messages(page, contact_jid, jid_id)
+            inserted_count, received_count = await self._process_and_store_mam_messages(page, contact_jid, jid_id)
             total_inserted += inserted_count
 
-            # Emit signal after each page to update UI incrementally
+            # Emit signal after each page to update UI incrementally.
+            # Only messages from the contact count as new (notification);
+            # our own messages from other devices only refresh the view.
             if inserted_count > 0:
-                self.signals['message_received'].emit(self.account_id, contact_jid, False)
+                self.signals['message_received'].emit(self.account_id, contact_jid, received_count == 0)
 
         if total_inserted > 0:
             if self.logger:

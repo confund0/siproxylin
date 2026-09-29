@@ -121,8 +121,10 @@ class RosterManager:
         if not is_marker:
             self.main_window._update_status_bar_stats()
 
-        # Send OS notification for actual new messages (not if chat is open or if it's a marker)
-        if not is_marker and not is_current_chat:
+        # Send OS notification for actual new messages (not for markers).
+        # An open chat skips it only while the app window is active and not minimized.
+        window_active = self.main_window.isActiveWindow() and not self.main_window.isMinimized()
+        if not is_marker and not (is_current_chat and window_active):
             self.notification_manager.send_message_notification(account_id, from_jid)
 
     def on_chat_state_changed(self, account_id: int, from_jid: str, state: str):

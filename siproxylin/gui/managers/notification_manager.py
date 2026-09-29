@@ -85,13 +85,24 @@ class NotificationManager:
 
             # Get most recent message from this sender
             message_row = self.db.fetchone("""
-                SELECT body FROM message
+                SELECT body, time FROM message
                 WHERE account_id = ? AND counterpart_id = ? AND direction = 0
                 ORDER BY time DESC
                 LIMIT 1
             """, (account_id, jid_id))
 
-            if message_row and message_row['body']:
+            # Files are stored in file_transfer, not in message. If the newest received
+            # item is a file, show the file, not the older text message.
+            file_row = self.db.fetchone("""
+                SELECT file_name, time FROM file_transfer
+                WHERE account_id = ? AND counterpart_id = ? AND direction = 0
+                ORDER BY time DESC
+                LIMIT 1
+            """, (account_id, jid_id))
+
+            if file_row and (not message_row or file_row['time'] >= message_row['time']):
+                message_body = f"File: {file_row['file_name']}"
+            elif message_row and message_row['body']:
                 message_body = message_row['body']
             else:
                 message_body = "New message"
