@@ -81,17 +81,20 @@ def build_connector(proxy_type: Optional[str], proxy_host: Optional[str] = None,
 
 def make_session(proxy_type: Optional[str] = None, proxy_host: Optional[str] = None,
                  proxy_port: Optional[int] = None, proxy_username: Optional[str] = None,
-                 proxy_password: Optional[str] = None):
+                 proxy_password: Optional[str] = None, headers: Optional[dict] = None,
+                 timeout_total: Optional[float] = HTTP_TIMEOUT_TOTAL):
     """
-    Make an aiohttp session for file downloads.
+    Make an aiohttp session for file downloads and uploads.
 
     Uses build_connector() (proxy with remote DNS, or plain without proxy),
     timeouts, no cookies and no proxy from the environment.
+    headers are default headers for every request.
+    timeout_total None means no total limit (connect and read limits stay).
     Must be called inside the running event loop.
     """
     connector = build_connector(proxy_type, proxy_host, proxy_port, proxy_username, proxy_password)
     timeout = aiohttp.ClientTimeout(
-        total=HTTP_TIMEOUT_TOTAL,
+        total=timeout_total,
         connect=HTTP_TIMEOUT_CONNECT,
         sock_connect=HTTP_TIMEOUT_CONNECT,
         sock_read=HTTP_TIMEOUT_READ,
@@ -99,6 +102,7 @@ def make_session(proxy_type: Optional[str] = None, proxy_host: Optional[str] = N
     return aiohttp.ClientSession(
         connector=connector,
         timeout=timeout,
+        headers=headers,
         cookie_jar=aiohttp.DummyCookieJar(),
         trust_env=False,
     )

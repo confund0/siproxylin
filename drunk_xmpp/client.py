@@ -45,13 +45,15 @@ from drunk_xmpp.slixmpp_patches import (
     apply_xep0280_reactions_patch,
     apply_xep0353_finish_patch,
     apply_xep0045_membership_patch,
-    apply_cert_stdin_prevention_patch
+    apply_cert_stdin_prevention_patch,
+    apply_xep0363_upload_proxy_patch
 )
 apply_xep0199_patch()
 apply_xep0280_reactions_patch()
 apply_xep0353_finish_patch()
 apply_xep0045_membership_patch()
 apply_cert_stdin_prevention_patch()
+apply_xep0363_upload_proxy_patch()
 
 # import aiohttp  # Not currently used
 from slixmpp import ClientXMPP
@@ -381,6 +383,15 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         # Store proxy configuration for later use in _attempt_connection
         self.proxy_type = None
         self.proxy_url = None
+
+        # Proxy fields for HTTP uploads (http_download.make_session). No proxy type = no proxy.
+        self.http_proxy_fields = {
+            'proxy_type': proxy_type or None,
+            'proxy_host': proxy_host,
+            'proxy_port': proxy_port,
+            'proxy_username': proxy_username,
+            'proxy_password': proxy_password,
+        }
 
         if proxy_type and proxy_host and proxy_port:
             if not PROXY_AVAILABLE:

@@ -6,8 +6,11 @@ XEP-0363: HTTP File Upload
 Provides methods for uploading files and sending attachments (with optional OMEMO encryption).
 """
 
+import asyncio
 from typing import Optional, Set
 from slixmpp.jid import JID
+
+from .slixmpp_patches.xep_0363_upload_proxy import use_upload_proxy
 
 
 class FileUploadMixin:
@@ -61,11 +64,13 @@ class FileUploadMixin:
 
         # Request upload slot from server
         try:
-            slot = await self['xep_0363'].upload_file(
-                file_path,
-                domain=None,  # Auto-detect from server
-                timeout=30
-            )
+            # The PUT goes through the account proxy (see xep_0363_upload_proxy)
+            with use_upload_proxy(self.http_proxy_fields):
+                slot = await self['xep_0363'].upload_file(
+                    file_path,
+                    domain=None,  # Auto-detect from server
+                    timeout=30
+                )
         except Exception as e:
             self.logger.exception(f"Failed to upload file: {e}")
             raise RuntimeError(f"File upload failed: {e}")
@@ -186,10 +191,12 @@ class FileUploadMixin:
         # This properly handles encryption, random filename with preserved extension,
         # upload, and aesgcm:// URL generation
         xep_0454 = self['xep_0454']
-        aesgcm_url = await xep_0454.upload_file(
-            filename=file,
-            content_type='application/octet-stream'
-        )
+        # XEP-0454 uploads with XEP-0363, so the PUT goes through the account proxy
+        with use_upload_proxy(self.http_proxy_fields):
+            aesgcm_url = await xep_0454.upload_file(
+                filename=file,
+                content_type='application/octet-stream'
+            )
 
         self.logger.debug(f"File encrypted and uploaded: {aesgcm_url[:60]}...")
 
@@ -336,10 +343,12 @@ class FileUploadMixin:
         # This properly handles encryption, random filename with preserved extension,
         # upload, and aesgcm:// URL generation
         xep_0454 = self['xep_0454']
-        aesgcm_url = await xep_0454.upload_file(
-            filename=file,
-            content_type='application/octet-stream'
-        )
+        # XEP-0454 uploads with XEP-0363, so the PUT goes through the account proxy
+        with use_upload_proxy(self.http_proxy_fields):
+            aesgcm_url = await xep_0454.upload_file(
+                filename=file,
+                content_type='application/octet-stream'
+            )
 
         self.logger.debug(f"File encrypted and uploaded: {aesgcm_url[:60]}...")
 

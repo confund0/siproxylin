@@ -11,6 +11,7 @@ from .xep_0280_carbon_reactions import apply_patch as apply_xep0280_reactions_pa
 from .xep_0353_finish_message import apply_patch as apply_xep0353_finish_patch
 from .xep_0045_membership import apply_patch as apply_xep0045_membership_patch
 from .cert_stdin_prevention import apply_patch as apply_cert_stdin_prevention_patch
+from .xep_0363_upload_proxy import apply_patch as apply_xep0363_upload_proxy_patch
 
 __all__ = [
     'apply_xep0199_patch',
@@ -18,7 +19,8 @@ __all__ = [
     'apply_xep0280_reactions_patch',
     'apply_xep0353_finish_patch',
     'apply_xep0045_membership_patch',
-    'apply_cert_stdin_prevention_patch'
+    'apply_cert_stdin_prevention_patch',
+    'apply_xep0363_upload_proxy_patch'
 ]
 
 def apply_all_patches():
@@ -28,3 +30,4 @@ def apply_all_patches():
     apply_xep0353_finish_patch()
     apply_xep0045_membership_patch()
     apply_cert_stdin_prevention_patch()
+    apply_xep0363_upload_proxy_patch()
