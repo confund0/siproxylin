@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QMenuBar, QMenu, QLabel, QSplitter, QDialog, QStatusBar, QMessageBox
 )
-from PySide6.QtCore import Qt, Slot, QTimer
+from PySide6.QtCore import Qt, Slot, QTimer, QEvent
 from PySide6.QtGui import QAction, QActionGroup
 
 from ..db.database import get_db
@@ -1598,6 +1598,19 @@ class MainWindow(QMainWindow):
             if self.receipt_timer.isActive():
                 self.receipt_timer.stop()
                 logger.debug("Chat polling DISABLED (history zone - top 50%)")
+
+    def changeEvent(self, event):
+        """Send displayed markers for the open chat when the window becomes visible to the user."""
+        super().changeEvent(event)
+        if event.type() not in (QEvent.ActivationChange, QEvent.WindowStateChange):
+            return
+        if not self.isActiveWindow() or self.isMinimized():
+            return
+        # changeEvent can come before the chat view exists (window setup)
+        chat_view = getattr(self, 'chat_view', None)
+        if chat_view and chat_view.current_jid:
+            # Marks only items above read_up_to_item, so repeated calls send nothing
+            chat_view.message_widget._send_displayed_markers()
 
     @Slot(int, str, str, bool)
 

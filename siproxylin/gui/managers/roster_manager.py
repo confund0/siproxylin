@@ -94,6 +94,9 @@ class RosterManager:
         is_current_chat = (self.chat_view.current_account_id == account_id and
                           self.chat_view.current_jid == from_jid)
 
+        # The app window is active and not minimized (the user can see the chat)
+        window_active = self.main_window.isActiveWindow() and not self.main_window.isMinimized()
+
         if is_current_chat:
             # Refresh the chat view
             # Only send markers for actual new messages, not for marker/receipt updates
@@ -102,7 +105,8 @@ class RosterManager:
                 self.chat_view.refresh_later()
                 logger.debug(f"Chat view refresh scheduled for {event_type}")
             else:
-                self.chat_view.refresh(send_markers=True)
+                # Send displayed markers only when the user can see the chat
+                self.chat_view.refresh(send_markers=window_active)
                 logger.debug(f"Chat view refreshed for {event_type}")
 
         # Check if this is a new conversation (not currently in chat list)
@@ -123,7 +127,6 @@ class RosterManager:
 
         # Send OS notification for actual new messages (not for markers).
         # An open chat skips it only while the app window is active and not minimized.
-        window_active = self.main_window.isActiveWindow() and not self.main_window.isMinimized()
         if not is_marker and not (is_current_chat and window_active):
             self.notification_manager.send_message_notification(account_id, from_jid)
 
