@@ -6,7 +6,10 @@ our other device) and the MAM duplicate check before a resend.
 Covers: receipt handler lookup by message_id with direction 1, receipts and
 markers inside received carbons, MAM marker entries (mam.py), applying them
 in the MAM catch-up without storing them, and message_retry iterating the
-retrieve_history pages.
+retrieve_history pages. Also our own displayed markers from other devices
+(sent carbons and MAM) and read_up_to_item, one notification per 1:1
+catch-up, MUC MAM OMEMO decryption for senders who left the room, and own
+undecryptable messages for the resend check (include_own_ids).
 
 No network, no PySide6: Qt is replaced by a small stub where needed.
 
@@ -27,6 +30,9 @@ from xml.etree import ElementTree as ET
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from copy import copy
+
+from slixmpp.jid import JID
 from slixmpp.stanza import Message
 
 from drunk_xmpp.client import DrunkXMPP
@@ -66,9 +72,18 @@ class FakeDB:
                 direction INTEGER, time INTEGER, body TEXT, marked INTEGER,
                 is_carbon INTEGER, message_id TEXT, origin_id TEXT, stanza_id TEXT);
             CREATE TABLE file_transfer (
-                id INTEGER PRIMARY KEY, account_id INTEGER, counterpart_id INTEGER, stanza_id TEXT);
+                id INTEGER PRIMARY KEY, account_id INTEGER, counterpart_id INTEGER,
+                direction INTEGER, time INTEGER, message_id TEXT, origin_id TEXT, stanza_id TEXT);
+            CREATE TABLE conversation (
+                id INTEGER PRIMARY KEY, account_id INTEGER, jid_id INTEGER, type INTEGER,
+                read_up_to_item INTEGER NOT NULL DEFAULT -1, send_marker INTEGER NOT NULL DEFAULT 1);
+            CREATE TABLE content_item (
+                id INTEGER PRIMARY KEY, conversation_id INTEGER, time INTEGER,
+                content_type INTEGER, foreign_id INTEGER, hide INTEGER NOT NULL DEFAULT 0);
         """)
         self.conn.execute("INSERT INTO jid (id, bare_jid) VALUES (1, ?)", (PEER,))
+        self.conn.execute("INSERT INTO conversation (id, account_id, jid_id, type) VALUES (1, ?, 1, 0)",
+                          (ACCOUNT,))
 
     def execute(self, query, params=()):
         return self.conn.execute(query, params)
@@ -93,13 +108,32 @@ class FakeDB:
             " is_carbon, message_id, origin_id, stanza_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (account_id, counterpart_id, direction, time, body, marked,
              is_carbon, message_id, origin_id, stanza_id))
-        return cur.lastrowid, 1
+        item = self.conn.execute(
+            "INSERT INTO content_item (conversation_id, time, content_type, foreign_id) VALUES (1, ?, 0, ?)",
+            (time, cur.lastrowid))
+        return cur.lastrowid, item.lastrowid
 
     def add(self, direction, time, marked, message_id=None, origin_id=None, is_carbon=0):
-        self.conn.execute(
+        """Add a message and its content item; returns the content item ID."""
+        cur = self.conn.execute(
             "INSERT INTO message (account_id, counterpart_id, direction, time, body, marked,"
             " is_carbon, message_id, origin_id) VALUES (?, 1, ?, ?, 'x', ?, ?, ?, ?)",
             (ACCOUNT, direction, time, marked, is_carbon, message_id, origin_id))
+        return self.conn.execute(
+            "INSERT INTO content_item (conversation_id, time, content_type, foreign_id) VALUES (1, ?, 0, ?)",
+            (time, cur.lastrowid)).lastrowid
+
+    def add_file(self, direction, time, message_id=None):
+        """Add a file transfer and its content item; returns the content item ID."""
+        cur = self.conn.execute(
+            "INSERT INTO file_transfer (account_id, counterpart_id, direction, time, message_id)"
+            " VALUES (?, 1, ?, ?, ?)", (ACCOUNT, direction, time, message_id))
+        return self.conn.execute(
+            "INSERT INTO content_item (conversation_id, time, content_type, foreign_id) VALUES (1, ?, 2, ?)",
+            (time, cur.lastrowid)).lastrowid
+
+    def read_up_to(self):
+        return self.fetchone("SELECT read_up_to_item FROM conversation WHERE id = 1")['read_up_to_item']
 
     def marked(self, message_id):
         row = self.fetchone("SELECT marked FROM message WHERE message_id = ? OR origin_id = ?",
@@ -156,11 +190,41 @@ class ReceiptHandlerTests(unittest.TestCase):
         self.assertFalse(self.rh.on_displayed_marker(ACCOUNT, PEER, 'in1'))
         self.assertEqual(self.db.marked('c1'), 1)
 
+    def test_own_displayed_moves_read_up_to_by_time(self):
+        # Item IDs are not in time order (catch-up stores older messages later)
+        i1 = self.db.add(0, 300, 0, message_id='p3')
+        i2 = self.db.add(0, 100, 0, message_id='p1')
+        i3 = self.db.add(0, 200, 0, message_id='p2')
+        self.db.add(1, 250, 1, message_id='c1')
+        self.assertTrue(self.rh.on_own_displayed_marker(ACCOUNT, PEER, 'p2'))
+        self.assertEqual(self.db.read_up_to(), i3)
+        self.assertFalse(self.rh.on_own_displayed_marker(ACCOUNT, PEER, 'p3'))
+        self.assertEqual(self.db.read_up_to(), i3)  # i3 > i1, never lowered
+        self.assertFalse(self.rh.on_own_displayed_marker(ACCOUNT, PEER, 'p1'))
+        self.assertEqual(self.db.read_up_to(), i3)
+        self.assertLess(i1, i2)
+
+    def test_own_displayed_matches_file_and_origin_id(self):
+        f1 = self.db.add_file(0, 100, message_id='f1')
+        self.assertTrue(self.rh.on_own_displayed_marker(ACCOUNT, PEER, 'f1'))
+        self.assertEqual(self.db.read_up_to(), f1)
+        i2 = self.db.add(0, 200, 0, message_id='m2', origin_id='o2')
+        self.db.add(0, 200, 0, message_id='m3')
+        self.assertTrue(self.rh.on_own_displayed_marker(ACCOUNT, PEER, 'o2'))
+        self.assertEqual(self.db.read_up_to(), i2)  # same second: the item ID gives the order
+
+    def test_own_displayed_ignores_own_message_and_unknown_id(self):
+        self.db.add(1, 100, 1, message_id='c1')
+        self.assertFalse(self.rh.on_own_displayed_marker(ACCOUNT, PEER, 'c1'))
+        self.assertFalse(self.rh.on_own_displayed_marker(ACCOUNT, PEER, 'nope'))
+        self.assertFalse(self.rh.on_own_displayed_marker(ACCOUNT, 'other@example.net', 'c1'))
+        self.assertEqual(self.db.read_up_to(), -1)
+
 
 class CarbonMarkerTests(unittest.TestCase):
     """Receipts and markers inside received carbons go to the marker callbacks."""
 
-    def run_carbon(self, inner_xml):
+    def run_carbon(self, inner_xml, sent=False):
         receipts, markers, messages = [], [], []
 
         async def on_private(*args):
@@ -173,7 +237,10 @@ class CarbonMarkerTests(unittest.TestCase):
                 on_marker_received_callback=lambda *a: markers.append(a),
                 on_private_message_callback=on_private,
             )
-            await client._on_carbon_received({'carbon_received': stanza(inner_xml)})
+            if sent:
+                await client._on_carbon_sent({'carbon_sent': stanza(inner_xml)})
+            else:
+                await client._on_carbon_received({'carbon_received': stanza(inner_xml)})
 
         logging.disable(logging.CRITICAL)
         try:
@@ -189,6 +256,21 @@ class CarbonMarkerTests(unittest.TestCase):
         self.assertEqual(receipts, [(PEER, 'c1')])
         self.assertEqual(markers, [])
         self.assertEqual(messages, [])
+
+    def test_own_displayed_in_sent_carbon(self):
+        receipts, markers, messages = self.run_carbon(
+            f'<message xmlns="jabber:client" from="{OUR_JID}/other" to="{PEER}" id="d1">'
+            '<displayed xmlns="urn:xmpp:chat-markers:0" id="p1"/></message>', sent=True)
+        self.assertEqual(receipts, [])
+        self.assertEqual(markers, [(PEER, 'p1', 'displayed_own')])
+        self.assertEqual(messages, [])
+
+    def test_sent_carbon_with_body_is_a_message(self):
+        receipts, markers, messages = self.run_carbon(
+            f'<message xmlns="jabber:client" from="{OUR_JID}/other" to="{PEER}" id="c1">'
+            '<body>hi</body><markable xmlns="urn:xmpp:chat-markers:0"/></message>', sent=True)
+        self.assertEqual(markers, [])
+        self.assertEqual(len(messages), 1)
 
     def test_displayed_in_carbon(self):
         receipts, markers, messages = self.run_carbon(
@@ -228,6 +310,129 @@ def mam_pages(query_jid, results, rooms=None):
         logging.disable(logging.NOTSET)
 
 
+class FakeOMEMO:
+    """Replaces xep_0384: finds the sender like slixmpp_omemo and records it."""
+
+    def __init__(self, xep_0045, can_decrypt):
+        self.xep_0045 = xep_0045
+        self.can_decrypt = can_decrypt  # bare JIDs whose messages decrypt
+        self.senders = []
+
+    def is_encrypted(self, msg):
+        return msg.xml.find('{eu.siacs.conversations.axolotl}encrypted') is not None
+
+    async def decrypt_message(self, msg):
+        if msg['type'] == 'groupchat':
+            real = self.xep_0045.get_jid_property(JID(msg['from'].bare), msg['from'].resource, 'jid')
+            if real is None:
+                raise ValueError(f"Couldn't find real JID of sender from groupchat JID {msg['from']}")
+            sender = JID(real).bare
+        else:
+            sender = msg['from'].bare
+        self.senders.append(sender)
+        if sender not in self.can_decrypt:
+            raise ValueError('MessageNotForUs')
+        out = copy(msg)
+        out['body'] = 'plain text'
+        return out, types.SimpleNamespace(device_id=1)
+
+
+def mam_pages_omemo(query_jid, results, occupants=None, can_decrypt=(), rooms=None, **kwargs):
+    """mam_pages with OMEMO on. occupants: {nick: real JID} of the room now."""
+    occupants = occupants or {}
+    xep_0045 = mock.Mock()
+    xep_0045.get_jid_property.side_effect = lambda room, nick, prop: occupants.get(nick)
+    omemo = FakeOMEMO(xep_0045, set(can_decrypt))
+
+    async def body():
+        client = DrunkXMPP(jid=OUR_JID + '/test', password='secret', rooms={}, enable_omemo=False)
+        client.omemo_enabled = True
+        if rooms:
+            client.rooms.update(rooms)
+        plugins = {'xep_0313': FakeMAM(results), 'xep_0384': omemo, 'xep_0045': xep_0045}
+        with mock.patch.object(client, 'plugin', plugins):
+            return [page async for page in client.retrieve_history(jid=query_jid, **kwargs)]
+
+    logging.disable(logging.CRITICAL)
+    try:
+        return [e for page in asyncio.run(body()) for e in page], omemo
+    finally:
+        logging.disable(logging.NOTSET)
+
+
+ENC = ('<body>fallback</body><encrypted xmlns="eu.siacs.conversations.axolotl">'
+       '<header sid="1"/></encrypted>')
+
+
+class MAMOmemoTests(unittest.TestCase):
+
+    def muc_msg(self, nick, real_jid=None, msg_id='g1'):
+        item = (f'<x xmlns="http://jabber.org/protocol/muc#user"><item jid="{real_jid}/phone"/></x>'
+                if real_jid else '')
+        return stanza(f'<message xmlns="jabber:client" type="groupchat" from="{ROOM}/{nick}" id="{msg_id}">'
+                      f'{ENC}{item}</message>')
+
+    def test_muc_sender_in_room_uses_groupchat_path(self):
+        entries, omemo = mam_pages_omemo(ROOM, [('a1', self.muc_msg('bob', 'bob@example.net'))],
+                                         occupants={'bob': 'carl@example.net/x'},
+                                         can_decrypt={'carl@example.net'}, rooms={ROOM: {'nick': 'me'}})
+        self.assertEqual(omemo.senders, ['carl@example.net'])
+        self.assertEqual(entries[0]['body'], 'plain text')
+
+    def test_muc_sender_left_uses_archive_real_jid(self):
+        msg = self.muc_msg('bob', 'bob@example.net')
+        entries, omemo = mam_pages_omemo(ROOM, [('a1', msg)], can_decrypt={'bob@example.net'},
+                                         rooms={ROOM: {'nick': 'me'}})
+        self.assertEqual(omemo.senders, ['bob@example.net'])
+        self.assertEqual(entries[0]['body'], 'plain text')
+        self.assertEqual(entries[0]['nick'], 'bob')
+        self.assertEqual(entries[0]['jid'], ROOM)
+        # The archived stanza is not changed
+        self.assertEqual(entries[0]['message']['type'], 'groupchat')
+        self.assertEqual(str(entries[0]['message']['from']), f'{ROOM}/bob')
+
+    def test_muc_sender_left_no_real_jid_fails_as_before(self):
+        entries, omemo = mam_pages_omemo(ROOM, [('a1', self.muc_msg('bob'))],
+                                         rooms={ROOM: {'nick': 'me'}})
+        self.assertEqual(omemo.senders, [])
+        self.assertEqual(entries[0]['body'], '[Failed to decrypt OMEMO message]')
+        self.assertIsNone(msg_muc_element(entries[0]['message']))
+
+
+def msg_muc_element(msg):
+    return msg.xml.find('{http://jabber.org/protocol/muc#user}x')
+
+
+class MAMOwnIdsTests(unittest.TestCase):
+
+    def own_1to1(self):
+        return stanza(f'<message xmlns="jabber:client" type="chat" from="{OUR_JID}/other" to="{PEER}" id="o1">'
+                      f'{ENC}</message>')
+
+    def test_own_1to1_skipped_by_default(self):
+        entries, _ = mam_pages_omemo(PEER, [('a1', self.own_1to1())], with_jid=PEER)
+        self.assertEqual(entries, [])
+
+    def test_own_1to1_entry_with_include_own_ids(self):
+        entries, _ = mam_pages_omemo(PEER, [('a1', self.own_1to1())], with_jid=PEER, include_own_ids=True)
+        self.assertEqual(len(entries), 1)
+        e = entries[0]
+        self.assertTrue(e['own_undecryptable'])
+        self.assertEqual(e['message'].get('id'), 'o1')
+        self.assertEqual((e['archive_id'], e['jid']), ('a1', OUR_JID))
+        self.assertNotIn('body', e)
+
+    def test_own_muc_reflection_entry_with_include_own_ids(self):
+        refl = stanza(f'<message xmlns="jabber:client" type="groupchat" from="{ROOM}/me" id="o2">'
+                      f'{ENC}</message>')
+        rooms = {ROOM: {'nick': 'me'}}
+        entries, _ = mam_pages_omemo(ROOM, [('a1', refl)], occupants={'me': OUR_JID + '/test'}, rooms=rooms)
+        self.assertEqual(entries, [])
+        entries, _ = mam_pages_omemo(ROOM, [('a1', refl)], occupants={'me': OUR_JID + '/test'},
+                                     rooms=rooms, include_own_ids=True)
+        self.assertEqual([(e['own_undecryptable'], e['message'].get('id')) for e in entries], [(True, 'o2')])
+
+
 class MAMMarkerEntryTests(unittest.TestCase):
 
     def test_peer_markers_become_entries_in_page_order(self):
@@ -248,12 +453,18 @@ class MAMMarkerEntryTests(unittest.TestCase):
         self.assertEqual(entries[2]['jid'], PEER)
         self.assertEqual(entries[2]['archive_id'], 'a3')
 
-    def test_own_markers_are_skipped(self):
+    def test_own_displayed_marker_is_entry_own_receipt_skipped(self):
         pages = mam_pages(PEER, [
-            ('a1', stanza(f'<message xmlns="jabber:client" from="{OUR_JID}/other" to="{PEER}" id="d1">'
+            ('a1', stanza(f'<message xmlns="jabber:client" from="{OUR_JID}/other" to="{PEER}" id="r1">'
+                          '<received xmlns="urn:xmpp:receipts" id="p1"/></message>')),
+            ('a2', stanza(f'<message xmlns="jabber:client" from="{OUR_JID}/other" to="{PEER}" id="d1">'
                           '<displayed xmlns="urn:xmpp:chat-markers:0" id="p1"/></message>')),
         ])
-        self.assertEqual(pages, [])
+        entries = [e for page in pages for e in page]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual((entries[0]['marker_type'], entries[0]['marker_for_id']), ('displayed', 'p1'))
+        self.assertEqual(entries[0]['jid'], OUR_JID)
+        self.assertEqual(entries[0]['archive_id'], 'a2')
 
     def test_muc_markers_are_skipped(self):
         pages = mam_pages(ROOM, [
@@ -303,13 +514,92 @@ class MAMStoreTests(unittest.TestCase):
         self.assertEqual(result, (0, 0, 0))
         self.assertEqual(db.fetchone("SELECT COUNT(*) AS n FROM message")['n'], 1)
 
+    def test_own_displayed_entry_moves_read_up_to(self):
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        db = FakeDB()
+        barrel = self.make_barrel(db)
+        ts = datetime(2026, 9, 29, 10, 0, tzinfo=timezone.utc)
+        incoming = stanza(f'<message xmlns="jabber:client" from="{PEER}/phone" to="{OUR_JID}" id="p1">'
+                          '<body>hello</body></message>')
+        page = [
+            {'jid': PEER, 'body': 'hello', 'timestamp': ts, 'is_encrypted': False,
+             'archive_id': 'a1', 'message': incoming},
+            {'marker_type': 'displayed', 'marker_for_id': 'p1', 'jid': OUR_JID,
+             'archive_id': 'a2', 'timestamp': ts},
+        ]
+        result = asyncio.run(barrel._process_and_store_mam_messages(page, PEER, 1))
+        self.assertEqual(result, (1, 1, 1))
+        item_id = db.fetchone("SELECT MAX(id) AS i FROM content_item")['i']
+        self.assertEqual(db.read_up_to(), item_id)
+
+    def run_catchup(self, db, pages):
+        barrel = self.make_barrel(db)
+        emits = []
+        barrel.signals = {'message_received': types.SimpleNamespace(emit=lambda *a: emits.append(a))}
+        barrel.client.retrieve_history = FakeClient(pages).retrieve_history
+        asyncio.run(barrel._retrieve_private_chat_history(PEER, 1, 1_790_000_000, None))
+        return emits
+
+    def test_catchup_no_notify_when_marker_in_later_page(self):
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        db = FakeDB()
+        old = db.add(0, 50, 0, message_id='p0')
+        db.execute("UPDATE conversation SET read_up_to_item = ?", (old,))
+        ts = datetime(2026, 9, 29, 10, 0, tzinfo=timezone.utc)
+        incoming = stanza(f'<message xmlns="jabber:client" from="{PEER}/phone" to="{OUR_JID}" id="p1">'
+                          '<body>hello</body></message>')
+        page1 = [{'jid': PEER, 'body': 'hello', 'timestamp': ts, 'is_encrypted': False,
+                  'archive_id': 'a1', 'message': incoming}]
+        page2 = [{'marker_type': 'displayed', 'marker_for_id': 'p1', 'jid': OUR_JID,
+                  'archive_id': 'a2', 'timestamp': ts}]
+        emits = self.run_catchup(db, [page1, page2])
+        self.assertEqual(emits, [(ACCOUNT, PEER, True), (ACCOUNT, PEER, True)])
+
+    def test_catchup_notifies_once_for_unread(self):
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        db = FakeDB()
+        old = db.add(0, 50, 0, message_id='p0')  # unread, but not from this run
+        ts = datetime(2026, 9, 29, 10, 0, tzinfo=timezone.utc)
+        own = stanza(f'<message xmlns="jabber:client" from="{OUR_JID}/other" to="{PEER}" id="c1">'
+                     '<body>hi</body></message>')
+        incoming = stanza(f'<message xmlns="jabber:client" from="{PEER}/phone" to="{OUR_JID}" id="p1">'
+                          '<body>hello</body></message>')
+        page1 = [{'jid': OUR_JID, 'body': 'hi', 'timestamp': ts, 'is_encrypted': False,
+                  'archive_id': 'a1', 'message': own}]
+        # Only own messages: refresh, no notification (p0 is older than this run)
+        self.assertEqual(self.run_catchup(db, [page1]), [(ACCOUNT, PEER, True)])
+        page2 = [{'jid': PEER, 'body': 'hello', 'timestamp': ts, 'is_encrypted': False,
+                  'archive_id': 'a2', 'message': incoming}]
+        emits = self.run_catchup(db, [page1, page2])
+        self.assertEqual(emits, [(ACCOUNT, PEER, True), (ACCOUNT, PEER, False)])
+        self.assertLess(old, db.fetchone("SELECT MAX(id) AS i FROM content_item")['i'])
+
+    def test_live_own_displayed_marker(self):
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        db = FakeDB()
+        item = db.add(0, 100, 0, message_id='p1')
+        barrel = self.make_barrel(db)
+        emits = []
+        barrel.signals = {'message_received': types.SimpleNamespace(emit=lambda *a: emits.append(a))}
+        barrel._on_marker_received(PEER, 'p1', 'displayed_own')
+        self.assertEqual(db.read_up_to(), item)
+        self.assertEqual(emits, [(ACCOUNT, PEER, True)])
+
 
 class FakeClient:
-    def __init__(self, pages):
+    def __init__(self, pages, rooms=None):
         self.pages = pages
         self.closed = False
+        self.rooms = rooms or {}
+        self.kwargs = None
 
     def retrieve_history(self, **kwargs):
+        self.kwargs = kwargs
+
         async def gen():
             try:
                 for page in self.pages:
@@ -321,12 +611,23 @@ class FakeClient:
 
 class MessageRetryMAMTests(unittest.TestCase):
 
-    def check(self, pages):
+    def check(self, pages, jid=PEER, rooms=None):
         handler = MessageRetryHandler.__new__(MessageRetryHandler)
-        client = FakeClient(pages)
-        msg = {'counterpart_jid': PEER, 'time': 1_790_000_000, 'origin_id': 'o1'}
+        client = FakeClient(pages, rooms)
+        msg = {'counterpart_jid': jid, 'time': 1_790_000_000, 'origin_id': 'o1'}
         found = asyncio.run(handler._check_message_in_mam(msg, client, logging.getLogger('test')))
         return found, client
+
+    def test_own_undecryptable_found_and_query_args(self):
+        own = {'own_undecryptable': True, 'message': stanza('<message xmlns="jabber:client" id="o1"/>'),
+               'archive_id': 'a1', 'jid': OUR_JID}
+        found, client = self.check([[own]])
+        self.assertTrue(found)
+        self.assertEqual(client.kwargs['with_jid'], PEER)
+        self.assertTrue(client.kwargs['include_own_ids'])
+        found, client = self.check([[own]], jid=ROOM, rooms={ROOM: {}})
+        self.assertTrue(found)
+        self.assertIsNone(client.kwargs['with_jid'])
 
     def test_found_on_second_page(self):
         marker = {'marker_type': 'displayed', 'marker_for_id': 'o1', 'jid': PEER}

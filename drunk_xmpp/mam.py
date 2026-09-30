@@ -8,6 +8,7 @@ Provides methods for retrieving message history from the server archive.
 
 from typing import List, Dict, Optional, AsyncGenerator
 from datetime import datetime
+from copy import copy
 from slixmpp.jid import JID
 from slixmpp.exceptions import IqError, IqTimeout
 import asyncio
@@ -32,7 +33,8 @@ class MAMMixin:
         end: Optional[datetime] = None,
         max_messages: Optional[int] = None,
         with_jid: Optional[str] = None,
-        start_id: Optional[str] = None
+        start_id: Optional[str] = None,
+        include_own_ids: bool = False
     ) -> AsyncGenerator[List[Dict], None]:
         """
         Retrieve message history from server using MAM (XEP-0313).
@@ -48,6 +50,10 @@ class MAMMixin:
             max_messages: Maximum number of messages to retrieve (None = unlimited)
             with_jid: Optional filter - only messages with this JID (for 1-to-1 archive queries)
             start_id: Optional MAM archive ID to start after (for efficient catchup)
+            include_own_ids: If True, our own messages that we cannot decrypt (sent
+                from this or another device) come as entries with 'own_undecryptable'
+                (for the resend check: they carry the message IDs). Callers that store
+                messages must not set it.
 
         Yields:
             Pages (lists) of message dicts, each dict with keys:
@@ -60,7 +66,11 @@ class MAMMixin:
                 - 'message': Original message stanza
             1-1 receipts and displayed markers from the peer come as entries with
             'marker_type' ('received' or 'displayed'), 'marker_for_id', 'jid',
-            'archive_id' and 'timestamp' only. Other callers must skip them.
+            'archive_id' and 'timestamp' only. Our own displayed markers (from
+            other devices) come the same way with 'jid' = our bare JID.
+            Other callers must skip them.
+            With include_own_ids, own undecryptable messages come as entries with
+            'own_undecryptable' (True), 'message', 'archive_id', 'jid' and 'timestamp' only.
 
         Raises:
             RuntimeError: If MAM is not supported by the server/room
@@ -148,9 +158,24 @@ class MAMMixin:
                     xep_0384 = self.plugin['xep_0384']
                     if xep_0384.is_encrypted(archived_msg):
                         is_encrypted = True
+                        # slixmpp_omemo finds the real JID of a groupchat sender only
+                        # among the occupants now in the room. For a sender who left,
+                        # take the real JID from the archive (muc#user item, rooms where
+                        # anyone can see JIDs) and decrypt a copy as a message from that JID.
+                        decrypt_stanza = archived_msg
+                        if is_muc and archived_msg['type'] == 'groupchat' and self.plugin['xep_0045'].get_jid_property(
+                                JID(from_jid.bare), from_jid.resource, 'jid') is None:
+                            muc_item = archived_msg.xml.find(
+                                '{http://jabber.org/protocol/muc#user}x/{http://jabber.org/protocol/muc#user}item')
+                            real_jid = muc_item.get('jid') if muc_item is not None else None
+                            if real_jid:
+                                decrypt_stanza = copy(archived_msg)
+                                decrypt_stanza['type'] = 'chat'
+                                decrypt_stanza['from'] = JID(real_jid).bare
+                                self.logger.debug(f"MAM sender {from_jid} not in the room, decrypting with real JID {decrypt_stanza['from']}")
                         try:
                             # Decrypt the message
-                            decrypted_msg, device_info = await xep_0384.decrypt_message(archived_msg)
+                            decrypted_msg, device_info = await xep_0384.decrypt_message(decrypt_stanza)
                             body = decrypted_msg['body']
                             self.logger.debug(f"Decrypted MAM message from {from_jid} (device {device_info.device_id})")
                         except Exception as e:
@@ -181,6 +206,9 @@ class MAMMixin:
                                     is_reflection = (not nick or (our_nick and nick == our_nick))
 
                                 if is_reflection:
+                                    if include_own_ids:
+                                        page_buffer.append(self._own_undecryptable_entry(
+                                            archived_msg, archive_id or message_id, sender_bare, timestamp))
                                     self.logger.debug(f"Skipping MAM reflection (own encrypted message) in {jid} [archive_id={archive_id}, origin_id={origin_id}, message_id={message_id}, occupant_id={msg_occupant_id}]")
                                     continue
                             else:
@@ -190,20 +218,26 @@ class MAMMixin:
                                 # Since we already have the sent version (direction=1), skip these to
                                 # avoid duplicates showing "[Failed to decrypt...]"
                                 if sender_bare == self.boundjid.bare:
+                                    if include_own_ids:
+                                        page_buffer.append(self._own_undecryptable_entry(
+                                            archived_msg, archive_id or message_id, sender_bare, timestamp))
                                     self.logger.debug(f"Skipping MAM carbon (own encrypted message) from {from_jid} [archive_id={archive_id}, origin_id={origin_id}, message_id={message_id}]")
                                     continue
 
                 # 1-1 receipt (XEP-0184) or displayed marker (XEP-0333) from the peer:
                 # pass it as a marker entry, so our messages (also from other devices)
                 # get their state after catch-up. It has no body and is not stored.
-                if not body and not is_muc and sender_bare != self.boundjid.bare:
+                # Our own displayed marker (sent from another device) also becomes an
+                # entry with our JID: the peer's messages are read there. Own receipts are skipped.
+                if not body and not is_muc:
+                    is_own = sender_bare == self.boundjid.bare
                     marker_type = None
                     marker_for_id = None
                     displayed = archived_msg.xml.find('{urn:xmpp:chat-markers:0}displayed')
                     receipt = archived_msg.xml.find('{urn:xmpp:receipts}received')
                     if displayed is not None and displayed.get('id'):
                         marker_type, marker_for_id = 'displayed', displayed.get('id')
-                    elif receipt is not None and receipt.get('id'):
+                    elif receipt is not None and receipt.get('id') and not is_own:
                         marker_type, marker_for_id = 'received', receipt.get('id')
                     if marker_type:
                         page_buffer.append({
@@ -270,6 +304,17 @@ class MAMMixin:
         except Exception as e:
             self.logger.exception(f"Failed to retrieve MAM history: {e}")
             raise
+
+    @staticmethod
+    def _own_undecryptable_entry(archived_msg, archive_id, sender_bare, timestamp) -> Dict:
+        """Entry for our own message that we cannot decrypt (see include_own_ids)."""
+        return {
+            'own_undecryptable': True,
+            'message': archived_msg,
+            'archive_id': archive_id,
+            'jid': sender_bare,
+            'timestamp': timestamp,
+        }
 
     async def check_mam_support(self, jid: str) -> bool:
         """

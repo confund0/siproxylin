@@ -178,12 +178,17 @@ class MessageRetryHandler(QObject):
 
             acc_logger.debug(f"Querying MAM from {start_time} to {end_time}")
 
-            # retrieve_history is an async generator: it yields pages
+            # retrieve_history is an async generator: it yields pages.
+            # include_own_ids: our own OMEMO messages cannot be decrypted, they come
+            # as entries with the stanza only. 1:1: only the archive with this contact.
+            is_muc = counterpart_jid in xmpp_client.rooms
             history = xmpp_client.retrieve_history(
                 jid=counterpart_jid,
                 start=start_time,
                 end=end_time,
-                max_messages=50
+                max_messages=50,
+                with_jid=None if is_muc else counterpart_jid,
+                include_own_ids=True
             )
 
             # Look for our origin_id in the results
