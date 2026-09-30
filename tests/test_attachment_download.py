@@ -400,13 +400,14 @@ class TestProxyConnector(unittest.TestCase):
 
 def load_file_barrel():
     """
-    Import siproxylin.core.barrels.files. Without PySide6 the package
+    Import siproxylin.core.barrels.files. Without PySide6 or grpc the package
     siproxylin.core cannot load, so we load the module from its file.
     """
     try:
         from siproxylin.core.barrels import files
         return files
-    except ImportError:
+    except (ImportError, NameError):
+        # NameError: siproxylin.core.brewery without grpc (call service modules)
         pass
     import types
     import importlib.util
