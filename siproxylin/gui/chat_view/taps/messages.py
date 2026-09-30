@@ -884,11 +884,11 @@ class MessageDisplayWidget(QObject):
                 logger.warning(f"_send_displayed_markers: Conversation {conversation_id} not found")
                 return
 
-            # For 1-to-1 chats: Check if markers are enabled
-            # For MUCs: Skip marker check (we'll update locally but not send XMPP markers)
-            if not self.current_is_muc and conv['send_marker'] == 0:
+            # For 1-to-1 chats: markers off only skips sending the XMPP marker;
+            # read_up_to_item still goes up (clears unread counters)
+            markers_enabled = conv['send_marker'] != 0
+            if not self.current_is_muc and not markers_enabled:
                 logger.debug(f"_send_displayed_markers: Markers disabled for {self.current_jid}")
-                return
 
             read_up_to_item = conv['read_up_to_item']
 
@@ -924,7 +924,7 @@ class MessageDisplayWidget(QObject):
 
             # For 1-to-1: Try to send XMPP marker if this is a message (files don't have stanza IDs)
             # For MUC: Just update read_up_to_item locally (no XMPP marker sent)
-            if not self.current_is_muc and content_type == 0:
+            if not self.current_is_muc and content_type == 0 and markers_enabled:
                 # This is a message - try to send XMPP marker
                 message_id = result['message_id'] or result['origin_id'] or result['stanza_id']
                 if message_id:
@@ -940,7 +940,23 @@ class MessageDisplayWidget(QObject):
                 logger.debug(f"Most recent content is a file (no XMPP marker to send, will update locally)")
 
             # Update conversation.read_up_to_item (for both 1-to-1 and MUC, for both messages and files)
-            # This clears unread counters locally regardless of whether XMPP marker was sent
+            # This clears unread counters locally regardless of whether XMPP marker was sent.
+            # Use the highest item ID of the unread set: the newest item by time
+            # can have a lower ID (MAM catch-up stores older messages later).
+            max_row = self.db.fetchone("""
+                SELECT MAX(ci.id) AS max_id
+                FROM content_item ci
+                LEFT JOIN message m ON ci.foreign_id = m.id AND ci.content_type = 0
+                LEFT JOIN file_transfer ft ON ci.foreign_id = ft.id AND ci.content_type = 2
+                WHERE ci.conversation_id = ?
+                  AND (
+                      (ci.content_type = 0 AND m.direction = 0) OR
+                      (ci.content_type = 2 AND ft.direction = 0)
+                  )
+                  AND ci.id > ?
+            """, (conversation_id, read_up_to_item))
+            if max_row and max_row['max_id'] is not None:
+                content_item_id = max(content_item_id, max_row['max_id'])
             self.db.update_conversation_read_up_to(conversation_id, content_item_id)
             if self.current_is_muc:
                 logger.debug(f"Updated read_up_to_item for MUC {self.current_jid} (local only, no XMPP marker)")

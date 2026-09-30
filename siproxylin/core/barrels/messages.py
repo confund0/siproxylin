@@ -748,13 +748,18 @@ class MessageBarrel:
         Args:
             from_jid: Sender's bare JID
             message_id: Message origin_id
-            marker_type: Type of marker ('received', 'displayed', 'acknowledged')
+            marker_type: Type of marker ('received', 'displayed', 'acknowledged',
+                or 'displayed_own': our own marker from another device, from_jid is the peer)
         """
         if self.logger:
             self.logger.info(f"Chat marker '{marker_type}' from {from_jid} for message {message_id}")
 
         try:
-            if marker_type == 'displayed':
+            if marker_type == 'displayed_own':
+                # Read on our other device - move read_up_to_item (clears unread counters)
+                self.receipt_handler.on_own_displayed_marker(self.account_id, from_jid, message_id)
+                self.signals['message_received'].emit(self.account_id, from_jid, True)
+            elif marker_type == 'displayed':
                 # Displayed marker - mark as READ (cumulative)
                 self.receipt_handler.on_displayed_marker(self.account_id, from_jid, message_id)
                 # Emit signal to refresh UI immediately (marker update, not new message)
@@ -1069,7 +1074,10 @@ class MessageBarrel:
             marker_type = msg_data.get('marker_type')
             if marker_type:
                 marker_for_id = msg_data.get('marker_for_id')
-                if marker_type == 'received':
+                if marker_type == 'displayed' and msg_data.get('jid') == our_jid:
+                    # Our own marker from another device: the peer's messages are read there
+                    changed = self.receipt_handler.on_own_displayed_marker(self.account_id, contact_jid, marker_for_id)
+                elif marker_type == 'received':
                     changed = self.receipt_handler.on_delivery_receipt(self.account_id, contact_jid, marker_for_id)
                 elif marker_type == 'displayed':
                     changed = self.receipt_handler.on_displayed_marker(self.account_id, contact_jid, marker_for_id)
@@ -1210,6 +1218,12 @@ class MessageBarrel:
         if self.logger:
             self.logger.debug(f"Querying MAM for {contact_jid} since {start_time} (5min overlap)")
 
+        # Newest content item before this run: items above it are new in this run
+        conversation_id = self.db.get_or_create_conversation(self.account_id, jid_id, 0)
+        row = self.db.fetchone("SELECT MAX(id) AS max_id FROM content_item WHERE conversation_id = ?",
+                               (conversation_id,))
+        max_item_before = row['max_id'] if row and row['max_id'] is not None else 0
+
         # Retrieve history from MAM - yields pages
         total_inserted = 0
         page_count = 0
@@ -1227,13 +1241,29 @@ class MessageBarrel:
             inserted_count, received_count, markers_applied = await self._process_and_store_mam_messages(page, contact_jid, jid_id)
             total_inserted += inserted_count
 
-            # Emit signal after each page to update UI incrementally.
-            # Only messages from the contact count as new (notification);
-            # our own messages from other devices and markers only refresh the view.
-            if inserted_count > 0:
-                self.signals['message_received'].emit(self.account_id, contact_jid, received_count == 0)
-            elif markers_applied > 0:
+            # Refresh the view after each page (no notification yet): our own
+            # displayed marker from another device can come in a later page.
+            if inserted_count > 0 or markers_applied > 0:
                 self.signals['message_received'].emit(self.account_id, contact_jid, True)
+
+        # Notify once, only if received items of this run are still unread
+        unread = self.db.fetchone("""
+            SELECT COUNT(ci.id) AS n
+            FROM content_item ci
+            JOIN conversation c ON ci.conversation_id = c.id
+            LEFT JOIN message m ON ci.foreign_id = m.id AND ci.content_type = 0
+            LEFT JOIN file_transfer ft ON ci.foreign_id = ft.id AND ci.content_type = 2
+            WHERE c.id = ?
+              AND ci.id > ?
+              AND ci.id > c.read_up_to_item
+              AND ci.hide = 0
+              AND (
+                  (ci.content_type = 0 AND m.direction = 0) OR
+                  (ci.content_type = 2 AND ft.direction = 0)
+              )
+        """, (conversation_id, max_item_before))
+        if unread and unread['n'] > 0:
+            self.signals['message_received'].emit(self.account_id, contact_jid, False)
 
         if total_inserted > 0:
             if self.logger:

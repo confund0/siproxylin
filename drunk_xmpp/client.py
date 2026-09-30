@@ -349,7 +349,8 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             on_private_message_callback: Optional callback for received private messages (from_jid, body, is_encrypted, msg)
             on_message_error_callback: Optional callback for message errors (from_jid, to_jid, error_type, error_condition, error_text, origin_id)
             on_receipt_received_callback: Optional callback for delivery receipts (from_jid, message_id)
-            on_marker_received_callback: Optional callback for chat markers (from_jid, message_id, marker_type)
+            on_marker_received_callback: Optional callback for chat markers (from_jid, message_id, marker_type);
+                      marker_type 'displayed_own' is our own displayed marker from another device (from_jid = peer)
             on_server_ack_callback: Optional callback for server ACKs (stanza) - XEP-0198
             on_chat_state_callback: Optional callback for chat state notifications (from_jid, state) - XEP-0085
             on_bookmarks_received_callback: Optional callback for bookmarks sync (bookmarks_list) - XEP-0402
@@ -2065,6 +2066,18 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             return
 
         to_jid = actual_msg['to'].bare
+
+        # Our own displayed marker (XEP-0333) sent from another device: the
+        # peer's messages are read there. Pass it as 'displayed_own' with the peer's JID.
+        displayed = actual_msg.xml.find('{urn:xmpp:chat-markers:0}displayed')
+        if displayed is not None and displayed.get('id') and not actual_msg['body']:
+            self.logger.info(f"[MARKER] Own 'displayed' marker (other device) to {to_jid} for message {displayed.get('id')}")
+            if self.on_marker_received_callback:
+                try:
+                    self.on_marker_received_callback(to_jid, displayed.get('id'), 'displayed_own')
+                except Exception as e:
+                    self.logger.exception(f"Error in marker callback: {e}")
+            return
 
         # Build metadata object (similar to private message handler)
         metadata = MessageMetadata(
