@@ -12,7 +12,7 @@ import os
 import unittest
 from pathlib import Path
 
-os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')  # no display in tests
+os.environ['QT_QPA_PLATFORM'] = 'offscreen'  # no display in tests
 
 from PySide6.QtCore import qInstallMessageHandler
 from PySide6.QtWidgets import QApplication, QPushButton
