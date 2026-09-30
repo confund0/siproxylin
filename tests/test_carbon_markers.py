@@ -8,8 +8,9 @@ markers inside received carbons, MAM marker entries (mam.py), applying them
 in the MAM catch-up without storing them, and message_retry iterating the
 retrieve_history pages. Also our own displayed markers from other devices
 (sent carbons and MAM) and read_up_to_item, one notification per 1:1
-catch-up, MUC MAM OMEMO decryption for senders who left the room, and own
-undecryptable messages for the resend check (include_own_ids).
+catch-up, MUC MAM OMEMO decryption for senders who left the room, own
+undecryptable messages for the resend check (include_own_ids), and no
+second decryption of stored OMEMO messages in the catch-up (is_stored).
 
 No network, no PySide6: Qt is replaced by a small stub where needed.
 
@@ -43,6 +44,7 @@ _core = types.ModuleType('siproxylin.core')
 _core.__path__ = [str(Path(__file__).parent.parent / 'siproxylin' / 'core')]
 with mock.patch.dict(sys.modules, {'siproxylin.core': _core}):
     from siproxylin.core.barrels.messages import MessageBarrel
+    from siproxylin.core.barrels.muc import MucBarrel
 
 # message_retry imports PySide6 (not in the repo venv)
 _qtcore = types.ModuleType('PySide6.QtCore')
@@ -433,6 +435,93 @@ class MAMOwnIdsTests(unittest.TestCase):
         self.assertEqual([(e['own_undecryptable'], e['message'].get('id')) for e in entries], [(True, 'o2')])
 
 
+class MAMStoredTests(unittest.TestCase):
+    """is_stored: stored OMEMO messages are skipped before decryption."""
+
+    def peer_msg(self, body=ENC):
+        return stanza(f'<message xmlns="jabber:client" type="chat" from="{PEER}/phone" to="{OUR_JID}" id="p1">'
+                      f'<origin-id xmlns="urn:xmpp:sid:0" id="or1"/>{body}</message>')
+
+    def test_stored_encrypted_not_decrypted(self):
+        calls = []
+        entries, omemo = mam_pages_omemo(PEER, [('a1', self.peer_msg())], can_decrypt={PEER}, with_jid=PEER,
+                                         is_stored=lambda *ids: calls.append(ids) or True)
+        self.assertEqual(entries, [])
+        self.assertEqual(omemo.senders, [])
+        self.assertEqual(calls, [('a1', 'or1', 'p1')])
+
+    def test_not_stored_decrypted(self):
+        entries, omemo = mam_pages_omemo(PEER, [('a1', self.peer_msg())], can_decrypt={PEER}, with_jid=PEER,
+                                         is_stored=lambda *ids: False)
+        self.assertEqual(omemo.senders, [PEER])
+        self.assertEqual([e['body'] for e in entries], ['plain text'])
+
+    def test_without_is_stored_unchanged(self):
+        entries, omemo = mam_pages_omemo(PEER, [('a1', self.peer_msg())], can_decrypt={PEER}, with_jid=PEER)
+        self.assertEqual(omemo.senders, [PEER])
+        self.assertEqual([e['body'] for e in entries], ['plain text'])
+
+    def test_plaintext_and_markers_not_checked(self):
+        calls = []
+        marker = stanza(f'<message xmlns="jabber:client" from="{PEER}/phone" to="{OUR_JID}" id="d1">'
+                        '<displayed xmlns="urn:xmpp:chat-markers:0" id="c1"/></message>')
+        entries, _ = mam_pages_omemo(PEER, [('a1', self.peer_msg('<body>hi</body>')), ('a2', marker)],
+                                     with_jid=PEER, is_stored=lambda *ids: calls.append(ids) or True)
+        self.assertEqual(calls, [])
+        self.assertEqual(entries[0]['body'], 'hi')
+        self.assertEqual(entries[1]['marker_type'], 'displayed')
+
+    def test_muc_stored_not_decrypted(self):
+        calls = []
+        msg = stanza(f'<message xmlns="jabber:client" type="groupchat" from="{ROOM}/bob" id="g1">{ENC}</message>')
+        entries, omemo = mam_pages_omemo(ROOM, [('ra1', msg)], occupants={'bob': 'bob@example.net/x'},
+                                         can_decrypt={'bob@example.net'}, rooms={ROOM: {'nick': 'me'}},
+                                         is_stored=lambda *ids: calls.append(ids) or True)
+        self.assertEqual((entries, omemo.senders), ([], []))
+        self.assertEqual(calls, [('ra1', None, 'g1')])
+
+
+class StoredCheckTests(unittest.TestCase):
+    """The barrel is_stored checks follow the insert duplicate rules."""
+
+    def barrels(self, db):
+        msg = MessageBarrel.__new__(MessageBarrel)
+        muc = MucBarrel.__new__(MucBarrel)
+        for barrel in (msg, muc):
+            barrel.account_id = ACCOUNT
+            barrel.db = db
+        return msg, muc
+
+    def test_rules(self):
+        db = FakeDB()
+        db.execute("INSERT INTO message (account_id, counterpart_id, message_id, origin_id, stanza_id)"
+                   " VALUES (?, 1, 'm1', 'o1', 's1')", (ACCOUNT,))
+        db.execute("INSERT INTO file_transfer (account_id, counterpart_id, message_id, origin_id, stanza_id)"
+                   " VALUES (?, 2, 'fm', 'fo', 'fs')", (ACCOUNT,))
+        db.execute("INSERT INTO message (account_id, counterpart_id, message_id, origin_id, stanza_id)"
+                   " VALUES (2, 1, 'x1', 'x2', 'x3')")
+        cases = [
+            (('s1', None, None), True), ((None, 'o1', None), True), ((None, None, 'm1'), True),
+            (('fs', None, None), True), ((None, 'fo', None), True), ((None, None, 'fm'), True),
+            (('new', 'new', 'm1'), True),  # any one ID is enough, like the insert
+            (('m1', None, None), False),  # archive_id is compared with stanza_id only
+            (('x3', 'x2', 'x1'), False),  # other account
+            (('new', 'new', 'new'), False), ((None, None, None), False),
+        ]
+        for barrel in self.barrels(db):
+            for ids, expected in cases:
+                self.assertEqual(barrel._is_mam_message_stored(*ids), expected, (type(barrel).__name__, ids))
+
+    def test_catchup_passes_is_stored(self):
+        db = FakeDB()
+        barrel = MAMStoreTests.make_barrel(None, db)
+        barrel.signals = {'message_received': types.SimpleNamespace(emit=lambda *a: None)}
+        client = FakeClient([])
+        barrel.client.retrieve_history = client.retrieve_history
+        asyncio.run(barrel._retrieve_private_chat_history(PEER, 1, 1_790_000_000, None))
+        self.assertEqual(client.kwargs['is_stored'], barrel._is_mam_message_stored)
+
+
 class MAMMarkerEntryTests(unittest.TestCase):
 
     def test_peer_markers_become_entries_in_page_order(self):
@@ -625,6 +714,7 @@ class MessageRetryMAMTests(unittest.TestCase):
         self.assertTrue(found)
         self.assertEqual(client.kwargs['with_jid'], PEER)
         self.assertTrue(client.kwargs['include_own_ids'])
+        self.assertNotIn('is_stored', client.kwargs)  # own messages must come as entries
         found, client = self.check([[own]], jid=ROOM, rooms={ROOM: {}})
         self.assertTrue(found)
         self.assertIsNone(client.kwargs['with_jid'])

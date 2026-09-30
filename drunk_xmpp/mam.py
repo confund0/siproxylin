@@ -6,7 +6,7 @@ XEP-0313: Message Archive Management
 Provides methods for retrieving message history from the server archive.
 """
 
-from typing import List, Dict, Optional, AsyncGenerator
+from typing import List, Dict, Optional, AsyncGenerator, Callable
 from datetime import datetime
 from copy import copy
 from slixmpp.jid import JID
@@ -34,7 +34,8 @@ class MAMMixin:
         max_messages: Optional[int] = None,
         with_jid: Optional[str] = None,
         start_id: Optional[str] = None,
-        include_own_ids: bool = False
+        include_own_ids: bool = False,
+        is_stored: Optional[Callable[[Optional[str], Optional[str], Optional[str]], bool]] = None
     ) -> AsyncGenerator[List[Dict], None]:
         """
         Retrieve message history from server using MAM (XEP-0313).
@@ -54,6 +55,11 @@ class MAMMixin:
                 from this or another device) come as entries with 'own_undecryptable'
                 (for the resend check: they carry the message IDs). Callers that store
                 messages must not set it.
+            is_stored: Optional check, called as is_stored(archive_id, origin_id, message_id)
+                for each OMEMO message before it is decrypted. If it returns True, the
+                message is already stored and is skipped without decryption (OMEMO keys
+                work only once, so a second decryption fails). It must return True only
+                when the caller would drop the message as a duplicate.
 
         Yields:
             Pages (lists) of message dicts, each dict with keys:
@@ -158,6 +164,10 @@ class MAMMixin:
                     xep_0384 = self.plugin['xep_0384']
                     if xep_0384.is_encrypted(archived_msg):
                         is_encrypted = True
+                        # Already stored (e.g. the catch-up overlap): do not decrypt it again
+                        if is_stored and is_stored(archive_id or message_id, origin_id, message_id):
+                            self.logger.debug(f"Skipping stored MAM OMEMO message from {from_jid} [archive_id={archive_id}, origin_id={origin_id}, message_id={message_id}]")
+                            continue
                         # slixmpp_omemo finds the real JID of a groupchat sender only
                         # among the occupants now in the room. For a sender who left,
                         # take the real JID from the archive (muc#user item, rooms where
@@ -179,7 +189,6 @@ class MAMMixin:
                             body = decrypted_msg['body']
                             self.logger.debug(f"Decrypted MAM message from {from_jid} (device {device_info.device_id})")
                         except Exception as e:
-                            self.logger.error(f"Failed to decrypt MAM OMEMO message from {from_jid}: {e}")
                             body = "[Failed to decrypt OMEMO message]"
 
                             # Filter out MUC reflections from MAM archive:
@@ -209,7 +218,7 @@ class MAMMixin:
                                     if include_own_ids:
                                         page_buffer.append(self._own_undecryptable_entry(
                                             archived_msg, archive_id or message_id, sender_bare, timestamp))
-                                    self.logger.debug(f"Skipping MAM reflection (own encrypted message) in {jid} [archive_id={archive_id}, origin_id={origin_id}, message_id={message_id}, occupant_id={msg_occupant_id}]")
+                                    self.logger.debug(f"Skipping MAM reflection (own encrypted message, {e}) in {jid} [archive_id={archive_id}, origin_id={origin_id}, message_id={message_id}, occupant_id={msg_occupant_id}]")
                                     continue
                             else:
                                 # Filter out 1-1 carbons with failed decryption (same principle as MUC reflections)
@@ -221,8 +230,11 @@ class MAMMixin:
                                     if include_own_ids:
                                         page_buffer.append(self._own_undecryptable_entry(
                                             archived_msg, archive_id or message_id, sender_bare, timestamp))
-                                    self.logger.debug(f"Skipping MAM carbon (own encrypted message) from {from_jid} [archive_id={archive_id}, origin_id={origin_id}, message_id={message_id}]")
+                                    self.logger.debug(f"Skipping MAM carbon (own encrypted message, {e}) from {from_jid} [archive_id={archive_id}, origin_id={origin_id}, message_id={message_id}]")
                                     continue
+
+                            # Not our own message: a real decryption failure
+                            self.logger.error(f"Failed to decrypt MAM OMEMO message from {from_jid}: {e}")
 
                 # 1-1 receipt (XEP-0184) or displayed marker (XEP-0333) from the peer:
                 # pass it as a marker entry, so our messages (also from other devices)

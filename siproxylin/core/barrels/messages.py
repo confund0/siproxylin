@@ -296,6 +296,16 @@ class MessageBarrel:
 
         return False
 
+    def _is_mam_message_stored(self, archive_id: Optional[str], origin_id: Optional[str],
+                               message_id: Optional[str]) -> bool:
+        """
+        is_stored check for retrieve_history: True if the MAM message is already stored.
+
+        Same IDs and rules as the insert of MAM messages (archive_id is stored as stanza_id),
+        so a message is skipped only when the insert would drop it as a duplicate.
+        """
+        return self._check_message_duplicate(message_id, origin_id, archive_id)
+
     def _update_message_marked(self, message_id: Optional[str], origin_id: Optional[str],
                                stanza_id: Optional[str], marked: int):
         """
@@ -919,7 +929,8 @@ class MessageBarrel:
                     jid=contact_jid,
                     start=None,  # From beginning
                     max_messages=max_messages,
-                    with_jid=contact_jid
+                    with_jid=contact_jid,
+                    is_stored=self._is_mam_message_stored
                 ):
                     page_count += 1
                     if self.logger:
@@ -1231,7 +1242,8 @@ class MessageBarrel:
             jid=contact_jid,
             start=start_time,
             max_messages=max_messages,
-            with_jid=contact_jid  # Filter to this specific contact
+            with_jid=contact_jid,  # Filter to this specific contact
+            is_stored=self._is_mam_message_stored  # Do not decrypt stored OMEMO messages again
         ):
             page_count += 1
             if self.logger:

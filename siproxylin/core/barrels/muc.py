@@ -488,7 +488,8 @@ class MucBarrel:
             async for page in self.client.retrieve_history(
                 jid=room_jid,
                 start=start_time,
-                max_messages=max_messages
+                max_messages=max_messages,
+                is_stored=self._is_mam_message_stored  # Do not decrypt stored OMEMO messages again
             ):
                 page_count += 1
                 if self.logger:
@@ -663,6 +664,24 @@ class MucBarrel:
                 self.logger.error(f"Failed to retrieve MAM history for {room_jid}: {e}")
                 import traceback
                 self.logger.error(traceback.format_exc())
+
+    def _is_mam_message_stored(self, archive_id: Optional[str], origin_id: Optional[str],
+                               message_id: Optional[str]) -> bool:
+        """
+        is_stored check for retrieve_history: True if the MAM message is already stored.
+
+        Same rules as the duplicate check of insert_message_atomic and
+        insert_file_transfer_atomic (archive_id is stored as stanza_id), so a
+        message is skipped only when the insert would drop it as a duplicate.
+        """
+        for column, value in (('stanza_id', archive_id), ('origin_id', origin_id), ('message_id', message_id)):
+            if not value:
+                continue
+            for table in ('message', 'file_transfer'):
+                if self.db.fetchone(f"SELECT id FROM {table} WHERE account_id = ? AND {column} = ? LIMIT 1",
+                                    (self.account_id, value)):
+                    return True
+        return False
 
     async def catchup_muc_rooms(self, max_messages_per_room: Optional[int] = None):
         """
