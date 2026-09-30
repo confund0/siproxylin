@@ -116,6 +116,8 @@ class ContactListWidget(QWidget):
         # Enable context menu
         self.contact_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.contact_tree.customContextMenuRequested.connect(self._on_context_menu)
+        # A right click only opens the menu: it must not move the selection away from the open chat
+        self.contact_tree.viewport().installEventFilter(self)
 
         layout.addWidget(self.contact_tree, 1)  # Stretch factor 1
 
@@ -1095,6 +1097,15 @@ class ContactListWidget(QWidget):
         IMPORTANT: This ensures Enter/ESC go to the search field, not main window.
         Event filter intercepts events BEFORE they propagate to parent widgets.
         """
+        # Right click in the roster: open the context menu here and stop the press,
+        # so the selection stays on the open chat
+        if (obj is self.contact_tree.viewport()
+                and event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick)
+                and event.button() == Qt.RightButton):
+            if event.type() == QEvent.MouseButtonPress:
+                self._on_context_menu(event.position().toPoint())
+            return True
+
         if obj == self.search_box and event.type() == QEvent.KeyPress:
             key = event.key()
 
