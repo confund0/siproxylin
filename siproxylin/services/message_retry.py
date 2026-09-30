@@ -181,18 +181,21 @@ class MessageRetryHandler(QObject):
             # retrieve_history is an async generator: it yields pages.
             # include_own_ids: our own OMEMO messages cannot be decrypted, they come
             # as entries with the stanza only. 1:1: only the archive with this contact.
+            # is_stored: skip OMEMO messages with other IDs without decryption (their
+            # keys are used up; only the IDs are compared here).
             is_muc = counterpart_jid in xmpp_client.rooms
+            origin_id = msg['origin_id']
             history = xmpp_client.retrieve_history(
                 jid=counterpart_jid,
                 start=start_time,
                 end=end_time,
                 max_messages=50,
                 with_jid=None if is_muc else counterpart_jid,
-                include_own_ids=True
+                include_own_ids=True,
+                is_stored=lambda _archive_id, msg_origin_id, message_id: origin_id not in (msg_origin_id, message_id)
             )
 
             # Look for our origin_id in the results
-            origin_id = msg['origin_id']
             try:
                 async for page in history:
                     for archived_msg in page:

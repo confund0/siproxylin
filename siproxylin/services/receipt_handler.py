@@ -192,7 +192,8 @@ class ReceiptHandler:
         Handle our own displayed marker (XEP-0333) sent from another device.
         The peer's messages up to the marked one are read there, so move
         conversation.read_up_to_item up to the newest received item at or
-        before the marked item's time. It never goes down.
+        before the marked item's time, but not over the ID of a newer unread
+        received item. It never goes down.
 
         Args:
             account_id: Account ID
@@ -257,6 +258,30 @@ class ReceiptHandler:
                 (conv['id'], marked_item['time'], marked_item['time'], marked_item['id'])
             )
             max_id = row['max_id'] if row else None
+
+            # read_up_to_item is an ID threshold: stay below the lowest unread
+            # received item that is newer than the marked item (a live message
+            # can have a lower ID than older messages stored later by the catch-up)
+            newer = self.db.fetchone(
+                """
+                SELECT MIN(ci.id) AS min_id
+                FROM content_item ci
+                LEFT JOIN message m ON ci.foreign_id = m.id AND ci.content_type = 0
+                LEFT JOIN file_transfer ft ON ci.foreign_id = ft.id AND ci.content_type = 2
+                WHERE ci.conversation_id = ?
+                  AND (
+                      (ci.content_type = 0 AND m.direction = 0) OR
+                      (ci.content_type = 2 AND ft.direction = 0)
+                  )
+                  AND (ci.time > ? OR (ci.time = ? AND ci.id > ?))
+                  AND ci.id > ?
+                """,
+                (conv['id'], marked_item['time'], marked_item['time'], marked_item['id'],
+                 conv['read_up_to_item'])
+            )
+            if max_id is not None and newer and newer['min_id'] is not None:
+                max_id = min(max_id, newer['min_id'] - 1)
+
             if max_id is None or max_id <= conv['read_up_to_item']:
                 logger.debug(f"Own displayed marker: {message_id} already read")
                 return False

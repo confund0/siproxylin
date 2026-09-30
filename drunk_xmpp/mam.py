@@ -57,9 +57,9 @@ class MAMMixin:
                 messages must not set it.
             is_stored: Optional check, called as is_stored(archive_id, origin_id, message_id)
                 for each OMEMO message before it is decrypted. If it returns True, the
-                message is already stored and is skipped without decryption (OMEMO keys
-                work only once, so a second decryption fails). It must return True only
-                when the caller would drop the message as a duplicate.
+                message is skipped without decryption (OMEMO keys work only once, so a
+                second decryption fails). It must return True only when the caller does
+                not need the message (e.g. it would drop it as a duplicate).
 
         Yields:
             Pages (lists) of message dicts, each dict with keys:

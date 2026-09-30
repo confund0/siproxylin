@@ -1238,44 +1238,50 @@ class MessageBarrel:
         # Retrieve history from MAM - yields pages
         total_inserted = 0
         page_count = 0
-        async for page in self.client.retrieve_history(
-            jid=contact_jid,
-            start=start_time,
-            max_messages=max_messages,
-            with_jid=contact_jid,  # Filter to this specific contact
-            is_stored=self._is_mam_message_stored  # Do not decrypt stored OMEMO messages again
-        ):
-            page_count += 1
-            if self.logger:
-                self.logger.debug(f"Processing catchup page {page_count} with {len(page)} messages for {contact_jid}")
+        total_received = 0
+        try:
+            async for page in self.client.retrieve_history(
+                jid=contact_jid,
+                start=start_time,
+                max_messages=max_messages,
+                with_jid=contact_jid,  # Filter to this specific contact
+                is_stored=self._is_mam_message_stored  # Do not decrypt stored OMEMO messages again
+            ):
+                page_count += 1
+                if self.logger:
+                    self.logger.debug(f"Processing catchup page {page_count} with {len(page)} messages for {contact_jid}")
 
-            # Process and commit this page
-            inserted_count, received_count, markers_applied = await self._process_and_store_mam_messages(page, contact_jid, jid_id)
-            total_inserted += inserted_count
+                # Process and commit this page
+                inserted_count, received_count, markers_applied = await self._process_and_store_mam_messages(page, contact_jid, jid_id)
+                total_inserted += inserted_count
+                total_received += received_count
 
-            # Refresh the view after each page (no notification yet): our own
-            # displayed marker from another device can come in a later page.
-            if inserted_count > 0 or markers_applied > 0:
-                self.signals['message_received'].emit(self.account_id, contact_jid, True)
-
-        # Notify once, only if received items of this run are still unread
-        unread = self.db.fetchone("""
-            SELECT COUNT(ci.id) AS n
-            FROM content_item ci
-            JOIN conversation c ON ci.conversation_id = c.id
-            LEFT JOIN message m ON ci.foreign_id = m.id AND ci.content_type = 0
-            LEFT JOIN file_transfer ft ON ci.foreign_id = ft.id AND ci.content_type = 2
-            WHERE c.id = ?
-              AND ci.id > ?
-              AND ci.id > c.read_up_to_item
-              AND ci.hide = 0
-              AND (
-                  (ci.content_type = 0 AND m.direction = 0) OR
-                  (ci.content_type = 2 AND ft.direction = 0)
-              )
-        """, (conversation_id, max_item_before))
-        if unread and unread['n'] > 0:
-            self.signals['message_received'].emit(self.account_id, contact_jid, False)
+                # Refresh the view after each page (no notification yet): our own
+                # displayed marker from another device can come in a later page.
+                if inserted_count > 0 or markers_applied > 0:
+                    self.signals['message_received'].emit(self.account_id, contact_jid, True)
+        finally:
+            # Notify once, only if this run stored received items that are still unread
+            # (a live message stored meanwhile was notified already). Also after an
+            # error on a later page: the stored pages still count.
+            if total_received > 0:
+                unread = self.db.fetchone("""
+                    SELECT COUNT(ci.id) AS n
+                    FROM content_item ci
+                    JOIN conversation c ON ci.conversation_id = c.id
+                    LEFT JOIN message m ON ci.foreign_id = m.id AND ci.content_type = 0
+                    LEFT JOIN file_transfer ft ON ci.foreign_id = ft.id AND ci.content_type = 2
+                    WHERE c.id = ?
+                      AND ci.id > ?
+                      AND ci.id > c.read_up_to_item
+                      AND ci.hide = 0
+                      AND (
+                          (ci.content_type = 0 AND m.direction = 0) OR
+                          (ci.content_type = 2 AND ft.direction = 0)
+                      )
+                """, (conversation_id, max_item_before))
+                if unread and unread['n'] > 0:
+                    self.signals['message_received'].emit(self.account_id, contact_jid, False)
 
         if total_inserted > 0:
             if self.logger:

@@ -194,17 +194,27 @@ class ReceiptHandlerTests(unittest.TestCase):
 
     def test_own_displayed_moves_read_up_to_by_time(self):
         # Item IDs are not in time order (catch-up stores older messages later)
-        i1 = self.db.add(0, 300, 0, message_id='p3')
-        i2 = self.db.add(0, 100, 0, message_id='p1')
+        i1 = self.db.add(0, 100, 0, message_id='p1')
+        i2 = self.db.add(0, 300, 0, message_id='p3')
         i3 = self.db.add(0, 200, 0, message_id='p2')
         self.db.add(1, 250, 1, message_id='c1')
-        self.assertTrue(self.rh.on_own_displayed_marker(ACCOUNT, PEER, 'p2'))
+        self.assertTrue(self.rh.on_own_displayed_marker(ACCOUNT, PEER, 'p1'))
+        self.assertEqual(self.db.read_up_to(), i1)
+        self.assertTrue(self.rh.on_own_displayed_marker(ACCOUNT, PEER, 'p3'))
         self.assertEqual(self.db.read_up_to(), i3)
-        self.assertFalse(self.rh.on_own_displayed_marker(ACCOUNT, PEER, 'p3'))
-        self.assertEqual(self.db.read_up_to(), i3)  # i3 > i1, never lowered
-        self.assertFalse(self.rh.on_own_displayed_marker(ACCOUNT, PEER, 'p1'))
-        self.assertEqual(self.db.read_up_to(), i3)
-        self.assertLess(i1, i2)
+        self.assertFalse(self.rh.on_own_displayed_marker(ACCOUNT, PEER, 'p2'))
+        self.assertEqual(self.db.read_up_to(), i3)  # never lowered
+        self.assertLess(i2, i3)
+
+    def test_own_displayed_stops_below_newer_item_with_lower_id(self):
+        # Live message p3 stored before the catch-up stored the older p1, p2
+        i3 = self.db.add(0, 300, 0, message_id='p3')
+        self.db.add(0, 100, 0, message_id='p1')
+        self.db.add(0, 200, 0, message_id='p2')
+        self.rh.on_own_displayed_marker(ACCOUNT, PEER, 'p2')
+        self.assertLess(self.db.read_up_to(), i3)  # p3 stays unread
+        self.assertTrue(self.rh.on_own_displayed_marker(ACCOUNT, PEER, 'p3'))
+        self.assertEqual(self.db.read_up_to(), i3 + 2)
 
     def test_own_displayed_matches_file_and_origin_id(self):
         f1 = self.db.add_file(0, 100, message_id='f1')
@@ -624,7 +634,7 @@ class MAMStoreTests(unittest.TestCase):
 
     def run_catchup(self, db, pages):
         barrel = self.make_barrel(db)
-        emits = []
+        emits = self.emits = []
         barrel.signals = {'message_received': types.SimpleNamespace(emit=lambda *a: emits.append(a))}
         barrel.client.retrieve_history = FakeClient(pages).retrieve_history
         asyncio.run(barrel._retrieve_private_chat_history(PEER, 1, 1_790_000_000, None))
@@ -665,6 +675,39 @@ class MAMStoreTests(unittest.TestCase):
         emits = self.run_catchup(db, [page1, page2])
         self.assertEqual(emits, [(ACCOUNT, PEER, True), (ACCOUNT, PEER, False)])
         self.assertLess(old, db.fetchone("SELECT MAX(id) AS i FROM content_item")['i'])
+
+    def test_catchup_notifies_after_error_on_later_page(self):
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        db = FakeDB()
+        ts = datetime(2026, 9, 29, 10, 0, tzinfo=timezone.utc)
+        incoming = stanza(f'<message xmlns="jabber:client" from="{PEER}/phone" to="{OUR_JID}" id="p1">'
+                          '<body>hello</body></message>')
+
+        def pages():
+            yield [{'jid': PEER, 'body': 'hello', 'timestamp': ts, 'is_encrypted': False,
+                    'archive_id': 'a1', 'message': incoming}]
+            raise RuntimeError('MAM query timed out')
+
+        with self.assertRaises(RuntimeError):
+            self.run_catchup(db, pages())
+        self.assertEqual(self.emits, [(ACCOUNT, PEER, True), (ACCOUNT, PEER, False)])
+
+    def test_catchup_no_second_notify_for_live_message(self):
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        db = FakeDB()
+        ts = datetime(2026, 9, 29, 10, 0, tzinfo=timezone.utc)
+        own = stanza(f'<message xmlns="jabber:client" from="{OUR_JID}/other" to="{PEER}" id="c1">'
+                     '<body>hi</body></message>')
+
+        def pages():
+            # A live message from the peer is stored (and notified) during the catch-up
+            db.add(0, 1_790_000_100, 0, message_id='live1')
+            yield [{'jid': OUR_JID, 'body': 'hi', 'timestamp': ts, 'is_encrypted': False,
+                    'archive_id': 'a1', 'message': own}]
+
+        self.assertEqual(self.run_catchup(db, pages()), [(ACCOUNT, PEER, True)])
 
     def test_live_own_displayed_marker(self):
         logging.disable(logging.CRITICAL)
@@ -714,7 +757,12 @@ class MessageRetryMAMTests(unittest.TestCase):
         self.assertTrue(found)
         self.assertEqual(client.kwargs['with_jid'], PEER)
         self.assertTrue(client.kwargs['include_own_ids'])
-        self.assertNotIn('is_stored', client.kwargs)  # own messages must come as entries
+        # Only a possible match is decrypted (or comes as own entry); others are skipped
+        is_stored = client.kwargs['is_stored']
+        self.assertFalse(is_stored('a1', 'o1', 'x1'))
+        self.assertFalse(is_stored('a1', None, 'o1'))
+        self.assertTrue(is_stored('a2', 'x2', 'x2'))
+        self.assertTrue(is_stored('a3', None, None))
         found, client = self.check([[own]], jid=ROOM, rooms={ROOM: {}})
         self.assertTrue(found)
         self.assertIsNone(client.kwargs['with_jid'])
