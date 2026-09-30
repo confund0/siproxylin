@@ -522,3 +522,10 @@ QScrollBar::add-line:horizontal,
 QScrollBar::sub-line:horizontal {
     width: 0px;
 }
+
+/* Scroll to bottom button while the chat has unread messages */
+QPushButton#scrollToBottomButton[unread="true"] {
+    background-color: #fe8019;
+    color: #282828;
+    border: 1px solid #fabd2f;
+}

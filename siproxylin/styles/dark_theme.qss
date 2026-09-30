@@ -566,9 +566,16 @@ QPushButton#scrollToBottomButton {
 
 QPushButton#scrollToBottomButton:hover {
     background-color: #4a8a4a;
-    border: 1px solid: #5aa55a;
+    border: 1px solid #5aa55a;
 }
 
 QPushButton#scrollToBottomButton:pressed {
     background-color: #2d5b2d;
+}
+
+/* Scroll to bottom button while the chat has unread messages */
+QPushButton#scrollToBottomButton[unread="true"] {
+    background-color: #ff9800;
+    color: #1e1e1e;
+    border: 1px solid #ffb74d;
 }

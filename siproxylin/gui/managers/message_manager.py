@@ -45,6 +45,18 @@ class MessageManager:
 
         logger.debug("MessageManager initialized")
 
+    def _show_sent_item(self, account_id: int, jid: str):
+        """
+        Show our new message or file in the chat view.
+
+        Its chat is open: jump to the bottom of the live view (also from a search view).
+        Other chat open: normal refresh.
+        """
+        if self.chat_view.current_account_id == account_id and self.chat_view.current_jid == jid:
+            self.chat_view.return_to_live()
+        else:
+            self.chat_view.refresh()
+
     def on_send_message(self, account_id: int, jid: str, message: str, encrypted: bool):
         """
         Handle send message signal from chat view.
@@ -122,8 +134,8 @@ class MessageManager:
 
         logger.debug(f"Message stored in DB (id={db_message_id}, will attempt send)")
 
-        # Refresh chat view immediately (shows message with hourglass)
-        self.chat_view.refresh(send_markers=False)  # Just show our sent message, don't send markers
+        # Show our message immediately (with hourglass): jump to bottom if its chat is open
+        self._show_sent_item(account.account_id, jid)
 
         # Check if account is connected before attempting to send
         if not account.is_connected():
@@ -265,8 +277,8 @@ class MessageManager:
 
         logger.debug(f"File transfer record created (id={file_transfer_id}, state=uploading)")
 
-        # Refresh chat view immediately (shows file with uploading state)
-        QTimer.singleShot(0, lambda: self.chat_view.refresh(send_markers=False))
+        # Show the file immediately (uploading state): jump to bottom if its chat is open
+        QTimer.singleShot(0, lambda: self._show_sent_item(account.account_id, jid))
 
         try:
             logger.debug(f"Starting file upload: {file_path} to {jid} (encrypted={encrypted})")
@@ -295,7 +307,7 @@ class MessageManager:
             logger.debug(f"✓ File '{filename}' sent to {jid} (id={file_transfer_id}, origin_id={message_id})")
 
             # Refresh to update state indicator
-            QTimer.singleShot(0, lambda: self.chat_view.refresh(send_markers=False))
+            QTimer.singleShot(0, lambda: self.chat_view.refresh())
 
         except Exception as e:
             error_msg = str(e)
@@ -310,7 +322,7 @@ class MessageManager:
             self.db.commit()
 
             # Refresh to show error state
-            QTimer.singleShot(0, lambda: self.chat_view.refresh(send_markers=False))
+            QTimer.singleShot(0, lambda: self.chat_view.refresh())
 
             # Show error dialog safely using QTimer to call from main thread
             QTimer.singleShot(0, lambda: QMessageBox.critical(
@@ -375,7 +387,7 @@ class MessageManager:
             self.db.commit()
 
             # Refresh chat view to show edited message
-            QTimer.singleShot(0, lambda: self.chat_view.refresh(send_markers=False))
+            QTimer.singleShot(0, lambda: self.chat_view.refresh())
 
             # Update tracked message body for future edits
             self.chat_view.track_sent_message(message_id, new_body, encrypted)
@@ -492,8 +504,8 @@ class MessageManager:
 
         logger.debug(f"Reply stored in DB (id={db_message_id}, will attempt send)")
 
-        # Refresh chat view immediately (shows reply with hourglass)
-        QTimer.singleShot(0, lambda: self.chat_view.refresh(send_markers=False))
+        # Show our reply immediately (with hourglass): jump to bottom if its chat is open
+        QTimer.singleShot(0, lambda: self._show_sent_item(account.account_id, jid))
 
         # Check if account is connected before attempting to send
         if not account.is_connected():
@@ -530,7 +542,7 @@ class MessageManager:
             self.db.commit()
 
             # Refresh to show error state
-            QTimer.singleShot(0, lambda: self.chat_view.refresh(send_markers=False))
+            QTimer.singleShot(0, lambda: self.chat_view.refresh())
 
             # Show error dialog safely using QTimer
             QTimer.singleShot(0, lambda: QMessageBox.critical(

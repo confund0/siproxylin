@@ -402,7 +402,7 @@ class ContextMenuManager:
                     account.send_reaction(current_jid, message_id, emoji)
 
                     # Refresh chat view to show reaction immediately
-                    self.parent.refresh(send_markers=False)
+                    self.parent.refresh()
                 except Exception as e:
                     logger.error(f"Failed to send reaction: {e}")
                     import traceback
@@ -419,7 +419,7 @@ class ContextMenuManager:
                 account.remove_reaction(current_jid, message_id)
 
                 # Refresh chat view to show change immediately
-                self.parent.refresh(send_markers=False)
+                self.parent.refresh()
             except Exception as e:
                 logger.error(f"Failed to remove reaction: {e}")
                 import traceback

@@ -74,7 +74,7 @@ class ChatViewWidget(QWidget):
         self._marker_refresh_timer = QTimer(self)
         self._marker_refresh_timer.setSingleShot(True)
         self._marker_refresh_timer.setInterval(250)
-        self._marker_refresh_timer.timeout.connect(lambda: self.refresh(send_markers=False))
+        self._marker_refresh_timer.timeout.connect(self.refresh)
 
         # Setup UI - QStackedWidget for view modes
         main_layout = QVBoxLayout(self)
@@ -117,7 +117,7 @@ class ChatViewWidget(QWidget):
         # Message display widget (manager for message area, model, delegate)
         self.message_widget = MessageDisplayWidget(self.db, self.account_manager, chat_page)
 
-        # Pass MainWindow reference for polling control (Phase 2: smart polling)
+        # Pass MainWindow reference (window active state for the read state)
         self.message_widget.main_window = self.parent()
 
         # Pass message_widget reference to header for search highlight management
@@ -415,8 +415,9 @@ class ChatViewWidget(QWidget):
         # Update input placeholder with shield indicator (after OMEMO capability is determined)
         self._update_input_placeholder()
 
-        # Send displayed markers for received messages (chat opened)
-        self.message_widget._send_displayed_markers()
+        # Send displayed markers for received messages (chat opened), only if the user sees them.
+        # Window not active: activation marks later (MainWindow.changeEvent)
+        self.message_widget.mark_read_if_seen()
 
         # Input enable/disable state already set by update_blocked_status() (lines 507, 511)
         # Don't unconditionally enable here - it would override blocked state
@@ -431,16 +432,14 @@ class ChatViewWidget(QWidget):
         # Focus input field for immediate typing (safe even if disabled)
         self.input_field.setFocus()
 
-    def refresh(self, send_markers: bool = False):
+    def refresh(self):
         """
         Refresh the message display.
 
-        Args:
-            send_markers: If True, send displayed markers for received messages.
-                         Should only be True when opening chat or receiving new message,
-                         NOT during polling refresh for receipt updates.
+        Displayed markers are sent only if the user sees the newest messages
+        (MessageDisplayWidget.mark_read_if_seen).
         """
-        # logger.debug(f"refresh() called: account={self.current_account_id}, jid={self.current_jid}, send_markers={send_markers}")
+        # logger.debug(f"refresh() called: account={self.current_account_id}, jid={self.current_jid}")
 
         # This refresh also covers a waiting delayed refresh
         self._marker_refresh_timer.stop()
@@ -451,7 +450,18 @@ class ChatViewWidget(QWidget):
             return
 
         # Delegate to message widget
-        self.message_widget.refresh(send_markers)
+        self.message_widget.refresh()
+
+    def return_to_live(self):
+        """Jump to the bottom of the live view (own message sent); marks as read if seen."""
+        # The reload also covers a waiting delayed refresh
+        self._marker_refresh_timer.stop()
+
+        # Don't refresh if not on chat page (e.g., on welcome page)
+        if self.stack.currentIndex() != 1:
+            return
+
+        self.message_widget.return_to_live()
 
     def refresh_later(self):
         """
@@ -1193,10 +1203,6 @@ class ChatViewWidget(QWidget):
                     return True  # Consume the event
 
         return super().eventFilter(obj, event)
-
-    def _is_near_bottom(self, threshold=100):
-        """Check if scroll position is near bottom (delegates to ScrollManager)."""
-        return self.scroll_manager._is_near_bottom(threshold)
 
     def resizeEvent(self, event):
         """Handle resize to reposition scroll button."""

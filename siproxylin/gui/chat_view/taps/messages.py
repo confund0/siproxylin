@@ -159,10 +159,13 @@ class MessageDisplayWidget(QObject):
         self.mam_loading_jids = set()    # Set of JIDs currently loading MAM history
         self.mam_queried_jids = set()    # Set of account:jid keys already queried (even if empty)
 
-        # Zone tracking for smart polling control (Phase 2)
-        self.in_live_zone = True         # True = live zone (>50% scroll), False = history zone (<=50%)
-        self.zone_locked = False         # When True, prevent auto-zone changes (e.g., during search)
-        self.main_window = None          # Reference to MainWindow for polling control
+        # View state (read state and reloads)
+        self.view_mode = 'live'          # 'live' = newest messages, 'search' = messages around a search result
+        self._live_stale = False         # A refresh was skipped while scrolled up and the DB has newer items
+        self._was_at_bottom = True       # Last known "at bottom" state (to detect arrival at bottom)
+        self._reloading = False          # Full reload in progress: ignore scroll signals
+        self._loaded_max_item_id = 0     # Highest content_item ID of the last full load
+        self.main_window = None          # Reference to MainWindow (window active state)
 
         # Setup UI
         self._setup_ui()
@@ -187,9 +190,11 @@ class MessageDisplayWidget(QObject):
         self.message_delegate = MessageBubbleDelegate(theme_name=theme_manager.current_theme, db=self.db)
         self.message_area.setItemDelegate(self.message_delegate)
 
-        # Connect scrollbar to detect when user scrolls to top (infinite scroll)
+        # Connect scrollbar to detect when user scrolls to top (infinite scroll) or to bottom
         scrollbar = self.message_area.verticalScrollBar()
         scrollbar.valueChanged.connect(self._on_scroll_changed)
+        # Range changes too: a resize can make the content fit (= at bottom)
+        scrollbar.rangeChanged.connect(self._check_reached_bottom)
 
         # Connect click handler for image viewing
         self.message_area.clicked.connect(self._on_message_clicked)
@@ -204,19 +209,22 @@ class MessageDisplayWidget(QObject):
 
     def _on_scroll_changed(self, value):
         """
-        Handle scroll position changes to trigger infinite scroll and zone detection.
+        Handle scroll position changes to trigger infinite scroll and to detect arrival at bottom.
 
         When user scrolls near the top, load more older messages.
-        Zone detection controls polling: disable when viewing history, enable when at bottom.
+        When user scrolls down to the bottom (live view), load new messages if needed and mark as read.
         """
+        if self._reloading:
+            return
+
         scrollbar = self.message_area.verticalScrollBar()
 
-        # Calculate scroll percentage (used for both infinite scroll and zone detection)
+        # Calculate scroll percentage (used for infinite scroll)
         max_value = scrollbar.maximum()
         if max_value > 0:
             percentage = (value / max_value) * 100
         else:
-            percentage = 100  # No scrollbar = at bottom = live zone
+            percentage = 100  # No scrollbar = all content fits
 
         # Debug logging for scroll position
         # logger.debug(f"Scroll: value={value}, max={max_value}, pct={percentage:.1f}%")
@@ -235,28 +243,62 @@ class MessageDisplayWidget(QObject):
                 self.last_load_time = now
                 self._load_more_messages()
 
-        # 2. Zone detection: Calculate scroll percentage for polling control
-        # Live zone = > 50% (near bottom), History zone = <= 50% (scrolled up)
-        # BUT: Only if zone is not locked (locked during search views)
-        if not self.zone_locked:
-            in_live_zone = (percentage > 50)
+        # 2. Arrival at bottom
+        self._check_reached_bottom()
 
-            # Debug logging for zone detection
-            # logger.debug(f"Zone check: pct={percentage:.1f}%, in_live={in_live_zone}, was_live={self.in_live_zone}")
+    def _check_reached_bottom(self, *args):
+        """
+        Detect arrival at bottom in the live view (scroll or range change).
 
-            # Detect zone changes
-            if in_live_zone != self.in_live_zone:
-                self.in_live_zone = in_live_zone
-                zone_name = "LIVE" if in_live_zone else "HISTORY"
-                logger.info(f"Zone changed: {zone_name} (scroll position: {percentage:.1f}%)")
+        The reload and the markers run on the next event loop turn, not inside the scroll signal.
+        """
+        if self._reloading or not self.scroll_manager:
+            return
+        at_bottom = self.scroll_manager.is_at_bottom()
+        if at_bottom and not self._was_at_bottom and self.view_mode == 'live':
+            QTimer.singleShot(0, self._on_reached_bottom)
+        self._was_at_bottom = at_bottom
 
-                # Control polling via MainWindow
-                if self.main_window:
-                    self.main_window.set_chat_polling_enabled(in_live_zone)
-                else:
-                    logger.warning("Cannot control polling - main_window reference is None!")
+    def _on_reached_bottom(self):
+        """User is at bottom of the live view: load newer items if some are missing, then mark as read."""
+        if self.view_mode != 'live' or not self.scroll_manager or not self.scroll_manager.is_at_bottom():
+            return
+        if self._live_stale or self._db_has_newer_items():
+            # refresh() at bottom reloads and marks
+            self.refresh()
         else:
-            logger.debug(f"Zone locked, ignoring scroll position {percentage:.1f}%")
+            self.mark_read_if_seen()
+
+    def user_sees_newest(self):
+        """
+        Check if the user can see the newest messages of the open chat.
+
+        True only in the live view with all new items loaded, at bottom,
+        and with the main window active and not minimized.
+        """
+        if self.view_mode != 'live' or self._live_stale:
+            return False
+        if not self.scroll_manager or not self.scroll_manager.is_at_bottom():
+            return False
+        if not self.main_window:
+            return False
+        return self.main_window.isActiveWindow() and not self.main_window.isMinimized()
+
+    def mark_read_if_seen(self):
+        """
+        Send displayed markers (and clear the unread state) if the user sees the newest messages.
+
+        The only GUI entry point for markers. Repeated calls send nothing new.
+        """
+        if self.current_account_id and self.current_jid and self.user_sees_newest():
+            self._send_displayed_markers()
+        self._update_unread_button()
+
+    def _update_unread_button(self):
+        """Colour the scroll-to-bottom button while the chat has unread messages."""
+        if self.scroll_manager and self.current_conversation_id:
+            unread = self.db.get_unread_count_for_conversation(self.current_conversation_id)
+            self.scroll_manager.set_unread(unread > 0)
 
     def load_messages(self, account_id: int, jid: str, is_muc: bool, conversation_id: int):
         """
@@ -275,8 +317,31 @@ class MessageDisplayWidget(QObject):
 
         logger.debug(f"load_messages: account={account_id}, jid={jid}, is_muc={is_muc}, conv_id={conversation_id}")
 
+        # A chat always opens in the live view at bottom (also after a search view)
+        self._clear_highlight_only()
+        self.view_mode = 'live'
+
         # Load and display messages
-        self._load_messages()
+        self._reload_live()
+
+    def _reload_live(self):
+        """
+        Full reload of the newest messages and scroll to bottom.
+
+        Scroll signals are ignored meanwhile, so the reload does not trigger
+        load-more or a false arrival at bottom.
+        """
+        self.message_delegate.clear_reaction_cache()
+        self._reloading = True
+        try:
+            self._load_messages()
+            self.message_area.scrollToBottom()
+        finally:
+            self._reloading = False
+        self._live_stale = False
+        self._was_at_bottom = True
+        if self.scroll_manager:
+            self.scroll_manager.update_button()
 
     def _load_messages(self, before_time=None):
         """
@@ -290,9 +355,6 @@ class MessageDisplayWidget(QObject):
             logger.debug("_load_messages: No account or JID set")
             return
 
-        # Check if we were near bottom before reload
-        was_near_bottom = self.scroll_manager._is_near_bottom()
-
         # Clear existing messages and caches (only on initial load, not when loading more)
         if before_time is None:
             self.message_model.clear()
@@ -301,6 +363,7 @@ class MessageDisplayWidget(QObject):
             self.has_more_messages = True
             self.total_loaded_count = 0
             self.last_separator_date = None  # Reset separator tracking
+            self._loaded_max_item_id = 0
 
         # Update delegate with current account for reactions
         self.message_delegate.set_account(self.current_account_id)
@@ -550,6 +613,10 @@ class MessageDisplayWidget(QObject):
             # Update total count
             self.total_loaded_count += len(rows)
 
+            # Highest item ID of a full load (to find newer items in the DB later)
+            if before_time is None:
+                self._loaded_max_item_id = max(row['ci_id'] for row in rows)
+
             # Check if there might be more messages
             if len(rows) < 100:
                 self.has_more_messages = False
@@ -559,10 +626,6 @@ class MessageDisplayWidget(QObject):
         else:
             self.has_more_messages = False
             logger.debug("No content items loaded")
-
-        # Only auto-scroll if we were near bottom before (and this is not a load-more operation)
-        if was_near_bottom and before_time is None:
-            self.message_area.scrollToBottom()
 
         # logger.debug(f"Loaded {len(rows)} content items")
 
@@ -983,40 +1046,52 @@ class MessageDisplayWidget(QObject):
             import traceback
             logger.error(traceback.format_exc())
 
-    def refresh(self, send_markers: bool = False):
+    def refresh(self):
         """
         Refresh the message display.
 
-        Args:
-            send_markers: If True, send displayed markers for received messages.
-                         Should only be True when opening chat or receiving new message,
-                         NOT during polling refresh for receipt updates.
+        Live view at bottom: full reload, stay at bottom and mark as read if the user sees it.
+        Scrolled up or search view: update loaded rows in place only (file states and reactions),
+        so the loaded history and the scroll position stay.
         """
-        # logger.debug(f"refresh() called: account={self.current_account_id}, jid={self.current_jid}, send_markers={send_markers}")
-        if self.current_account_id and self.current_jid:
-            # Skip refresh when in history zone (user viewing old messages)
-            # This preserves loaded history and prevents scroll jumps
-            if not self.in_live_zone:
-                # No full reload here, but file rows can change state (download done or failed)
-                logger.debug("Skipping refresh (in history zone), updating file rows only")
-                self._update_file_rows()
-                return
-
-            # Clear reaction cache so reactions are re-queried from DB
-            self.message_delegate.clear_reaction_cache()
-            self._load_messages()
-            # Only send markers when explicitly requested (chat open or new message)
-            if send_markers:
-                self._send_displayed_markers()
-        else:
+        if not (self.current_account_id and self.current_jid):
             logger.warning("refresh() called but no active conversation")
+            return
+
+        if self.view_mode == 'live' and self.scroll_manager and self.scroll_manager.is_at_bottom():
+            self._reload_live()
+            self.mark_read_if_seen()
+            return
+
+        # No full reload here, but file rows can change state (download done or failed)
+        self._update_file_rows()
+        # Clear reaction cache so reactions are re-queried from DB on the next paint
+        self.message_delegate.clear_reaction_cache()
+        self.message_area.viewport().update()
+
+        # Live view scrolled up: the model misses newer items; reload when the user comes back to bottom
+        if self.view_mode == 'live' and not self._live_stale and self._db_has_newer_items():
+            self._live_stale = True
+            logger.debug("Newer items in DB while scrolled up, reload at bottom")
+        self._update_unread_button()
+
+    def _db_has_newer_items(self):
+        """Check if the DB has an item of this chat with a higher ID than the last full load."""
+        if not self.current_conversation_id:
+            return True  # Unknown: reload at bottom to be safe
+        row = self.db.fetchone("""
+            SELECT MAX(id) AS max_id FROM content_item
+            WHERE conversation_id = ? AND hide = 0
+        """, (self.current_conversation_id,))
+        max_id = row['max_id'] if row else None
+        return max_id is not None and max_id > self._loaded_max_item_id
 
     def _update_file_rows(self):
         """
         Update file rows in the model from the database, without a full reload.
 
         Only rows that are not complete (state pending, downloading or failed)
-        can change. Used when the view is in the history zone or in a search view.
+        can change. Used when the view is scrolled up or in a search view.
         """
         states = (MessageBubbleDelegate.FILE_STATE_PENDING,
                   MessageBubbleDelegate.FILE_STATE_DOWNLOADING,
@@ -1097,6 +1172,9 @@ class MessageDisplayWidget(QObject):
         self.current_jid = None
         self.current_conversation_id = None
         self.current_is_muc = False
+        self._clear_highlight_only()
+        self.view_mode = 'live'
+        self._live_stale = False
         self.message_model.clear()
 
     def load_around_message(self, content_item_id, context=50):
@@ -1216,6 +1294,10 @@ class MessageDisplayWidget(QObject):
 
         logger.info(f"Found {len(rows)} messages around target (context={context})")
 
+        # Search view: refresh updates rows in place only, arrival at bottom does nothing
+        self.view_mode = 'search'
+        self._live_stale = False
+
         # Clear model and populate with the windowed messages
         # This replaces the conversation view with just the search context
         self.message_model.clear()
@@ -1224,9 +1306,15 @@ class MessageDisplayWidget(QObject):
         # Process and add rows to model (same logic as _load_messages)
         self._populate_model_with_rows(rows)
 
-        # Enter HISTORY zone to disable polling (we're viewing old messages, not live)
-        # Lock the zone so scroll events don't override this
-        self._lock_zone_to_history()
+        # Load-more state for this view: older messages load before the oldest row (no gap)
+        target_time = next((row['time'] for row in rows if row['ci_id'] == content_item_id), rows[0]['time'])
+        self.oldest_loaded_time = rows[0]['time']
+        self.has_more_messages = sum(1 for row in rows if row['time'] < target_time) >= context
+        self.total_loaded_count = len(rows)
+
+        # Button is always shown in a search view
+        if self.scroll_manager:
+            self.scroll_manager.update_button()
 
         # Scroll to target content_item_id and highlight it
         # Need to find the row index in model that has this content_item_id
@@ -1234,6 +1322,9 @@ class MessageDisplayWidget(QObject):
 
         # Defer scroll to next event loop to ensure model is fully populated
         def scroll_to_target():
+            # The user left the search view within the delay (button, ESC, chat switch)
+            if self.view_mode != 'search':
+                return
             target_index = None
 
             # Search through model to find the target content_item_id
@@ -1258,26 +1349,8 @@ class MessageDisplayWidget(QObject):
 
         QTimer.singleShot(100, scroll_to_target)
 
-    def _lock_zone_to_history(self):
-        """Lock zone to HISTORY (disable polling during search)."""
-        self.zone_locked = True
-        if self.in_live_zone:
-            self.in_live_zone = False
-            logger.info("Entered HISTORY zone (search result) - zone locked")
-            if self.main_window:
-                self.main_window.set_chat_polling_enabled(False)
-
-    def _unlock_zone_to_live(self):
-        """Unlock zone and return to LIVE (enable polling)."""
-        self.zone_locked = False
-        if not self.in_live_zone:
-            self.in_live_zone = True
-            logger.info("Re-entered LIVE zone (returning from search) - zone unlocked")
-            if self.main_window:
-                self.main_window.set_chat_polling_enabled(True)
-
     def _clear_highlight_only(self):
-        """Clear highlight visual state without zone changes."""
+        """Clear highlight visual state without view mode changes."""
         if self.message_delegate.highlighted_index is not None:
             self.message_delegate.highlighted_index = None
             self.message_area.viewport().update()
@@ -1312,24 +1385,35 @@ class MessageDisplayWidget(QObject):
         self.message_area.viewport().update()
         logger.debug("Applied persistent highlight to search result")
 
-    def clear_highlight_and_return_to_live(self):
+    def return_to_live(self):
         """
-        Clear highlight and jump back to live zone (bottom of chat).
-        Called by ESC key or scroll-down button.
+        Clear highlight, leave a search view and jump to the bottom of the live view.
+
+        Called by the scroll-to-bottom button, ESC, Enter on empty search and own sent messages.
+        Marks as read if the user sees the newest messages.
         """
         # Clear highlight visual state
         self._clear_highlight_only()
 
-        # Unlock zone and re-enter LIVE zone to re-enable polling
-        self._unlock_zone_to_live()
+        # Reload when the model misses items (search view, skipped refresh, own new message)
+        need_reload = self.view_mode == 'search' or self._live_stale or self._db_has_newer_items()
+        self.view_mode = 'live'
 
-        # Reload recent messages to get back to live area
-        if self.current_account_id and self.current_jid:
-            self.load_messages(self.current_account_id, self.current_jid, self.current_is_muc, self.current_conversation_id)
+        if need_reload and self.current_account_id and self.current_jid:
+            # Reload recent messages to get back to live area (also scrolls to bottom)
+            self._reload_live()
+        else:
+            self._reloading = True
+            try:
+                self.message_area.scrollToBottom()
+            finally:
+                self._reloading = False
+            self._was_at_bottom = True
+            if self.scroll_manager:
+                self.scroll_manager.update_button()
 
-        # Jump to bottom (live zone) - do this AFTER reload so we scroll to the new messages
-        self.message_area.scrollToBottom()
-        logger.info("Jumped back to live zone")
+        logger.info("Jumped back to live view")
+        self.mark_read_if_seen()
 
     def _on_message_clicked(self, index):
         """
@@ -1417,19 +1501,16 @@ class MessageDisplayWidget(QObject):
         if self.message_delegate.highlighted_index is None:
             return False
 
-        # ESC key: return to live zone (catch from any widget)
+        # ESC key: return to live view (catch from any widget)
         if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
             logger.debug(f"ESC pressed on {obj.__class__.__name__}, clearing highlight")
-            self.clear_highlight_and_return_to_live()
+            self.return_to_live()
             return True
 
-        # Mouse click on message area: just clear highlight (don't jump, but unlock zone)
+        # Mouse click on message area: just clear highlight (don't jump, stay in the search view)
         if obj == self.message_area and event.type() == QEvent.MouseButtonPress:
             logger.debug("Mouse click on message area, clearing highlight")
             self._clear_highlight_only()
-            # Unlock zone so normal zone tracking resumes
-            self.zone_locked = False
-            logger.debug("Zone unlocked, normal zone tracking resumed")
             return False  # Let the click through
 
         return False

@@ -1632,12 +1632,13 @@ class ChatHeaderWidget(QFrame):
 
     def _on_search_enter_pressed(self):
         """Handle Enter key in search input - load selected result or cancel highlight if empty."""
-        # If search is empty, cancel any active highlight and return to live zone
+        # If search is empty, cancel any active highlight or search view and return to the live view
         if not self.search_input.text():
-            if self.message_widget and hasattr(self.message_widget, 'clear_highlight_and_return_to_live'):
-                if self.message_widget.message_delegate.highlighted_index is not None:
-                    logger.info("Enter on empty search - cancelling highlight and returning to live zone")
-                    self.message_widget.clear_highlight_and_return_to_live()
+            if self.message_widget and hasattr(self.message_widget, 'return_to_live'):
+                if (self.message_widget.message_delegate.highlighted_index is not None or
+                        self.message_widget.view_mode == 'search'):
+                    logger.info("Enter on empty search - cancelling highlight and returning to live view")
+                    self.message_widget.return_to_live()
             return
 
         # Otherwise, select current result if dropdown is visible

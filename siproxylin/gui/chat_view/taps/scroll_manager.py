@@ -13,6 +13,10 @@ from PySide6.QtWidgets import QPushButton
 
 logger = logging.getLogger('siproxylin.chat_view.scroll_manager')
 
+# Distance from the bottom in pixels that still counts as "at bottom".
+# Small, so that the newest message is visible when it is marked as read.
+AT_BOTTOM_PX = 20
+
 
 class ScrollManager:
     """
@@ -39,41 +43,53 @@ class ScrollManager:
         # Position button at bottom-right using geometry (will be set in resizeEvent)
         self.scroll_to_bottom_btn.setParent(message_container)
 
-        # Connect scroll bar to check position
+        # Connect scroll bar to check position (range changes too: a resize can make content fit)
         scrollbar = self.message_area.verticalScrollBar()
         scrollbar.valueChanged.connect(self._on_scroll_changed)
+        scrollbar.rangeChanged.connect(self._on_scroll_changed)
 
-    def _is_near_bottom(self, threshold=100):
+    def is_at_bottom(self):
         """
-        Check if scroll position is near bottom.
+        Check if the view shows the newest messages (at the bottom).
 
-        Args:
-            threshold: Distance from bottom in pixels to consider "near" (default 100)
+        Same rule for button visibility, auto-scroll, reload and read state.
 
         Returns:
-            True if near bottom or no scrollbar
+            True if at most AT_BOTTOM_PX from the bottom, or all content fits
         """
         scrollbar = self.message_area.verticalScrollBar()
-        if not scrollbar.isVisible():
-            return True  # No scrollbar = always at bottom
-
-        current = scrollbar.value()
         maximum = scrollbar.maximum()
-        return (maximum - current) <= threshold
+        if maximum == 0:
+            return True  # All content fits = at bottom
 
-    def _on_scroll_changed(self, value):
-        """Handle scroll position changes to show/hide scroll-to-bottom button."""
-        if self._is_near_bottom():
-            self.scroll_to_bottom_btn.hide()
-        else:
+        return (maximum - scrollbar.value()) <= AT_BOTTOM_PX
+
+    def update_button(self):
+        """Show the scroll-to-bottom button when not at bottom; always in a search view."""
+        in_search = self.message_widget is not None and getattr(self.message_widget, 'view_mode', 'live') == 'search'
+        if in_search or not self.is_at_bottom():
             self.scroll_to_bottom_btn.show()
             self._position_scroll_button()
+        else:
+            self.scroll_to_bottom_btn.hide()
+
+    def set_unread(self, unread: bool):
+        """Mark the button when the chat has unread messages (styled by the theme, property "unread")."""
+        if self.scroll_to_bottom_btn.property("unread") == unread:
+            return
+        self.scroll_to_bottom_btn.setProperty("unread", unread)
+        # Re-apply the style sheet for the new property value
+        self.scroll_to_bottom_btn.style().unpolish(self.scroll_to_bottom_btn)
+        self.scroll_to_bottom_btn.style().polish(self.scroll_to_bottom_btn)
+
+    def _on_scroll_changed(self, *args):
+        """Handle scroll position and range changes to show/hide scroll-to-bottom button."""
+        self.update_button()
 
     def _scroll_to_bottom(self):
-        """Scroll to bottom when button is clicked - also clears highlight and returns to live zone."""
-        # If there's a highlight, clear it and reload live messages
-        if self.message_widget and hasattr(self.message_widget, 'clear_highlight_and_return_to_live'):
-            self.message_widget.clear_highlight_and_return_to_live()
+        """Scroll to bottom when button is clicked - also leaves a search view and marks as read."""
+        if self.message_widget and hasattr(self.message_widget, 'return_to_live'):
+            self.message_widget.return_to_live()
         else:
             # Fallback: just scroll to bottom
             self.message_area.scrollToBottom()

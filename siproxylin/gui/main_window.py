@@ -1577,27 +1577,7 @@ class MainWindow(QMainWindow):
         if self.chat_view.current_account_id and self.chat_view.current_jid:
             # Check if account still exists (could have been deleted)
             if self.account_manager.get_account(self.chat_view.current_account_id):
-                self.chat_view.refresh(send_markers=False)  # Just update UI, don't send markers
-
-    def set_chat_polling_enabled(self, enabled: bool):
-        """
-        Enable/disable chat polling timer based on scroll zone.
-
-        Called by MessageDisplayWidget when user scrolls between live and history zones.
-        Live zone (>50% scroll) = enable polling for real-time updates.
-        History zone (<=50% scroll) = disable polling for better performance.
-
-        Args:
-            enabled: True to enable polling (live zone), False to disable (history zone)
-        """
-        if enabled:
-            if not self.receipt_timer.isActive():
-                self.receipt_timer.start(2000)
-                logger.debug("Chat polling ENABLED (live zone - bottom 50%)")
-        else:
-            if self.receipt_timer.isActive():
-                self.receipt_timer.stop()
-                logger.debug("Chat polling DISABLED (history zone - top 50%)")
+                self.chat_view.refresh()  # Markers only if the user sees the newest messages
 
     def changeEvent(self, event):
         """Send displayed markers for the open chat when the window becomes visible to the user."""
@@ -1609,8 +1589,9 @@ class MainWindow(QMainWindow):
         # changeEvent can come before the chat view exists (window setup)
         chat_view = getattr(self, 'chat_view', None)
         if chat_view and chat_view.current_jid:
-            # Marks only items above read_up_to_item, so repeated calls send nothing
-            chat_view.message_widget._send_displayed_markers()
+            # Marks only if the user sees the newest messages (live view at bottom);
+            # marks only items above read_up_to_item, so repeated calls send nothing
+            chat_view.message_widget.mark_read_if_seen()
 
     @Slot(int, str, str, bool)
 
