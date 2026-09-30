@@ -4,16 +4,81 @@ Minimal test script for drunk-xmpp library.
 Tests: connection and OMEMO initialization and neary everything else
 Uses relatively ugly interface but sufficce for basic feature tests
 See help function below to get an idea what it can do
+
+Usage:
+    test-drunk-xmpp.py [--config PATH] [--json] [--log-dir DIR]
+
+    --config   Config file. Default: test-drunk-xmpp.conf in the current dir,
+               else the one next to this script.
+    --json     Agent mode: JSON lines on stdin and stdout (see below).
+    --log-dir  Write drunk-xmpp.log and xmpp-protocol.log to DIR
+               (turns both files on, the config paths are not used).
+
+End of input (EOF) disconnects and exits with code 0, in both modes.
+
+JSON mode:
+    stdout has JSON lines only (one object per line). Logs, help and
+    other text go to stderr and the log files.
+
+    Request (one per line on stdin):
+        {"id": 1, "cmd": "send", "args": ["bob@localhost", "hi there"]}
+      The same as typing "/send bob@localhost hi there". Args are joined
+      with spaces, so only the last arg may contain spaces.
+      Commands that ask for "DELETE" take it from the request:
+        {"id": 2, "cmd": "pep-delete", "args": ["node"], "confirm": "DELETE"}
+
+    Reply (when the command is finished):
+        {"id": 1, "done": true, "ok": true, "error": null,
+         "t_start": "...", "t_end": "...",
+         "sent": [{"t", "kind", "type", "id", "origin_id", "to"}, ...],
+         "logs": [{"t", "level", "logger", "msg"}, ...]}
+      ok is false if the command raised or logged an ERROR.
+      Times are local time "YYYY-MM-DD HH:MM:SS.mmm" (the clock of the
+      logs), usable with tools/siplog.py --since/--until.
+
+    Event (anything that comes in):
+        {"event": "message", "t": "...", "from": ..., "body": ..., ...}
+      Events: ready, connected, disconnected, connect_failed, message,
+      receipt, marker, server_ack, presence, chat_state, reaction,
+      message_error, subscription, roster, bookmarks, muc_invite,
+      muc_joined, muc_join_error.
+      "message" has the fields it knows: jid, from, to, room, nick, body,
+      encrypted, type, id, stanza_id, origin_id, archive_id, replace_id,
+      attachment_url, source (live, carbon, history, mam, correction).
+      Commands sent before "ready" wait in a queue.
+
+    Built-in commands (also in human mode as /wait and /sleep):
+        {"id": 3, "cmd": "wait", "event": "message",
+         "match": {"body": "hi"}, "timeout": 10}
+      Returns the first matching event in "event" of the reply (older
+      events not yet taken by a wait count too), or ok=false on timeout.
+      "match": {"body~": "hi"} means "body contains hi".
+        {"id": 4, "cmd": "sleep", "args": [1.5]}
+        {"id": 5, "cmd": "quit"}
+      Human form: /wait message body~=hi timeout=10
+
+    Example (two processes, bob waits for alice):
+        (echo '{"id":1,"cmd":"wait","event":"message","match":{"body":"hi"},"timeout":30}';
+         echo '{"id":2,"cmd":"quit"}') | test-drunk-xmpp.py --json --config bob.conf > bob.out &
+        (echo '{"id":1,"cmd":"send","args":["bob@localhost","hi"]}';
+         echo '{"id":2,"cmd":"quit"}') | test-drunk-xmpp.py --json --config alice.conf
 """
 
+import argparse
 import asyncio
+import json
 import logging
 import sys
+import threading
+import xml.etree.ElementTree as ET
 import yaml
+from datetime import datetime
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+
 # Add parent directory to path to import drunk_xmpp module
-sys.path.insert(0, '..')
+sys.path.insert(0, str(SCRIPT_DIR.parent))
 
 # Import from refactored drunk_xmpp package
 from drunk_xmpp import (
@@ -101,6 +166,162 @@ def setup_logging(config: dict) -> None:
         xml_formatter = logging.Formatter('%(asctime)s - %(message)s')
         xml_handler.setFormatter(xml_formatter)
         xml_logger.addHandler(xml_handler)
+
+
+def apply_log_dir(config: dict, log_dir: str) -> None:
+    """Point both log files to log_dir and turn them on (--log-dir)."""
+    log_dir = Path(log_dir).resolve()
+    logging_config = config.setdefault('logging', {}) or {}
+    config['logging'] = logging_config
+    logging_config['file'] = {'enabled': True, 'path': str(log_dir / 'drunk-xmpp.log')}
+    logging_config['xml'] = {'enabled': True, 'path': str(log_dir / 'xmpp-protocol.log')}
+
+
+def now_str(ts=None) -> str:
+    """Local time 'YYYY-MM-DD HH:MM:SS.mmm', the same clock as the logs."""
+    dt = datetime.fromtimestamp(ts) if ts is not None else datetime.now()
+    return dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+
+
+class Driver:
+    """Events, requests and JSON output (--json).
+
+    Events are kept in both modes, so /wait works in human mode too.
+    In JSON mode all stdout writes go through write(), one line each.
+    """
+
+    MAX_EVENTS = 1000
+
+    def __init__(self, json_mode: bool, out):
+        self.json_mode = json_mode
+        self.out = out  # the real stdout
+        self.lock = threading.Lock()
+        self.events = []  # events not yet taken by a wait
+        self.changed = asyncio.Event()
+        self.req = None  # the running request (JSON mode only)
+
+    def write(self, obj: dict) -> None:
+        line = json.dumps(obj, default=str)
+        with self.lock:
+            self.out.write(line + '\n')
+            self.out.flush()
+
+    def emit(self, event: str, **fields) -> None:
+        """Record an event; in JSON mode also write it to stdout."""
+        rec = {'event': event, 't': now_str()}
+        rec.update({k: v for k, v in fields.items() if v is not None})
+        self.events.append(rec)
+        if len(self.events) > self.MAX_EVENTS:
+            del self.events[0]
+        self.changed.set()
+        self.changed = asyncio.Event()
+        if self.json_mode:
+            self.write(rec)
+
+    @staticmethod
+    def matches(rec: dict, event, match: dict) -> bool:
+        if event and rec.get('event') != event:
+            return False
+        for key, want in (match or {}).items():
+            if key.endswith('~'):
+                have = rec.get(key[:-1])
+                if have is None or str(want) not in str(have):
+                    return False
+            else:
+                have = rec.get(key)
+                if have != want and not (isinstance(want, str) and str(have) == want):
+                    return False
+        return True
+
+    async def wait_event(self, event, match: dict, timeout: float):
+        """Take the first matching event (old or new), or None on timeout."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            for i, rec in enumerate(self.events):
+                if self.matches(rec, event, match):
+                    del self.events[i]
+                    return rec
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return None
+            try:
+                await asyncio.wait_for(self.changed.wait(), remaining)
+            except asyncio.TimeoutError:
+                pass
+
+    def begin(self, request: dict) -> None:
+        self.req = {'request': request, 't_start': now_str(), 'sent': [],
+                    'logs': [], 'error': None, 'extra': {}}
+
+    def finish(self) -> None:
+        req, self.req = self.req, None
+        reply = {'id': req['request'].get('id'), 'done': True,
+                 'ok': req['error'] is None, 'error': req['error'],
+                 't_start': req['t_start'], 't_end': now_str(),
+                 'sent': req['sent'], 'logs': req['logs']}
+        reply.update(req['extra'])
+        self.write(reply)
+
+    def on_send(self, data) -> None:
+        """Record an outgoing stanza for the running request."""
+        if self.req is None:
+            return
+        if isinstance(data, bytes):
+            data = data.decode('utf-8', 'replace')
+        try:
+            el = ET.fromstring(data)
+        except ET.ParseError:
+            return  # stream header, footer, whitespace
+        kind = el.tag.rsplit('}', 1)[-1]
+        if kind not in ('message', 'presence', 'iq'):
+            return
+        origin = el.find('{urn:xmpp:sid:0}origin-id')
+        self.req['sent'].append({
+            't': now_str(), 'kind': kind, 'type': el.get('type'), 'id': el.get('id'),
+            'origin_id': origin.get('id') if origin is not None else None,
+            'to': el.get('to'),
+        })
+
+
+class RequestLogHandler(logging.Handler):
+    """Copy INFO and higher log records into the running request."""
+
+    def __init__(self, driver: Driver):
+        super().__init__(logging.INFO)
+        self.driver = driver
+
+    def emit(self, record):
+        req = self.driver.req
+        if req is None:
+            return
+        try:
+            msg = record.getMessage()
+        except Exception:
+            msg = str(record.msg)
+        if record.levelno >= logging.ERROR and req['error'] is None:
+            req['error'] = msg
+        if not msg.strip('= '):
+            return  # empty lines and ==== lines
+        req['logs'].append({'t': now_str(record.created), 'level': record.levelname,
+                            'logger': record.name, 'msg': msg})
+
+
+def meta_fields(metadata) -> dict:
+    """Event fields from a MessageMetadata."""
+    return {
+        'from': metadata.from_jid,
+        'to': metadata.to_jid,
+        'type': metadata.message_type,
+        'id': metadata.message_id,
+        'stanza_id': metadata.stanza_id,
+        'origin_id': metadata.origin_id,
+        'encrypted': metadata.is_encrypted,
+        'replace_id': metadata.replaces_id,
+        'reply_to_id': metadata.reply_to_id,
+        'attachment_url': metadata.attachment_url,
+        'delay': metadata.delay_timestamp.isoformat() if metadata.delay_timestamp else None,
+    }
 
 
 def print_help_grouped():
@@ -195,6 +416,11 @@ def print_help_grouped():
     print("  /carbons                     - Show carbon copy status (XEP-0280)")
     print()
 
+    print("SCRIPTING:")
+    print("  /wait <event> [key=value] [key~=text] [timeout=N] - Wait for an event (default 10 s)")
+    print("  /sleep <seconds>             - Wait some seconds")
+    print()
+
     print("HELP:")
     print("  /help                        - Show this help (grouped by category)")
     print("  /helpa                       - Show all commands alphabetically")
@@ -263,11 +489,13 @@ def print_help_alphabetical():
         "/sendmucenc <room> <message> - Send OMEMO-encrypted to MUC room",
         "/server-features             - Query server features/XEPs (XEP-0030)",
         "/server-version              - Query server software version (XEP-0092)",
+        "/sleep <seconds>             - Wait some seconds",
         "/subscribe <jid>             - Request presence subscription (RFC 6121)",
         "/typing <jid>                - Send 'composing' chat state (typing)",
         "/unblock <jid>               - Unblock contact (XEP-0191)",
         "/unreact <jid> <1|2>         - Remove reactions from message",
         "/unsubscribe <jid>           - Cancel our subscription (RFC 6121)",
+        "/wait <event> [key=value] [key~=text] [timeout=N] - Wait for an event (default 10 s)",
     ]
 
     for cmd in commands:
@@ -278,12 +506,40 @@ def print_help_alphabetical():
     print()
 
 
-async def main():
+async def main(args):
     """Main test function - connect and wait for OMEMO init."""
 
+    # JSON mode: stdout is for JSON lines only, all other text goes to stderr
+    json_out = sys.stdout
+    if args.json:
+        sys.stdout = sys.stderr
+    driver = Driver(args.json, json_out)
+
+    # JSON mode: read stdin from the start, so early commands wait in the queue
+    request_queue = asyncio.Queue()
+    if args.json:
+        loop = asyncio.get_running_loop()
+
+        def read_stdin():
+            while True:
+                line = sys.stdin.readline()
+                loop.call_soon_threadsafe(request_queue.put_nowait, line or None)
+                if not line:
+                    break
+
+        threading.Thread(target=read_stdin, daemon=True).start()
+
     # Load config
-    config = load_config('test-drunk-xmpp.conf')
+    config_path = args.config
+    if config_path is None:
+        config_path = 'test-drunk-xmpp.conf'
+        if not Path(config_path).exists():
+            config_path = str(SCRIPT_DIR / 'test-drunk-xmpp.conf')
+    config = load_config(config_path)
+    if args.log_dir:
+        apply_log_dir(config, args.log_dir)
     setup_logging(config)
+    logging.getLogger().addHandler(RequestLogHandler(driver))
 
     logger = logging.getLogger(__name__)
     logger.info("=" * 60)
@@ -306,6 +562,12 @@ async def main():
             # Keep only last 2
             if len(message_tracking[room]) > 2:
                 message_tracking[room] = message_tracking[room][-2:]
+
+        driver.emit('message', **meta_fields(metadata), room=room, nick=nick, body=body,
+                    occupant_id=metadata.occupant_id,
+                    source='history' if metadata.is_history else 'live')
+        if driver.json_mode:
+            return
 
         print()  # Newline before message
         print("=" * 60)
@@ -366,6 +628,12 @@ async def main():
             if len(message_tracking[from_jid]) > 2:
                 message_tracking[from_jid] = message_tracking[from_jid][-2:]
 
+        driver.emit('message', **meta_fields(metadata), jid=from_jid, body=body,
+                    carbon_type=metadata.carbon_type,
+                    source='carbon' if metadata.is_carbon else 'live')
+        if driver.json_mode:
+            return
+
         print()  # Newline before message
         print("=" * 60)
 
@@ -405,6 +673,9 @@ async def main():
     # Receipt received callback (XEP-0184)
     def on_receipt_received(from_jid, message_id):
         """Handler for delivery receipts."""
+        driver.emit('receipt', **{'from': from_jid, 'id': message_id})
+        if driver.json_mode:
+            return
         print()
         print("=" * 60)
         print(f"🎉 BEEEP DELIVERY RECEIPT RECEIVED! 🎉")
@@ -416,6 +687,9 @@ async def main():
     # Marker received callback (XEP-0333)
     def on_marker_received(from_jid, message_id, marker_type):
         """Handler for chat markers (read receipts)."""
+        driver.emit('marker', **{'from': from_jid, 'id': message_id, 'marker': marker_type})
+        if driver.json_mode:
+            return
         marker_emoji = {
             'received': '📬',
             'displayed': '👁️',
@@ -433,6 +707,9 @@ async def main():
     # Server ACK callback (XEP-0198)
     def on_server_ack(ack_info):
         """Handler for server acknowledgements."""
+        driver.emit('server_ack', id=ack_info.msg_id)
+        if driver.json_mode:
+            return
         print()
         print("=" * 60)
         print(f"✓ SERVER ACK RECEIVED!")
@@ -444,6 +721,9 @@ async def main():
     # Presence changed callback (RFC 6121)
     async def on_presence_changed(from_jid, show):
         """Handler for contact presence changes."""
+        driver.emit('presence', **{'from': from_jid, 'show': show})
+        if driver.json_mode:
+            return
         presence_emoji = {
             'available': '🟢',
             'away': '🟡',
@@ -462,6 +742,11 @@ async def main():
     # Bookmarks received callback (XEP-0402)
     async def on_bookmarks_received(bookmarks):
         """Handler for bookmarks received from server."""
+        driver.emit('bookmarks', bookmarks=[
+            {'jid': bm.get('jid'), 'name': bm.get('name'), 'nick': bm.get('nick'),
+             'autojoin': bm.get('autojoin')} for bm in (bookmarks or [])])
+        if driver.json_mode:
+            return
         print()
         print("=" * 60)
         print(f"📚 BOOKMARKS RECEIVED FROM SERVER (XEP-0402)")
@@ -482,6 +767,10 @@ async def main():
     # MUC invite callback (XEP-0045)
     async def on_muc_invite(room_jid, inviter_jid, reason, password):
         """Handler for MUC invitations."""
+        driver.emit('muc_invite', room=room_jid, reason=reason or None,
+                    **{'from': inviter_jid})
+        if driver.json_mode:
+            return
         print()
         print("=" * 60)
         print(f"💌 MUC INVITE RECEIVED!")
@@ -503,6 +792,12 @@ async def main():
             message_id: ID of message being reacted to
             emojis: List of emoji strings (empty if reactions removed)
         """
+        driver.emit('reaction', **{'from': metadata.from_jid}, type=metadata.message_type,
+                    nick=metadata.muc_nick, occupant_id=metadata.occupant_id,
+                    id=message_id, emojis=list(emojis or []))
+        if driver.json_mode:
+            return
+
         # Determine display name
         if metadata.message_type == 'groupchat':
             display_from = f"{metadata.muc_nick} (MUC)"
@@ -524,6 +819,27 @@ async def main():
             print(f"Message ID: {message_id}")
         print("=" * 60)
         print("drunk-xmpp> ", end="", flush=True)
+
+    # Callbacks with no print in human mode: they only record events
+    def on_chat_state(from_jid, state):
+        driver.emit('chat_state', **{'from': str(from_jid), 'state': state})
+
+    async def on_message_error(from_jid, to_jid, error_type, error_condition, error_text, origin_id):
+        driver.emit('message_error', **{'from': str(from_jid), 'to': str(to_jid)},
+                    error_type=error_type, condition=error_condition, text=error_text,
+                    origin_id=origin_id)
+
+    async def on_message_correction(jid, replace_id, body, is_encrypted, msg):
+        driver.emit('message', jid=str(jid), **{'from': str(msg['from']), 'to': str(msg['to'])},
+                    type=msg['type'], id=msg['id'] or None,
+                    origin_id=msg['origin_id']['id'] or None, replace_id=replace_id,
+                    body=body, encrypted=is_encrypted, source='correction')
+
+    async def on_muc_joined(room_jid, nick):
+        driver.emit('muc_joined', room=str(room_jid), nick=nick)
+
+    async def on_muc_join_error(room_jid, condition, text):
+        driver.emit('muc_join_error', room=str(room_jid), condition=condition, text=text)
 
     # Load rooms from config
     rooms = xmpp_config.get('rooms', {}) or {}  # Ensure it's a dict, not None
@@ -559,6 +875,11 @@ async def main():
         on_bookmarks_received_callback=on_bookmarks_received,
         on_muc_invite_callback=on_muc_invite,
         on_reaction_callback=on_reaction,
+        on_chat_state_callback=on_chat_state,
+        on_message_error_callback=on_message_error,
+        on_message_correction_callback=on_message_correction,
+        on_muc_joined_callback=on_muc_joined,
+        on_muc_join_error_callback=on_muc_join_error,
         enable_omemo=xmpp_config.get('omemo', {}).get('enabled', True),
         allow_any_message_editing=xmpp_config.get('message_editing', {}).get('allow_any_message', False),
         reconnect_max_delay=xmpp_config.get('reconnect_max_delay', 300),
@@ -581,12 +902,14 @@ async def main():
     def on_presence_subscribe(presence):
         """Handler for incoming subscription requests."""
         from_jid = presence['from'].bare
-        print()
-        print("=" * 60)
-        print(f"[SUBSCRIPTION REQUEST] from {from_jid}")
-        print("  (Auto-accepting in test - GUI should show dialog)")
-        print("=" * 60)
-        print("drunk-xmpp> ", end="", flush=True)
+        driver.emit('subscription', kind='subscribe', **{'from': from_jid})
+        if not driver.json_mode:
+            print()
+            print("=" * 60)
+            print(f"[SUBSCRIPTION REQUEST] from {from_jid}")
+            print("  (Auto-accepting in test - GUI should show dialog)")
+            print("=" * 60)
+            print("drunk-xmpp> ", end="", flush=True)
         # Auto-accept for testing
         client.send_presence_subscription(pto=from_jid, ptype='subscribed')
         # Also subscribe back (mutual subscription)
@@ -595,6 +918,9 @@ async def main():
     def on_presence_subscribed(presence):
         """Handler for subscription approval."""
         from_jid = presence['from'].bare
+        driver.emit('subscription', kind='subscribed', **{'from': from_jid})
+        if driver.json_mode:
+            return
         print()
         print("=" * 60)
         print(f"[SUBSCRIPTION APPROVED] {from_jid} accepted your request")
@@ -604,17 +930,22 @@ async def main():
     def on_presence_unsubscribe(presence):
         """Handler for unsubscription requests."""
         from_jid = presence['from'].bare
-        print()
-        print("=" * 60)
-        print(f"[UNSUBSCRIPTION REQUEST] from {from_jid}")
-        print("=" * 60)
-        print("drunk-xmpp> ", end="", flush=True)
+        driver.emit('subscription', kind='unsubscribe', **{'from': from_jid})
+        if not driver.json_mode:
+            print()
+            print("=" * 60)
+            print(f"[UNSUBSCRIPTION REQUEST] from {from_jid}")
+            print("=" * 60)
+            print("drunk-xmpp> ", end="", flush=True)
         # Auto-confirm for testing
         client.send_presence_subscription(pto=from_jid, ptype='unsubscribed')
 
     def on_presence_unsubscribed(presence):
         """Handler for unsubscription confirmation."""
         from_jid = presence['from'].bare
+        driver.emit('subscription', kind='unsubscribed', **{'from': from_jid})
+        if driver.json_mode:
+            return
         print()
         print("=" * 60)
         print(f"[UNSUBSCRIBED] {from_jid} removed you from contacts")
@@ -629,6 +960,9 @@ async def main():
         subscription = 'none'
         if from_jid in roster:
             subscription = roster[from_jid].get('subscription', 'none')
+        driver.emit('roster', jid=from_jid, subscription=subscription)
+        if driver.json_mode:
+            return
         print()
         print("=" * 60)
         print(f"[ROSTER UPDATED] {from_jid}: subscription={subscription}")
@@ -640,6 +974,27 @@ async def main():
     client.add_event_handler("presence_unsubscribe", on_presence_unsubscribe)
     client.add_event_handler("presence_unsubscribed", on_presence_unsubscribed)
     client.add_event_handler("changed_subscription", on_changed_subscription)
+
+    # Connection state events
+    client.add_event_handler("session_start", lambda _e: driver.emit('connected', jid=client.boundjid.full))
+    client.add_event_handler("session_resumed", lambda _e: driver.emit('connected', jid=client.boundjid.full, resumed=True))
+    client.add_event_handler("disconnected", lambda _e: driver.emit('disconnected'))
+
+    # Record outgoing stanzas for the running request ("sent" in the reply)
+    orig_send_raw = client.send_raw
+
+    def send_raw_hook(data):
+        orig_send_raw(data)
+        driver.on_send(data)
+
+    client.send_raw = send_raw_hook
+
+    # Optional CA file for a server with its own cert (e.g. the local test Prosody)
+    if xmpp_config.get('ca_certs'):
+        ca_certs = Path(xmpp_config['ca_certs'])
+        if not ca_certs.is_absolute():
+            ca_certs = config['_config_dir'] / ca_certs
+        client.ca_certs = ca_certs
 
     # Connect
     server = xmpp_config.get('server')
@@ -658,7 +1013,8 @@ async def main():
 
     if not client.is_connected():
         logger.error("Failed to connect!")
-        return
+        driver.emit('connect_failed')
+        return 1
 
     logger.info(" Connected to XMPP server!")
     logger.info(f"  JID: {client.boundjid.bare}")
@@ -685,16 +1041,80 @@ async def main():
     logger.info(f"  OMEMO enabled: {client.omemo_enabled}")
     logger.info(f"  OMEMO ready: {client.is_omemo_ready()}")
 
+    driver.emit('ready', jid=client.boundjid.bare, connected=client.is_connected(),
+                omemo_enabled=client.omemo_enabled, omemo_ready=client.is_omemo_ready())
+
     # Show help on startup
-    print_help_grouped()
+    if not driver.json_mode:
+        print_help_grouped()
+
+    async def next_command():
+        """Next command line and its JSON request (None in human mode).
+
+        Returns (None, None) at the end of input.
+        """
+        if not driver.json_mode:
+            try:
+                line = await asyncio.get_event_loop().run_in_executor(
+                    None, input, "drunk-xmpp> "
+                )
+            except EOFError:
+                return None, None
+            return line, None
+        while True:
+            line = await request_queue.get()
+            if line is None:
+                return None, None
+            if not line.strip():
+                continue
+            try:
+                request = json.loads(line)
+                if not isinstance(request, dict):
+                    raise ValueError("request is not a JSON object")
+            except ValueError as e:
+                driver.write({'id': None, 'done': True, 'ok': False,
+                              'error': f"Bad request: {e}", 't_start': now_str(),
+                              't_end': now_str(), 'sent': [], 'logs': []})
+                continue
+            cmd = str(request.get('cmd') or '').strip().lstrip('/')
+            cmd_args = request.get('args') or []
+            if not isinstance(cmd_args, list):
+                cmd_args = [cmd_args]
+            return ('/' + cmd + ' ' + ' '.join(str(a) for a in cmd_args)).strip(), request
+
+    async def ask_confirmation():
+        """Read the DELETE confirmation (JSON mode: the "confirm" field)."""
+        if driver.json_mode:
+            return str(driver.req['request'].get('confirm') or '')
+        return await asyncio.get_event_loop().run_in_executor(
+            None, input, "Confirmation: "
+        )
+
+    async def drain_send_queue():
+        """Wait until queued stanzas went out, so the reply lists them."""
+        queue = getattr(client, 'waiting_queue', None)
+        if queue is None:
+            return
+        try:
+            await asyncio.wait_for(queue.join(), 2.0)
+        except asyncio.TimeoutError:
+            pass
+
+    disconnect_future = None
 
     # Interactive loop
     while True:
+        request = None
         try:
             # Read command from stdin
-            command = await asyncio.get_event_loop().run_in_executor(
-                None, input, "drunk-xmpp> "
-            )
+            command, request = await next_command()
+            if request is not None:
+                driver.begin(request)
+
+            if command is None:
+                logger.info("End of input, disconnecting...")
+                disconnect_future = client.disconnect(disable_auto_reconnect=True)
+                break
 
             command = command.strip()
 
@@ -748,8 +1168,51 @@ async def main():
 
             elif command == "/quit":
                 logger.info("Disconnecting...")
-                client.disconnect(disable_auto_reconnect=True)
+                disconnect_future = client.disconnect(disable_auto_reconnect=True)
                 break
+
+            elif command == "/sleep" or command.startswith("/sleep "):
+                parts = command.split()
+                try:
+                    seconds = float(parts[1]) if len(parts) > 1 else 1.0
+                except ValueError:
+                    logger.error("Usage: /sleep <seconds>")
+                    continue
+                await asyncio.sleep(seconds)
+
+            elif command == "/wait" or command.startswith("/wait "):
+                # Text form: /wait <event> [key=value] [key~=text] [timeout=N]
+                parts = command.split()[1:]
+                event_name = parts[0] if parts else None
+                match = {}
+                timeout = 10.0
+                try:
+                    for part in parts[1:]:
+                        if part.startswith("timeout="):
+                            timeout = float(part.split("=", 1)[1])
+                        elif "~=" in part:
+                            key, value = part.split("~=", 1)
+                            match[key + "~"] = value
+                        elif "=" in part:
+                            key, value = part.split("=", 1)
+                            match[key] = value
+                    # JSON form: "event", "match" and "timeout" fields
+                    if request is not None:
+                        event_name = request.get('event', event_name)
+                        match = request.get('match', match) or {}
+                        timeout = float(request.get('timeout', timeout))
+                except (ValueError, TypeError):
+                    logger.error("Usage: /wait <event> [key=value] [key~=text] [timeout=N]")
+                    continue
+
+                event = await driver.wait_event(event_name, match, timeout)
+                if event is None:
+                    logger.error(f"Timeout: no '{event_name}' event matching {match} in {timeout} s")
+                    continue
+                if request is not None:
+                    driver.req['extra']['event'] = event
+                else:
+                    print(json.dumps(event, default=str, ensure_ascii=False))
 
             elif command.startswith("/send "):
                 parts = command.split(None, 2)
@@ -1345,6 +1808,16 @@ async def main():
                     logger.info(f"✓ Retrieved {len(history)} messages:")
                     logger.info("")
                     for i, msg in enumerate(history, 1):
+                        stanza = msg.get('message')
+                        driver.emit('message', jid=msg.get('jid'), nick=msg.get('nick'),
+                                    **({'from': str(stanza['from']), 'to': str(stanza['to']),
+                                        'type': stanza['type'], 'id': stanza['id'] or None,
+                                        'origin_id': stanza['origin_id']['id'] or None}
+                                       if stanza is not None else {}),
+                                    body=msg.get('body'), encrypted=msg.get('is_encrypted'),
+                                    archive_id=msg.get('archive_id'),
+                                    delay=msg['timestamp'].isoformat() if msg.get('timestamp') else None,
+                                    source='mam')
                         timestamp = msg['timestamp'].strftime('%Y-%m-%d %H:%M:%S') if msg['timestamp'] else 'Unknown'
                         encrypted_flag = "[ENCRYPTED]" if msg['is_encrypted'] else "[PLAINTEXT]"
 
@@ -1562,12 +2035,11 @@ async def main():
                 logger.warning("Type 'DELETE' to confirm, or anything else to cancel:")
                 logger.warning("=" * 60)
 
-                confirmation = await asyncio.get_event_loop().run_in_executor(
-                    None, input, "Confirmation: "
-                )
+                confirmation = await ask_confirmation()
 
                 if confirmation.strip() != "DELETE":
-                    logger.info("Node deletion cancelled.")
+                    # JSON mode: ERROR gives ok=false, so a missing "confirm" is not read as success
+                    (logger.error if driver.json_mode else logger.info)("Node deletion cancelled.")
                     continue
 
                 logger.info(f"Deleting PEP node: {node}")
@@ -2102,12 +2574,10 @@ async def main():
                 logger.warning("Type 'DELETE' to confirm, or anything else to cancel:")
                 logger.warning("=" * 60)
 
-                confirmation = await asyncio.get_event_loop().run_in_executor(
-                    None, input, "Confirmation: "
-                )
+                confirmation = await ask_confirmation()
 
                 if confirmation.strip() != "DELETE":
-                    logger.info("Account deletion cancelled.")
+                    (logger.error if driver.json_mode else logger.info)("Account deletion cancelled.")
                     continue
 
                 logger.info("")
@@ -2155,9 +2625,26 @@ async def main():
             break
         except Exception as e:
             logger.exception(f"Error: {e}")
+        finally:
+            if request is not None:
+                await drain_send_queue()
+                driver.finish()
+
+    # Let the disconnect finish, so queued stanzas are not lost
+    if disconnect_future is not None:
+        try:
+            await asyncio.wait_for(asyncio.shield(disconnect_future), 3.0)
+        except Exception:
+            pass
 
     logger.info("Goodbye!")
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="Interactive test tool for drunk_xmpp.")
+    parser.add_argument('--config', help="config file (default: test-drunk-xmpp.conf "
+                        "in the current dir, else next to this script)")
+    parser.add_argument('--json', action='store_true',
+                        help="JSON lines on stdin and stdout (for agents and scripts)")
+    parser.add_argument('--log-dir', help="write drunk-xmpp.log and xmpp-protocol.log to this dir")
+    sys.exit(asyncio.run(main(parser.parse_args())))

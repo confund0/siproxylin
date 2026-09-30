@@ -13,6 +13,10 @@ xmpp:
   # XMPP server port (default: 5222)
   # port: 5223
 
+  # CA file to trust for the server cert (optional, e.g. a self-signed test server)
+  # Relative paths are relative to this config file
+  # ca_certs: "../tmp/prosody/certs/localhost.crt"
+
   # Maximum reconnect delay in seconds (default: 300)
   reconnect_max_delay: 300
 
