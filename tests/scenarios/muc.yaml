@@ -1,0 +1,100 @@
+# Group chats: alice, bob, carol.
+# enc: members-only, whois=anyone (OMEMO room); plain: open, whois=moderators.
+# new: made by /join (not seeded), stays locked for others.
+accounts:
+  alice: {}
+  bob: {}
+  carol: {}
+rooms:
+  enc: {owner: alice, members: [bob, carol], members_only: true, whois: anyone}
+  plain: {owner: alice, members_only: false, whois: moderators}
+  new: {seed: false}
+steps:
+  # new room made by /join
+  - alice: join ${room.new} alice
+  - alice: wait muc_joined
+    match: {room: "${room.new}"}
+  - bob: join ${room.new} bob
+  - bob: wait muc_join_error
+    match: {room: "${room.new}"}
+    timeout: 3
+    known_fail: "join of a locked new room: no muc_join_error (timeout)"
+
+  # plain room
+  - alice: join ${room.plain} alice
+  - alice: wait muc_joined
+    match: {room: "${room.plain}"}
+  - bob: join ${room.plain} bob
+  - bob: wait muc_joined
+    match: {room: "${room.plain}"}
+  - carol: join ${room.plain} carol
+  - carol: wait muc_joined
+    match: {room: "${room.plain}"}
+  - alice: sendmuc ${room.plain} m1 hello room $RUN
+    save: m1
+  - bob: wait message
+    match: {room: "${room.plain}", body: "m1 hello room $RUN", source: live}
+    expect: {id: "${m1.msg_id}", nick: alice, encrypted: false}
+  - carol: wait message
+    match: {room: "${room.plain}", body: "m1 hello room $RUN", source: live}
+    expect: {id: "${m1.msg_id}", nick: alice, encrypted: false}
+  - alice: room-features ${room.plain}
+  - alice: room-config ${room.plain}
+  - bob: room-config ${room.plain}
+    expect_fail: true
+    expect: {error~: owner-only}
+  # OMEMO message in a semi-anonymous room: the tool sends it (ok=true)
+  - alice: sendmucenc ${room.plain} me0 enc in plain room $RUN
+
+  # OMEMO room
+  - alice: join ${room.enc} alice
+  - alice: wait muc_joined
+    match: {room: "${room.enc}"}
+  - bob: join ${room.enc} bob
+  - bob: wait muc_joined
+    match: {room: "${room.enc}"}
+  - carol: join ${room.enc} carol
+  - carol: wait muc_joined
+    match: {room: "${room.enc}"}
+  - alice: sendmucenc ${room.enc} me1 enc hello room $RUN
+    save: me1
+  - bob: wait message
+    match: {room: "${room.enc}", body: "me1 enc hello room $RUN", source: live}
+    expect: {id: "${me1.msg_id}", nick: alice, encrypted: true}
+  - carol: wait message
+    match: {room: "${room.enc}", body: "me1 enc hello room $RUN", source: live}
+    expect: {id: "${me1.msg_id}", nick: alice, encrypted: true}
+  - bob: sendmucenc ${room.enc} me2 enc from bob $RUN
+    save: me2
+  - alice: wait message
+    match: {room: "${room.enc}", body: "me2 enc from bob $RUN", source: live}
+    expect: {id: "${me2.msg_id}", encrypted: true}
+  - alice: sendmuc ${room.enc} m2 plain in enc room $RUN
+  # reply and reaction use the room JID (bob's last message from the room)
+  - bob: reply ${room.enc} 1 r3 muc reply $RUN
+  - bob: react ${room.enc} 1 🎉
+  - alice: wait reaction
+    match: {emojis: ["🎉"], nick: bob}
+
+  # history of the rooms
+  - carol: history ${room.plain} 50 --since-run
+    known_fail: "history room: \"Couldn't find real JID\" for an OMEMO message in a semi-anonymous room"
+  - carol: wait message
+    match: {room: "${room.plain}", source: mam, id: "${m1.msg_id}"}
+    expect: {body: "m1 hello room $RUN", archive_id: "*"}
+  - carol: history ${room.enc} 50 --since-run
+    known_fail: "history: ok=false, an OMEMO message decrypted live does not decrypt again from MAM"
+  - carol: mam-check ${room.enc}
+
+  # leave
+  - alice: leave ${room.plain}
+    expect: {sent_types~: "presence:unavailable"}
+  - bob: leave ${room.plain}
+    expect: {sent_types~: "presence:unavailable"}
+  - carol: leave ${room.plain}
+    expect: {sent_types~: "presence:unavailable"}
+  - alice: leave ${room.enc}
+  - bob: leave ${room.enc}
+  - carol: leave ${room.enc}
+  - alice: sendmuc ${room.plain} after leave $RUN
+    expect_fail: true

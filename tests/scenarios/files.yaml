@@ -1,0 +1,20 @@
+# File upload (XEP-0363): alice sends a small file to bob, plain and OMEMO (aesgcm://).
+accounts:
+  alice: {}
+  bob: {}
+files:
+  f1: {name: "small file $RUN.txt", text: "scenario file $RUN\n"}
+steps:
+  - alice: file ${jid.bob} ${file.f1}
+    save: f1
+  - bob: wait message
+    match: {attachment_url~: "https://", body~: "small%20file%20$RUN.txt"}
+    expect: {id: "${f1.msg_id}", encrypted: false, source: live}
+    save: f1r
+  - expect: {f1r.origin_id: "${f1.msg_id}"}
+    known_fail: "file: message has no origin_id"
+  - alice: fileenc ${jid.bob} ${file.f1}
+    save: f2
+  - bob: wait message
+    match: {attachment_url~: "aesgcm://", source: live}
+    expect: {id: "${f2.msg_id}", origin_id: "${f2.msg_id}", encrypted: true}

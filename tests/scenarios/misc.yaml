@@ -1,0 +1,97 @@
+# Block list, bookmarks, subscription, OMEMO devices, server queries,
+# argument errors. alice has verbose: true (logs in every reply, for log_text).
+accounts:
+  alice: {verbose: true}
+  dave: {}
+rooms:
+  bm: {seed: false}
+steps:
+  # block / blocked / unblock
+  - alice: block ${jid.dave}
+    expect: {sent_types~: "iq:set"}
+  - alice: blocked
+    expect: {log_text~: "${jid.dave}"}
+  - dave: send ${jid.alice} b1 while blocked $RUN
+  - alice: wait message
+    match: {body: "b1 while blocked $RUN"}
+    timeout: 2
+    expect_fail: true
+  - alice: unblock ${jid.dave}
+  - alice: blocked
+    expect: {log_text!~: "${jid.dave}"}
+
+  # bookmarks
+  - alice: bookmark-add ${room.bm} ScenarioBM alice
+  # match the new bookmark, not the bookmarks event of the login
+  - alice: wait bookmarks
+    match: {bookmarks~: "${room.bm}"}
+    timeout: 3
+    known_fail: "bookmark-add: no bookmarks event (no PEP notification comes)"
+  - alice: bookmarks
+    expect: {log_text~: "${room.bm}"}
+  - alice: bookmark-rm ${room.bm}
+  - alice: bookmarks
+    expect: {log_text!~: "${room.bm}"}
+
+  # subscription (the tool accepts an incoming subscribe itself)
+  - alice: subscribe ${jid.dave}
+    expect: {sent_types~: "presence:subscribe"}
+  - dave: wait subscription
+    match: {kind: subscribe, from: "${jid.alice}"}
+    timeout: 5
+  - dave: approve ${jid.alice}
+    expect: {sent_types~: "presence:subscribed"}
+  - alice: wait subscription
+    match: {kind: subscribed, from: "${jid.dave}"}
+    timeout: 5
+  - alice: wait roster
+    match: {jid: "${jid.dave}"}
+    timeout: 5
+
+  # reconnect: alice gets the presence of dave again (dave stays online).
+  # Take the presence from before the reconnect first.
+  - alice: wait presence
+    match: {jid: "${jid.dave}", show: available}
+    timeout: 5
+  - alice: disconnect
+  - alice: wait disconnected
+    timeout: 5
+  # /connect itself sends no stanza; the stanzas of the new session must
+  # not count for its reply
+  - alice: connect
+    expect: {sent_types: ""}
+  - alice: wait presence
+    match: {jid: "${jid.dave}", show: available}
+    timeout: 10
+  # reset for the next run
+  - alice: unsubscribe ${jid.dave}
+  - alice: revoke ${jid.dave}
+  - dave: unsubscribe ${jid.alice}
+  - dave: revoke ${jid.alice}
+
+  # OMEMO devices (fresh keys: one device each)
+  - alice: getowndev
+    expect: {log_text~: "Found 1 own device"}
+  # getdev reads the local cache only; discover fetches the device list first
+  - alice: discover ${jid.dave}
+    expect: {log_text~: "Device ID"}
+  - alice: getdev ${jid.dave}
+    expect: {log_text~: "Found 1 device"}
+  - alice: pep-nodes
+
+  # server
+  - alice: server-features
+  - alice: server-version
+  - alice: connected?
+
+  # argument and command errors
+  - alice: send ${jid.dave}
+    expect_fail: true
+    expect: {error~: "Usage: /send"}
+  - alice: bogus
+    expect_fail: true
+    expect: {error~: "Unknown command"}
+  - alice: wait message
+    match: {body: "never $RUN"}
+    timeout: 1
+    expect_fail: true
