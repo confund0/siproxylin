@@ -5,7 +5,7 @@ Extracted from MainWindow to improve maintainability.
 """
 
 import logging
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QDialog
 
 
@@ -115,7 +115,11 @@ class DialogManager:
 
     def show_join_room_dialog(self, account_id: int):
         """
-        Show dialog to join a MUC room.
+        Show dialog to join a MUC room (Add Group).
+
+        Used by the menu and the account context menu.
+        The bookmark is written after the join works; join errors are
+        shown by MUCManager (origin 'dialog').
 
         Args:
             account_id: Account to join room with
@@ -123,6 +127,7 @@ class DialogManager:
         logger.debug(f"Join room requested for account {account_id}")
 
         from ..join_room_dialog import JoinRoomDialog
+        from PySide6.QtWidgets import QMessageBox
         import asyncio
 
         dialog = JoinRoomDialog(account_id=account_id, parent=self.main_window)
@@ -132,24 +137,46 @@ class DialogManager:
             room_jid = dialog.room_jid
             nick = dialog.nick
             password = dialog.password if dialog.password else None
+            room_name = dialog.bookmark_name or None
+            bookmark = {
+                'name': room_name,
+                'nick': nick,
+                'password': password,
+                'autojoin': dialog.autojoin,
+            }
 
             logger.info(f"Joining room: {room_jid} as {nick}")
 
             # Add room to client configuration and join
             account = self.main_window.account_manager.get_account(account_id)
             if account and account.client:
-                asyncio.create_task(account.add_and_join_room(room_jid, nick, password))
-                logger.debug(f"Room join initiated: {room_jid}")
+                async def do_join():
+                    try:
+                        await account.add_and_join_room(room_jid, nick, password, room_name=room_name,
+                                                        origin='dialog', bookmark=bookmark)
+                        logger.debug(f"Room join initiated: {room_jid}")
+                    except Exception as e:
+                        logger.error(f"Failed to join room {room_jid}: {e}")
+                        msg_box = QMessageBox(self.main_window)
+                        msg_box.setIcon(QMessageBox.Critical)
+                        msg_box.setWindowTitle("Join Failed")
+                        msg_box.setText(f"Failed to join room:\n{e}")
+                        msg_box.show()  # Non-blocking
 
-                # Refresh contact list to show new room
-                self.main_window.contact_list.load_roster()
+                asyncio.create_task(do_join())
             else:
-                from PySide6.QtWidgets import QMessageBox
                 QMessageBox.warning(self.main_window, "Error", "Account not connected.")
 
-        # Connect and show (non-blocking)
+        def show_dialog():
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+            dialog.room_jid_input.setFocus()
+
+        # Connect and show (non-blocking, no exec(): see commit 70d8e9e).
+        # Show it after the context menu has closed; else it gets no keyboard focus.
         dialog.accepted.connect(on_accepted)
-        dialog.show()
+        QTimer.singleShot(0, show_dialog)
 
     def show_settings_dialog(self):
         """Show application settings dialog."""

@@ -48,6 +48,8 @@ class MUCManager:
         """
         account.muc_invite_received.connect(self.on_muc_invite_received)
         account.muc_role_changed.connect(self.on_muc_role_changed)
+        account.muc_join_error.connect(self.on_muc_join_error)
+        account.muc_room_created.connect(self.on_muc_room_created)
         logger.debug(f"Connected MUC signals for account {account.account_id}")
 
     def on_muc_invite_received(self, account_id: int, room_jid: str, inviter_jid: str, reason: str, password: str):
@@ -108,6 +110,53 @@ class MUCManager:
             logger.error(f"Failed to save MUC invite bookmark: {e}")
             import traceback
             logger.error(traceback.format_exc())
+
+    def on_muc_join_error(self, room_jid: str, friendly_msg: str, server_details: str, origin: str):
+        """
+        Show join errors for joins from the Add Group dialog.
+
+        Join button errors are shown by the chat header; autojoin and
+        rejoin errors are only logged.
+
+        Args:
+            room_jid: Room JID that failed to join
+            friendly_msg: User-friendly error message
+            server_details: Server error details (condition code + text)
+            origin: Where the user started the join ('header', 'dialog'), '' for autojoin and rejoin
+        """
+        if origin != 'dialog':
+            return
+
+        msg_box = QMessageBox(self.main_window)
+        msg_box.setIcon(QMessageBox.Critical)
+        msg_box.setWindowTitle("Cannot Join Room")
+        msg_box.setText(f"{room_jid}\n\n{friendly_msg}\n\n({server_details})")
+        msg_box.setStandardButtons(QMessageBox.Ok)
+        msg_box.show()  # Non-blocking
+
+    def on_muc_room_created(self, account_id: int, room_jid: str, configured: bool):
+        """
+        Warn if a new room could not get its config.
+
+        Args:
+            account_id: Account ID
+            room_jid: Room JID of the new room
+            configured: False if the room uses the server defaults
+        """
+        logger.info(f"New room created: {room_jid} (account {account_id}, configured={configured})")
+        if configured:
+            return
+
+        msg_box = QMessageBox(self.main_window)
+        msg_box.setIcon(QMessageBox.Warning)
+        msg_box.setWindowTitle("Room Settings Not Set")
+        msg_box.setText(
+            f"The room {room_jid} was created, but its settings could not be set.\n\n"
+            "It uses the server defaults: it can be public or temporary. "
+            "Check the room settings."
+        )
+        msg_box.setStandardButtons(QMessageBox.Ok)
+        msg_box.show()  # Non-blocking
 
     def on_muc_role_changed(self, account_id: int, room_jid: str, old_role: str, new_role: str):
         """

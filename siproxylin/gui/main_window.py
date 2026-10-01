@@ -28,7 +28,6 @@ from .log_viewer import LogViewer
 from .account_dialog import AccountDialog
 from .registration_wizard import RegistrationWizard
 from .contact_dialog import ContactDialog
-from .join_room_dialog import JoinRoomDialog
 from .contact_details_dialog import ContactDetailsDialog
 from .contact_list import ContactListWidget
 from .chat_view import ChatViewWidget
@@ -561,30 +560,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        dialog = JoinRoomDialog(account_id=account_id, parent=self)
-
-        def on_accepted():
-            # Get joined room info
-            room_jid = dialog.room_jid
-            nick = dialog.nick
-            password = dialog.password if dialog.password else None
-
-            logger.info(f"Joining room: {room_jid} as {nick}")
-
-            # Add room to client configuration and join
-            account = self.account_manager.get_account(account_id)
-            if account and account.client:
-                asyncio.create_task(account.add_and_join_room(room_jid, nick, password))
-                logger.debug(f"Room join initiated: {room_jid}")
-
-                # Refresh contact list to show new room
-                self.contact_list.load_roster()
-            else:
-                QMessageBox.warning(self, "Error", "Account not connected.")
-
-        # Connect and show (non-blocking)
-        dialog.accepted.connect(on_accepted)
-        dialog.show()
+        self.dialog_manager.show_join_room_dialog(account_id)
 
     def _on_settings(self):
         """Delegate to DialogManager."""
@@ -1472,24 +1448,7 @@ class MainWindow(QMainWindow):
             return
 
         # Open join room dialog with pre-selected account
-        dialog = JoinRoomDialog(account_id=account_id, parent=self)
-        if dialog.exec() == QDialog.Accepted:
-            # Get joined room info
-            room_jid = dialog.room_jid
-            nick = dialog.nick
-            password = dialog.password if dialog.password else None
-
-            logger.debug(f"Joining room: {room_jid} as {nick}")
-
-            # Add room to client configuration and join
-            if account and account.client:
-                asyncio.create_task(account.add_and_join_room(room_jid, nick, password))
-                logger.debug(f"Room join initiated: {room_jid}")
-
-                # Refresh contact list to show new room
-                self.contact_list.load_roster()
-            else:
-                QMessageBox.warning(self, "Error", "Account not connected.")
+        self.dialog_manager.show_join_room_dialog(account_id)
 
     @Slot(int)
     @Slot(int, str)

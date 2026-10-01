@@ -69,8 +69,9 @@ class XMPPAccount(QObject):
     chat_state_changed = Signal(int, str, str)  # (account_id, from_jid, state) - typing indicators
     presence_changed = Signal(int, str, str)  # (account_id, jid, presence) - contact presence changed
     muc_invite_received = Signal(int, str, str, str, str)  # (account_id, room_jid, inviter_jid, reason, password)
-    muc_join_error = Signal(str, str, str)  # (room_jid, friendly_message, server_error_text)
+    muc_join_error = Signal(str, str, str, str)  # (room_jid, friendly_message, server_error_text, origin: ''|'header'|'dialog')
     muc_join_success = Signal(int, str)  # (account_id, room_jid)
+    muc_room_created = Signal(int, str, bool)  # (account_id, room_jid, configured)
     muc_role_changed = Signal(int, str, str, str)  # (account_id, room_jid, old_role, new_role)
     avatar_updated = Signal(int, str)  # (account_id, jid) - avatar fetched/updated
     nickname_updated = Signal(int, str, str)  # (account_id, jid, nickname) - contact nickname updated (XEP-0172)
@@ -134,6 +135,7 @@ class XMPPAccount(QObject):
             'message_received': self.message_received,
             'chat_state_changed': self.chat_state_changed,
             'muc_join_error': self.muc_join_error,
+            'muc_room_created': self.muc_room_created,
             'muc_role_changed': self.muc_role_changed,
             'muc_invite_received': self.muc_invite_received,
             'call_incoming': self.call_incoming,
@@ -270,6 +272,7 @@ class XMPPAccount(QObject):
             'on_muc_invite_callback': self.muc.on_muc_invite,
             'on_muc_joined_callback': self._on_muc_joined,
             'on_muc_join_error_callback': self.muc.on_muc_join_error,
+            'on_muc_created_callback': self.muc.on_muc_created,
             'on_muc_role_changed_callback': self._on_muc_role_changed,
             'on_room_config_changed_callback': self.muc.on_room_config_changed,
             'on_message_correction_callback': self.messages._on_message_correction,
@@ -364,9 +367,11 @@ class XMPPAccount(QObject):
     # MUC Management (delegates to MucBarrel)
     # =========================================================================
 
-    async def add_and_join_room(self, room_jid: str, nick: str, password: str = None):
+    async def add_and_join_room(self, room_jid: str, nick: str, password: str = None,
+                                room_name: str = None, origin: str = 'header', bookmark: dict = None):
         """Add and join room - delegates to MucBarrel."""
-        return await self.muc.add_and_join_room(room_jid, nick, password)
+        return await self.muc.add_and_join_room(room_jid, nick, password, room_name=room_name,
+                                                origin=origin, bookmark=bookmark)
 
     def get_contact_presence(self, jid: str) -> str:
         """Get presence for a contact - delegates to PresenceBarrel."""

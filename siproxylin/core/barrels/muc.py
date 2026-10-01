@@ -122,7 +122,14 @@ class MucBarrel:
         # Format: {room_jid: timestamp}
         self._voice_request_timestamps: Dict[str, float] = {}
 
-    async def add_and_join_room(self, room_jid: str, nick: str, password: str = None):
+        # Joins the user started in this session, until the join works or fails
+        # Format: {room_jid: {'origin': 'header'|'dialog', 'bookmark': dict or None}}
+        # 'bookmark' holds create_or_update_bookmark() args, written after the join works
+        self._user_joins: Dict[str, Dict[str, Any]] = {}
+
+    async def add_and_join_room(self, room_jid: str, nick: str, password: str = None,
+                                room_name: str = None, origin: str = 'header',
+                                bookmark: Optional[Dict[str, Any]] = None):
         """
         Add a room to the client's configuration and join it.
 
@@ -133,6 +140,10 @@ class MucBarrel:
             room_jid: Room JID
             nick: Nickname to use
             password: Room password (optional)
+            room_name: Room name, only used if the join makes a new room
+            origin: Where the user started the join: 'header' (Join button) or 'dialog' (Add Group dialog)
+            bookmark: create_or_update_bookmark() args (without room_jid).
+                      Written only after the join works, so a failed join leaves no bookmark.
         """
         if not self.client:
             raise RuntimeError("Not connected")
@@ -140,13 +151,18 @@ class MucBarrel:
         if self.logger:
             self.logger.info(f"Adding and joining room: {room_jid} as {nick}")
 
+        # Already joined: no new self-presence comes, so on_muc_joined does not fire
+        already_joined = self.client.is_joined(room_jid)
+        if not already_joined:
+            self._user_joins[room_jid] = {'origin': origin, 'bookmark': bookmark}
+
         # Start database transaction for atomicity
         db = get_db()
         try:
             db.execute("BEGIN")
 
             # Perform the join (adds to rooms dict, sends presence, marks for MAM)
-            await self._perform_room_join(room_jid, nick, password)
+            await self._perform_room_join(room_jid, nick, password, room_name)
 
             # Commit transaction
             db.commit()
@@ -154,9 +170,13 @@ class MucBarrel:
         except Exception as e:
             # Rollback on error
             db.execute("ROLLBACK")
+            self._user_joins.pop(room_jid, None)
             if self.logger:
                 self.logger.error(f"Failed to join room {room_jid}: {e}")
             raise
+
+        if already_joined and bookmark:
+            await self.create_or_update_bookmark(room_jid=room_jid, **bookmark)
 
     async def _update_room_features_from_dict(self, room_jid: str, features: dict):
         """
@@ -321,7 +341,8 @@ class MucBarrel:
                 self.logger.error(traceback.format_exc())
             return False
 
-    async def _perform_room_join(self, room_jid: str, nick: str, password: str = None) -> bool:
+    async def _perform_room_join(self, room_jid: str, nick: str, password: str = None,
+                                 room_name: str = None) -> bool:
         """
         Core room join logic (no metadata fetching).
 
@@ -336,6 +357,7 @@ class MucBarrel:
             room_jid: Room JID
             nick: Nickname to use
             password: Room password (optional)
+            room_name: Room name, only used if the join makes a new room
 
         Returns:
             True if this is a NEW join (not already joined), False if already joined
@@ -359,7 +381,7 @@ class MucBarrel:
         }
 
         # Join the room (DrunkXMPP handles duplicate join protection)
-        await self.client.join_room(room_jid, nick, password)
+        await self.client.join_room(room_jid, nick, password, room_name=room_name)
 
         # Mark room for MAM retrieval after self-presence is received
         # (only for new joins, not re-joins of already joined rooms)
@@ -384,6 +406,32 @@ class MucBarrel:
         """
         if self.logger:
             self.logger.debug(f"MUC join complete for {room_jid} as {nick}")
+
+        # Late self-presence after a failed user join (for example a join timeout):
+        # the room was removed from client.rooms and has no bookmark. Leave it,
+        # so we are not in a room with no bookmark and no roster entry.
+        # room_jid comes lowercase from slixmpp; old rows and keys can have
+        # another case, so compare without case.
+        room_lower = room_jid.lower()
+        if (self.client
+                and not any(r.lower() == room_lower for r in self.client.rooms)
+                and not any(r.lower() == room_lower for r in self._user_joins)
+                and not self.get_bookmark(room_jid)):
+            if self.logger:
+                self.logger.warning(f"Joined {room_jid} after the join failed, and it has no bookmark: leaving it")
+            self._pending_mam_rooms.discard(room_jid)
+            self.client.leave_room(room_jid)
+            return
+
+        # Join from the Add Group dialog: the join worked, now write the bookmark
+        user_join_key = next((r for r in self._user_joins if r.lower() == room_lower), room_jid)
+        user_join = self._user_joins.pop(user_join_key, None)
+        if user_join and user_join['bookmark']:
+            try:
+                await self.create_or_update_bookmark(room_jid=room_jid, **user_join['bookmark'])
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"Failed to write bookmark for {room_jid} after join: {e}")
 
         # Phase 1: Fetch room metadata (features and config)
         # Do this AFTER join is confirmed (we're now an occupant)
@@ -975,6 +1023,17 @@ class MucBarrel:
         if self.logger:
             self.logger.warning(f"MUC join error for {room_jid}: {error_condition} - {error_text}")
 
+        # Only joins the user started get a dialog; autojoin and rejoin errors are only logged
+        user_join = self._user_joins.pop(room_jid, None)
+        origin = user_join['origin'] if user_join else ''
+        if not user_join and self.logger:
+            self.logger.info(f"Join of {room_jid} was not started by the user, no dialog")
+
+        # User join (Add Group dialog or Join button) with no bookmark: forget the room,
+        # so the client does not join it again after a reconnect
+        if user_join and self.client and not self.get_bookmark(room_jid):
+            self.client.rooms.pop(room_jid, None)
+
         # Map XMPP error conditions to user-friendly messages
         error_map = {
             'registration-required': 'Membership required to join this room',
@@ -983,8 +1042,10 @@ class MucBarrel:
             'conflict': 'Nickname already in use',
             'service-unavailable': 'Room does not exist or is unavailable',
             'item-not-found': 'Room does not exist',
-            'not-allowed': 'You are not allowed to join this room',
+            'not-allowed': 'You are not allowed to join or create this room',
             'jid-malformed': 'Invalid room address',
+            'remote-server-timeout': 'No answer from the group chat server',
+            'remote-server-not-found': 'Group chat server not found. Check the address.',
         }
 
         # Get user-friendly message (fallback to generic message if not mapped)
@@ -997,10 +1058,30 @@ class MucBarrel:
 
         # Emit signal for GUI to display error dialog
         if 'muc_join_error' in self.signals:
-            self.signals['muc_join_error'].emit(room_jid, friendly_msg, server_details)
+            self.signals['muc_join_error'].emit(room_jid, friendly_msg, server_details, origin)
         else:
             if self.logger:
                 self.logger.warning("muc_join_error signal not registered - error not propagated to UI")
+
+    async def on_muc_created(self, room_jid: str, nick: str, configured: bool):
+        """
+        Handle a new room made by our join (status 201).
+
+        Called by DrunkXMPP before on_muc_joined.
+
+        Args:
+            room_jid: Room JID
+            nick: Our nickname in the room
+            configured: False if the room config failed (room uses the server defaults)
+        """
+        if self.logger:
+            if configured:
+                self.logger.info(f"New room created: {room_jid} as {nick}")
+            else:
+                self.logger.warning(f"New room created: {room_jid} as {nick}, but the room config failed (server defaults)")
+
+        if 'muc_room_created' in self.signals:
+            self.signals['muc_room_created'].emit(self.account_id, room_jid, configured)
 
     # =========================================================================
     # MUC Service Layer API (for GUI abstraction)
@@ -1513,7 +1594,8 @@ class MucBarrel:
             Bookmark object or None if not found
         """
         try:
-            jid_row = self.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (room_jid,))
+            # Without case: slixmpp gives lowercase room JIDs, old rows can have another case
+            jid_row = self.db.fetchone("SELECT id FROM jid WHERE lower(bare_jid) = lower(?)", (room_jid,))
             if not jid_row:
                 return None
 

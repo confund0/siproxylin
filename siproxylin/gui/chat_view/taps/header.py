@@ -638,6 +638,14 @@ class ChatHeaderWidget(QFrame):
                     except:
                         pass  # Signal may not be connected
 
+            if self._muc_join_success_connection and self._muc_join_success_account_id is not None:
+                prev_account = self.account_manager.get_account(self._muc_join_success_account_id)
+                if prev_account:
+                    try:
+                        prev_account.muc_join_success.disconnect(self._muc_join_success_connection)
+                    except:
+                        pass  # Signal may not be connected
+
             # Connect to new account's signals
             account = self.account_manager.get_account(account_id)
             if account:
@@ -977,8 +985,8 @@ class ChatHeaderWidget(QFrame):
 
             async def do_join_existing():
                 try:
-                    # Use _perform_room_join directly (room already bookmarked)
-                    await account.muc._perform_room_join(self.current_jid, nick, password)
+                    # Room already bookmarked: join only (marks the join as started by the user)
+                    await account.add_and_join_room(self.current_jid, nick, password)
                     logger.info(f"Successfully initiated join for {self.current_jid}")
                 except Exception as e:
                     # This catches exceptions from the join call itself (not server errors)
@@ -999,21 +1007,10 @@ class ChatHeaderWidget(QFrame):
             QTimer.singleShot(0, lambda: asyncio.create_task(do_join_existing()))
 
         else:
-            # No bookmark - create one first (same pattern as MUC invite handling)
-            logger.info(f"No bookmark found for {self.current_jid}, creating one before join")
+            # No bookmark - write one after the join works (same as the Add Group dialog)
+            logger.info(f"No bookmark found for {self.current_jid}, creating one after join")
 
-            # Get default nickname with fallbacks (same as MUC invite flow)
-            account_data = self.db.fetchone(
-                "SELECT muc_nickname, nickname, bare_jid FROM account WHERE id = ?",
-                (self.current_account_id,)
-            )
-            if account_data:
-                nick = (account_data['muc_nickname'] or
-                        account_data['nickname'] or
-                        account_data['bare_jid'].split('@')[0])
-            else:
-                nick = account.jid.split('@')[0]
-
+            nick = self._default_muc_nick(account)
             password = None  # No password initially (will prompt if needed via muc_join_error)
 
             logger.info(f"Joining MUC room {self.current_jid} as {nick} (creating new bookmark)")
@@ -1024,18 +1021,15 @@ class ChatHeaderWidget(QFrame):
 
             async def do_create_and_join():
                 try:
-                    # Create bookmark with autojoin=0 (same as MUC invite)
-                    await account.muc.create_or_update_bookmark(
-                        room_jid=self.current_jid,
-                        name=None,  # Will be fetched from disco#info after join
-                        nick=nick,
-                        password=None,
-                        autojoin=False
-                    )
-                    logger.info(f"Created bookmark for {self.current_jid}")
-
-                    # Now join using add_and_join_room
-                    await account.add_and_join_room(self.current_jid, nick, password)
+                    # Bookmark with autojoin=0 (same as MUC invite), written after the join works
+                    bookmark = {
+                        'name': None,  # Will be fetched from disco#info after join
+                        'nick': nick,
+                        'password': None,
+                        'autojoin': False,
+                    }
+                    await account.add_and_join_room(self.current_jid, nick, password,
+                                                    origin='header', bookmark=bookmark)
                     logger.info(f"Successfully initiated join for {self.current_jid}")
 
                 except Exception as e:
@@ -1055,6 +1049,18 @@ class ChatHeaderWidget(QFrame):
             # Use QTimer to schedule the async task (avoids nested task issues)
             from PySide6.QtCore import QTimer
             QTimer.singleShot(0, lambda: asyncio.create_task(do_create_and_join()))
+
+    def _default_muc_nick(self, account) -> str:
+        """Default MUC nickname: muc_nickname, then nickname, then JID local part."""
+        account_data = self.db.fetchone(
+            "SELECT muc_nickname, nickname, bare_jid FROM account WHERE id = ?",
+            (self.current_account_id,)
+        )
+        if account_data:
+            return (account_data['muc_nickname'] or
+                    account_data['nickname'] or
+                    account_data['bare_jid'].split('@')[0])
+        return account.jid.split('@')[0]
 
     def _on_muc_join_success(self, account_id: int, room_jid: str):
         """
@@ -1080,7 +1086,7 @@ class ChatHeaderWidget(QFrame):
         # Update MUC info immediately (participant count, subject, etc.)
         self._update_muc_info()
 
-    def _on_muc_join_error(self, room_jid: str, friendly_msg: str, server_details: str):
+    def _on_muc_join_error(self, room_jid: str, friendly_msg: str, server_details: str, origin: str):
         """
         Handle MUC join error signal.
 
@@ -1090,6 +1096,7 @@ class ChatHeaderWidget(QFrame):
             room_jid: Room JID that failed to join
             friendly_msg: User-friendly error message
             server_details: Server error details (condition code + text)
+            origin: Where the user started the join ('header', 'dialog'), '' for autojoin and rejoin
         """
         logger.warning(f"MUC join error for {room_jid}: {friendly_msg}")
 
@@ -1103,6 +1110,12 @@ class ChatHeaderWidget(QFrame):
             # Re-enable join button
             self.join_room_button.setEnabled(True)
             self.join_room_button.setText("Join Room")
+
+        # Dialogs only for joins started with the Join button here.
+        # Add Group dialog errors are shown by MUCManager; autojoin and rejoin errors are only logged.
+        if origin != 'header':
+            logger.debug(f"No join error dialog for {room_jid} (origin: '{origin}')")
+            return
 
         # Check if this is a membership-required error
         if "Membership required" in friendly_msg or "registration-required" in server_details.lower():
@@ -1183,30 +1196,40 @@ class ChatHeaderWidget(QFrame):
 
             # Get nickname from bookmark
             jid_row = account.db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (room_jid,))
-            if not jid_row:
-                dialog.reject()
-                return
-            jid_id = jid_row['id']
+            bookmark_row = None
+            if jid_row:
+                bookmark_row = account.db.fetchone(
+                    "SELECT nick FROM bookmark WHERE account_id = ? AND jid_id = ?",
+                    (self.current_account_id, jid_row['id'])
+                )
 
-            bookmark_row = account.db.fetchone(
-                "SELECT nick FROM bookmark WHERE account_id = ? AND jid_id = ?",
-                (self.current_account_id, jid_id)
-            )
-            nick = bookmark_row['nick'] if bookmark_row else 'User'
+            new_bookmark = None
+            if bookmark_row:
+                nick = bookmark_row['nick']
 
-            # Save password to bookmark
-            encoded_password = base64.b64encode(password.encode()).decode()
-            account.db.execute(
-                "UPDATE bookmark SET password = ? WHERE account_id = ? AND jid_id = ?",
-                (encoded_password, self.current_account_id, jid_id)
-            )
-            account.db.commit()
-            logger.info(f"Saved password to bookmark for {room_jid}")
+                # Save password to bookmark
+                encoded_password = base64.b64encode(password.encode()).decode()
+                account.db.execute(
+                    "UPDATE bookmark SET password = ? WHERE account_id = ? AND jid_id = ?",
+                    (encoded_password, self.current_account_id, jid_row['id'])
+                )
+                account.db.commit()
+                logger.info(f"Saved password to bookmark for {room_jid}")
+            else:
+                # No bookmark yet (Join button): write it with the password after the join works
+                nick = self._default_muc_nick(account)
+                new_bookmark = {
+                    'name': None,
+                    'nick': nick,
+                    'password': password,
+                    'autojoin': False,
+                }
 
             # Retry join with password
             self.join_room_button.setEnabled(False)
             self.join_room_button.setText("Joining...")
-            asyncio.create_task(account.add_and_join_room(room_jid, nick, password))
+            asyncio.create_task(account.add_and_join_room(room_jid, nick, password,
+                                                          origin='header', bookmark=new_bookmark))
             logger.info(f"Retrying join with password: {room_jid}")
 
             dialog.accept()
