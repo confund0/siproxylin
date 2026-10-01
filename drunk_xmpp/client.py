@@ -59,7 +59,7 @@ apply_xep0363_upload_proxy_patch()
 from slixmpp import ClientXMPP
 from slixmpp.jid import JID
 from slixmpp.stanza import Message
-from slixmpp.exceptions import IqError, IqTimeout
+from slixmpp.exceptions import IqError, IqTimeout, PresenceError
 from slixmpp.plugins import register_plugin
 
 # Proxy support using python-socks library (supports HTTP CONNECT and SOCKS5)
@@ -86,6 +86,10 @@ from .message_extensions import MessageExtensionsMixin
 from .avatar import AvatarMixin
 from .external_services import ExternalServicesMixin
 from . import xep_0428
+
+# Namespaces in MUC invites (Prosody adds jabber:x:conference to mediated invites)
+MUC_USER_NS = 'http://jabber.org/protocol/muc#user'
+CONFERENCE_NS = 'jabber:x:conference'
 
 
 @dataclass
@@ -289,6 +293,17 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
     DRUNK-XMPP client with OMEMO encryption support.
     """
 
+    # Seconds to wait for the answer to a group chat join
+    MUC_JOIN_TIMEOUT = 30
+
+    # Config of a new room (status 201): private group in which OMEMO works
+    NEW_ROOM_CONFIG = {
+        'persistentroom': True,
+        'membersonly': True,
+        'whois': 'anyone',
+        'publicroom': False,
+    }
+
     def __init__(
         self,
         jid: str,
@@ -310,6 +325,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         on_muc_invite_callback: Optional[Callable] = None,
         on_muc_joined_callback: Optional[Callable] = None,
         on_muc_join_error_callback: Optional[Callable] = None,
+        on_muc_created_callback: Optional[Callable] = None,
         on_muc_role_changed_callback: Optional[Callable] = None,
         on_message_correction_callback: Optional[Callable] = None,
         on_room_config_changed_callback: Optional[Callable] = None,
@@ -356,6 +372,11 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             on_bookmarks_received_callback: Optional callback for bookmarks sync (bookmarks_list) - XEP-0402
             on_muc_invite_callback: Optional callback for MUC invites (room_jid, inviter_jid, reason, password) - XEP-0045
             on_muc_joined_callback: Optional callback for MUC room joined (room_jid, nick) - Fires after self-presence received (status code 110)
+            on_muc_join_error_callback: Optional callback for MUC join errors (room_jid, condition, text) - Error presence from the room,
+                                or condition 'remote-server-timeout' if no answer came in MUC_JOIN_TIMEOUT seconds
+            on_muc_created_callback: Optional callback for a new room made by our join (room_jid, nick, configured) - Status code 201.
+                                Fires before on_muc_joined_callback. configured is False if the default config failed
+                                (the room is then an instant room with the server defaults)
             on_muc_role_changed_callback: Optional callback for MUC role changes (room_jid, old_role, new_role) - XEP-0045
             on_room_config_changed_callback: Optional callback for room config changes (room_jid, room_name) - XEP-0045 status code 104
             on_avatar_update_callback: Optional callback for avatar updates (jid, avatar_data) - XEP-0084/0153
@@ -441,6 +462,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.on_muc_invite_callback = on_muc_invite_callback
         self.on_muc_joined_callback = on_muc_joined_callback
         self.on_muc_join_error_callback = on_muc_join_error_callback
+        self.on_muc_created_callback = on_muc_created_callback
         self.on_muc_role_changed_callback = on_muc_role_changed_callback
         self.on_message_correction_callback = on_message_correction_callback
         self.on_room_config_changed_callback = on_room_config_changed_callback
@@ -462,6 +484,10 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
 
         self.logger = logging.getLogger('drunk-xmpp.client')
         self.joined_rooms = set()
+        # Join watch tasks per room (timeout and join_muc result), see _watch_join()
+        self._join_tasks: Dict[str, asyncio.Task] = {}
+        # Rooms whose join was already reported as failed; a late error is not reported again
+        self._join_failed = set()
         self.reconnect_attempts = 0
         self.omemo_enabled = enable_omemo
         self.omemo_ready = False
@@ -636,7 +662,9 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.add_event_handler("muc::%s::self-presence" % '*', self._on_muc_presence)
         self.add_event_handler("muc::%s::got-online" % '*', self._on_muc_presence)
         self.add_event_handler("muc::%s::got-offline" % '*', self._on_muc_presence)
-        # MUC join errors: Wildcard handler doesn't work reliably, so we register per-room handlers in join_room()
+        # MUC join errors: all error presences, also those without the muc <x> echo
+        # (slixmpp's muc::<room>::presence-error needs the echo)
+        self.add_event_handler("presence_error", self._on_muc_error)
         self.add_event_handler("groupchat_invite", self._on_groupchat_invite)
 
         # Subscription events (roster management)
@@ -742,6 +770,12 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         """Handler for session end - clear state when session truly ends."""
         self.logger.warning("XMPP session ended")
         self.joined_rooms.clear()
+        # Group chat service is found again in the next session
+        self._muc_service = None
+        # Joins of the old session get no answer any more
+        for task in self._join_tasks.values():
+            task.cancel()
+        self._join_tasks.clear()
         # Keep omemo_ready: the OMEMO plugin keeps its session manager and
         # fires omemo_initialized only once per client object.
 
@@ -984,9 +1018,10 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             room_jid: Room JID (e.g., alerts@conference.example.com)
             room_config: Dict with 'nick' and optional 'password'
         """
-        # Skip if already joined (check slixmpp's state, not just our tracker)
-        if room_jid in self.plugin['xep_0045'].rooms:
-            self.logger.debug(f"Already joined to {room_jid}, skipping")
+        # Skip if joined or if a join still waits for its answer (one join per session).
+        # Not slixmpp's xep_0045 rooms: that dict is keyed by our JID (None), not by room.
+        if room_jid in self.joined_rooms or room_jid in self._join_tasks:
+            self.logger.debug(f"Already joined to {room_jid} or join pending, skipping")
             return
 
         nick = room_config.get('nick', 'Bot')
@@ -1002,16 +1037,92 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         try:
             # Use non-blocking join_muc instead of join_muc_wait
             # Our _on_muc_presence handler will update joined_rooms when we receive status code 110
-            self.plugin['xep_0045'].join_muc(
+            future = self.plugin['xep_0045'].join_muc(
                 room_jid,
                 nick,
                 password=password,
                 maxhistory=str(maxhistory) if maxhistory > 0 else "0"
             )
             self.logger.debug(f"Join presence sent for {room_jid}, waiting for self-presence confirmation...")
+            self._join_failed.discard(room_jid)
             # joined_rooms will be updated by _on_muc_presence when status code 110 arrives
+            old_task = self._join_tasks.pop(room_jid, None)
+            if old_task:
+                old_task.cancel()
+            self._join_tasks[room_jid] = asyncio.create_task(self._watch_join(room_jid, future))
         except Exception as e:
             self.logger.exception(f"Failed to send join presence for {room_jid}: {e}")
+
+    async def _watch_join(self, room_jid: str, future: asyncio.Future):
+        """
+        Wait for the result of join_muc() and report a join timeout.
+
+        Success is handled by _on_muc_presence, errors by _on_muc_error.
+        This task only takes the result of the slixmpp future (so no
+        "Task exception was never retrieved") and reports
+        'remote-server-timeout' if no answer came in MUC_JOIN_TIMEOUT seconds.
+
+        Only time while connected counts, and a disconnect starts the wait
+        again: after a XEP-0198 resume the server still sends the answer
+        (and slixmpp sends the join again if the server did not ack it).
+        If the session ends, _on_session_end cancels this task and the
+        next session_start joins the room again.
+        """
+        # Take the result also if the future ends after this task
+        future.add_done_callback(lambda f: f.cancelled() or f.exception())
+        step = min(1.0, self.MUC_JOIN_TIMEOUT)
+        waited = 0.0
+        try:
+            while waited < self.MUC_JOIN_TIMEOUT:
+                done, _ = await asyncio.wait({future}, timeout=step)
+                if done:
+                    if future.cancelled():
+                        return
+                    error = future.exception()
+                    if error and not isinstance(error, PresenceError):
+                        self.logger.debug(f"Join of {room_jid} ended with: {error}")
+                    return  # PresenceError: reported by _on_muc_error
+                if self._connection_state:
+                    waited += step
+                else:
+                    waited = 0.0
+
+            # Self-presence came, only the subject is late: no fault
+            if room_jid in self.joined_rooms or room_jid not in self.rooms:
+                return
+            text = f"No answer from the group chat in {self.MUC_JOIN_TIMEOUT} s"
+            self.logger.error(f"MUC join timeout for {room_jid}: {text}")
+            self._join_failed.add(room_jid)
+            self._forget_failed_join(room_jid)
+            await self._report_join_error(room_jid, 'remote-server-timeout', text)
+        finally:
+            # Not joined: stop the slixmpp join (it has its own 300 s timeout)
+            if room_jid not in self.joined_rooms and not future.done():
+                future.cancel()
+            if self._join_tasks.get(room_jid) is asyncio.current_task():
+                del self._join_tasks[room_jid]
+
+    def _forget_failed_join(self, room_jid: str):
+        """
+        Remove a failed join from the slixmpp MUC plugin.
+
+        join_muc() puts the room in rooms[None] and our_nicks[None] of the
+        plugin, and only leave_muc() removes it. While the room is there,
+        slixmpp drops invites from it (_handle_groupchat_invite).
+        """
+        muc = self.plugin['xep_0045']
+        muc.rooms[None].pop(room_jid, None)
+        muc.our_nicks[None].pop(room_jid, None)
+
+    async def _report_join_error(self, room_jid: str, condition: str, text: str):
+        """Call on_muc_join_error_callback (room_jid, condition, text)."""
+        if self.on_muc_join_error_callback:
+            try:
+                await self.on_muc_join_error_callback(room_jid, condition, text)
+            except Exception as e:
+                self.logger.error(f"Error in on_muc_join_error_callback: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
 
     async def _on_muc_presence(self, presence):
         """Handler for MUC presence updates."""
@@ -1073,7 +1184,23 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
 
                     if room not in self.joined_rooms:
                         self.joined_rooms.add(room)
+                        # Late self-presence after a reported failure: the join worked
+                        if room in self._join_failed:
+                            # _forget_failed_join() removed the room from slixmpp: add it again
+                            muc = self.plugin['xep_0045']
+                            muc.rooms[None].setdefault(room, {})
+                            muc.our_nicks[None][room] = nick
+                        self._join_failed.discard(room)
                         self.logger.info(f"Self-presence confirmed in {room} as {nick} - joined successfully")
+
+                        # Status 201: our join made a new room; it stays locked until the owner sends a config
+                        if 201 in status_codes:
+                            configured = await self._configure_new_room(room, affiliation)
+                            if self.on_muc_created_callback:
+                                try:
+                                    await self.on_muc_created_callback(room, nick, configured)
+                                except Exception as e:
+                                    self.logger.error(f"Error in on_muc_created_callback for {room}: {e}")
 
                         # Fire callback to notify that room is fully joined (presence received)
                         if self.on_muc_joined_callback:
@@ -1095,12 +1222,21 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         Handler for MUC presence errors.
 
         Called when joining a room fails (e.g., banned, members-only, password incorrect).
+        Gets every error presence ("presence_error" event), also errors without
+        the muc <x> echo (wrong domain, s2s errors).
+        Only rooms we are joining count: in self.rooms, not in joined_rooms.
         """
         room = presence['from'].bare
 
         # Only process if this is a MUC room we're trying to join
         if room not in self.rooms:
-            self.logger.debug(f"MUC error for {room} but room not in rooms dict, ignoring")
+            self.logger.debug(f"Error presence from {room}, not a room we join, ignoring")
+            return
+        if room in self.joined_rooms:
+            self.logger.debug(f"Error presence from {room}, room already joined, ignoring")
+            return
+        if room in self._join_failed:
+            self.logger.debug(f"Error presence from {room}, join failure already reported, ignoring")
             return
 
         error = presence['error']
@@ -1113,50 +1249,81 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
 
         self.logger.error(f"MUC join error for {room}: {condition} - {text}")
 
+        # The join has its answer: stop the join timeout
+        task = self._join_tasks.pop(room, None)
+        if task:
+            task.cancel()
+        self._join_failed.add(room)
+        self._forget_failed_join(room)
+
         # Fire callback for UI notification
-        if self.on_muc_join_error_callback:
-            try:
-                await self.on_muc_join_error_callback(room, condition, text)
-            except Exception as e:
-                self.logger.error(f"Error in on_muc_join_error_callback: {e}")
-                import traceback
-                self.logger.error(traceback.format_exc())
+        await self._report_join_error(room, condition, text)
+
+    async def _configure_new_room(self, room_jid: str, affiliation: str) -> bool:
+        """
+        Send the config of a new room (status 201), so it is unlocked.
+
+        Sets NEW_ROOM_CONFIG and the room name from rooms[room_jid]['room_name'].
+        Fields the server form does not have are skipped (set_room_config).
+        If that fails, sends an empty form (instant room, server defaults),
+        so the room is never left locked.
+
+        Returns:
+            True if NEW_ROOM_CONFIG was set, False otherwise
+        """
+        if affiliation != 'owner':
+            self.logger.warning(f"New room {room_jid} but our affiliation is {affiliation}, no config sent")
+            return False
+
+        config = dict(self.NEW_ROOM_CONFIG)
+        room_name = self.rooms.get(room_jid, {}).get('room_name')
+        if room_name:
+            config['roomname'] = room_name
+
+        self.logger.info(f"New room {room_jid}: sending the room config")
+        if await self.set_room_config(room_jid, config):
+            return True
+
+        self.logger.warning(f"Room config of {room_jid} failed, unlocking it as an instant room")
+        try:
+            form = self.plugin['xep_0004'].make_form(ftype='submit')
+            await self.plugin['xep_0045'].set_room_config(room=room_jid, config=form, timeout=15)
+            self.logger.info(f"Room {room_jid} unlocked as an instant room (server defaults)")
+        except Exception as e:
+            self.logger.error(f"Instant room for {room_jid} failed, the room stays locked: {e}")
+        return False
 
     async def _on_groupchat_invite(self, inv):
         """
-        Handler for MUC invitations (XEP-0045).
-
-        Invites come in two forms:
-        - Direct invites: <x xmlns='http://jabber.org/protocol/muc#user'><invite from='...' /></x>
-        - Mediated invites: <x xmlns='jabber:x:conference' jid='...' />
+        Handler for mediated MUC invitations (XEP-0045, through the room):
+          <x xmlns='http://jabber.org/protocol/muc#user'><invite from='...'/>
+          <password>...</password></x>
+        Direct invites (XEP-0249, from a contact) are not supported: a contact
+        could then add a room to the roster with no room in between.
+        Prosody also adds a jabber:x:conference element to mediated invites.
+        The password comes from muc#user first, then from jabber:x:conference.
+        slixmpp has no stanza interface for the muc#user <password>: read the XML.
         """
-        room_jid = None
-        inviter_jid = None
-        reason = None
+        muc_x = inv.xml.find(f'{{{MUC_USER_NS}}}x')
+        conf_x = inv.xml.find(f'{{{CONFERENCE_NS}}}x')
+        invite = muc_x.find(f'{{{MUC_USER_NS}}}invite') if muc_x is not None else None
         password = None
 
-        # Direct invite (XEP-0045 §7.8.1)
-        muc_user = inv['muc']['invite']
-        if muc_user:
-            room_jid = inv['from'].bare
-            inviter_jid_raw = muc_user.get('from', 'unknown')
-            # Convert JID object to string for Qt signal compatibility
-            inviter_jid = str(inviter_jid_raw) if inviter_jid_raw else 'unknown'
-            reason = muc_user.get('reason', '')
-            password = inv['muc'].get('password')
+        if invite is None:
+            return
+        # Mediated invite (XEP-0045 §7.8.2)
+        room_jid = inv['from'].bare
+        inviter_jid = invite.get('from') or 'unknown'
+        reason = invite.findtext(f'{{{MUC_USER_NS}}}reason') or ''
+        password = muc_x.findtext(f'{{{MUC_USER_NS}}}password') or None
 
-        # Mediated invite (legacy jabber:x:conference)
-        x_conference = inv.get('x', {})
-        if 'jid' in x_conference:
-            room_jid = x_conference['jid']
-            inviter_jid = inv['from'].bare
-            reason = x_conference.get('reason', '')
-            password = x_conference.get('password')
+        if not password and conf_x is not None:
+            password = conf_x.get('password') or None
 
         if room_jid and self.on_muc_invite_callback:
             self.logger.info(f"MUC invite received: {room_jid} from {inviter_jid}")
             try:
-                await self.on_muc_invite_callback(room_jid, inviter_jid, reason or '', password)
+                await self.on_muc_invite_callback(room_jid, inviter_jid, reason, password)
             except Exception as e:
                 self.logger.error(f"Error in MUC invite callback: {e}")
 
@@ -1300,6 +1467,10 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         """Rejoin a room after delay."""
         self.logger.info(f"Will attempt to rejoin {room_jid} in {delay}s")
         await asyncio.sleep(delay)
+        # A new join (e.g. leave and join again) was sent in the meantime
+        if room_jid in self.joined_rooms or room_jid in self._join_tasks:
+            self.logger.debug(f"Rejoin of {room_jid} skipped: joined or join pending")
+            return
         if room_jid in self.rooms:
             await self._join_room(room_jid, self.rooms[room_jid])
 
@@ -2668,23 +2839,27 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         """Get list of currently joined rooms."""
         return list(self.joined_rooms)
 
-    async def join_room(self, room_jid: str, nick: str, password: Optional[str] = None):
+    async def join_room(self, room_jid: str, nick: str, password: Optional[str] = None,
+                        room_name: Optional[str] = None):
         """
         Join a MUC room dynamically.
+
+        The result comes later: on_muc_joined_callback, or
+        on_muc_join_error_callback (also on a join timeout).
+        If the room does not exist, the server makes it (status 201) and
+        we send NEW_ROOM_CONFIG (on_muc_created_callback).
 
         Args:
             room_jid: Room JID (e.g., room@conference.server.com)
             nick: Nickname to use in the room
             password: Optional room password
+            room_name: Optional room name, only used if the join makes a new room
         """
         room_config = {'nick': nick, 'password': password}
+        if room_name:
+            room_config['room_name'] = room_name
         # Add to rooms dict BEFORE sending join (so error handler can find it)
         self.rooms[room_jid] = room_config
-
-        # Register per-room error handler (disposable=True removes it after first use)
-        # Note: slixmpp's wildcard handlers (muc::*::presence-error) don't work reliably
-        event_name = f"muc::{room_jid}::presence-error"
-        self.add_event_handler(event_name, self._on_muc_error, disposable=True)
 
         await self._join_room(room_jid, room_config)
 
@@ -2700,7 +2875,9 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             return
 
         self.logger.info(f"Leaving MUC: {room_jid}")
-        self.plugin['xep_0045'].leave_muc(room_jid, "Leaving")
+        # Our nick in the room (the server can change it), before rooms entry is deleted
+        nick = self.plugin['xep_0045'].our_nicks[None].get(room_jid) or self.rooms.get(room_jid, {}).get('nick')
+        self.plugin['xep_0045'].leave_muc(room_jid, nick, "Leaving")
 
         if room_jid in self.joined_rooms:
             self.joined_rooms.remove(room_jid)

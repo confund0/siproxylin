@@ -457,6 +457,48 @@ class DiscoveryMixin:
             self.logger.error(traceback.format_exc())
             return False
 
+    async def get_muc_service(self) -> Optional[str]:
+        """
+        Find the group chat service of our server (XEP-0030).
+
+        Asks disco#items on the account domain, then disco#info on each
+        item. The first item with identity conference/text wins.
+        The result is kept until the session ends.
+
+        Returns:
+            Service JID (e.g. 'conference.example.com'), or None if not found
+        """
+        cached = getattr(self, '_muc_service', None)
+        if cached:
+            return cached
+
+        xep_0030 = self.plugin['xep_0030']
+        domain = self.boundjid.domain
+        try:
+            items = await xep_0030.get_items(jid=domain, timeout=10)
+        except (IqError, IqTimeout) as e:
+            self.logger.warning(f"disco#items on {domain} failed: {e}")
+            return None
+
+        for item in items['disco_items']['items']:
+            # Item tuple is (jid, node, name)
+            item_jid = str(item[0])
+            try:
+                info = await xep_0030.get_info(jid=item_jid, timeout=5)
+            except Exception as e:
+                # One bad item must not stop the search
+                self.logger.debug(f"disco#info on {item_jid} failed: {e}")
+                continue
+            for identity in info['disco_info']['identities']:
+                # Identity tuple is (category, type, xml_lang, name)
+                if identity[0] == 'conference' and identity[1] == 'text':
+                    self.logger.info(f"Group chat service of {domain}: {item_jid}")
+                    self._muc_service = item_jid
+                    return item_jid
+
+        self.logger.info(f"No group chat service found on {domain}")
+        return None
+
     # ============================================================================
     # XEP-0092: Software Version
     # ============================================================================

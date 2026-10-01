@@ -1,24 +1,82 @@
 # Group chats: alice, bob, carol.
 # enc: members-only, whois=anyone (OMEMO room); plain: open, whois=moderators.
-# new: made by /join (not seeded), stays locked for others.
+# new: made by /join (not seeded); drunk_xmpp sets the config of the new
+# room (members-only, persistent, whois=anyone, hidden).
+# pw: members-only with a password.
 accounts:
   alice: {}
-  bob: {}
+  bob: {verbose: true}
   carol: {}
 rooms:
   enc: {owner: alice, members: [bob, carol], members_only: true, whois: anyone}
   plain: {owner: alice, members_only: false, whois: moderators}
   new: {seed: false}
+  pw: {owner: alice, members: [bob], password: pw-secret}
 steps:
+  # group chat service of the server
+  - alice: muc-service
+    expect: {service: conference.localhost}
+
   # new room made by /join
-  - alice: join ${room.new} alice
+  - alice: join ${room.new} alice --name New room $RUN
   - alice: wait muc_joined
     match: {room: "${room.new}"}
+    expect: {created: true}
+  - alice: room-config ${room.new}
+    expect: {membersonly: true, persistent: true, whois: anyone, public: false,
+             roomname: "New room $RUN"}
+  # bob is not a member
   - bob: join ${room.new} bob
   - bob: wait muc_join_error
     match: {room: "${room.new}"}
-    timeout: 3
-    known_fail: "join of a locked new room: no muc_join_error (timeout)"
+    timeout: 5
+    expect: {condition: registration-required}
+  # alice invites bob after his failed join: the invite must come in
+  - alice: invite ${room.new} ${jid.bob} come in $RUN
+  - bob: wait muc_invite
+    match: {room: "${room.new}"}
+    expect: {from~: "${jid.alice}", reason: "come in $RUN"}
+  # join after the failed join works (the invite made bob a member)
+  - bob: join ${room.new} bob
+    expect: {log_text~: "Joining MUC: ${room.new}"}
+  - bob: wait muc_joined
+    match: {room: "${room.new}"}
+  # one join per session: a second join sends no join presence
+  # (the join presence is sent in a slixmpp task: not in "sent")
+  - bob: join ${room.new} bob
+    expect: {log_text!~: "Joining MUC: ${room.new}"}
+  - bob: leave ${room.new}
+  # join again at once: the room exists, nothing is created
+  # leave goes to room/<our nick>
+  - alice: leave ${room.new}
+    save: lv
+  - expect: {lv.sent.0.to: "${room.new}/alice"}
+  - alice: join ${room.new} alice
+  - alice: wait muc_joined
+    match: {room: "${room.new}"}
+    expect: {created: false}
+  - alice: leave ${room.new}
+
+  # room with a password: the invite carries it, bob joins with it
+  - alice: invite ${room.pw} ${jid.bob} pw room $RUN
+  - bob: wait muc_invite
+    match: {room: "${room.pw}"}
+    expect: {reason: "pw room $RUN", password: pw-secret}
+  - bob: join ${room.pw} bob
+  - bob: wait muc_join_error
+    match: {room: "${room.pw}"}
+    expect: {condition: not-authorized}
+  - bob: join ${room.pw} bob pw-secret
+  - bob: wait muc_joined
+    match: {room: "${room.pw}"}
+  - bob: leave ${room.pw}
+
+  # room on a domain that does not exist: an error, not a hang
+  - bob: join nope$RUN@nonexistent.localhost bob
+  - bob: wait muc_join_error
+    match: {room: "nope$RUN@nonexistent.localhost"}
+    timeout: 40
+    expect: {condition: "*"}
 
   # plain room
   - alice: join ${room.plain} alice

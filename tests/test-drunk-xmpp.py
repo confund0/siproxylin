@@ -58,7 +58,20 @@ JSON mode:
       Events: ready, connected, disconnected, connect_failed, message,
       receipt, marker, server_ack, presence, chat_state, reaction,
       message_error, subscription, roster, bookmarks, muc_invite,
-      muc_joined, muc_join_error.
+      muc_joined, muc_join_error, muc_created, muc_service.
+      "muc_joined" has room, nick, created (true if this join made a new
+      room). "muc_created" has room, nick, configured (false if the
+      default config failed and the room is an instant room).
+      "muc_join_error" has room, condition, text; condition
+      remote-server-timeout means no answer to the join.
+      /join <room> <nick> [pass] [--name <room name>]: the name is used
+      only if the join makes a new room.
+      /invite <room> <jid> [reason] sends a mediated invite (through the
+      room); the invitee gets a "muc_invite" event (room, from, reason,
+      password).
+      /muc-service writes a "muc_service" event; its reply has "service"
+      (null if the server has none). /room-config puts the config fields
+      in its reply (membersonly, persistent, public, whois, roomname, ...).
       "message" has the fields it knows: jid, from, to, room, nick, body,
       body_clean, encrypted, decrypt_failed, type, id, stanza_id,
       origin_id, archive_id, replace_id, reply_to_id, attachment_url,
@@ -440,8 +453,10 @@ def print_help_grouped():
     print()
 
     print("MUC/ROOMS:")
-    print("  /join <room> <nick> [pass]   - Join MUC room")
+    print("  /join <room> <nick> [pass] [--name <room name>] - Join MUC room (name: only for a new room)")
+    print("  /muc-service                 - Find the group chat service of the server")
     print("  /leave <room>                - Leave MUC room")
+    print("  /invite <room> <jid> [reason] - Invite a contact to a MUC room")
     print("  /sendmuc <room> <message>    - Send plaintext to MUC room")
     print("  /sendmucenc <room> <message> - Send OMEMO-encrypted to MUC room")
     print("  /bookmarks                   - List server bookmarks")
@@ -553,10 +568,12 @@ def print_help_alphabetical():
         "/help                        - Show help grouped by category",
         "/helpa                       - Show all commands alphabetically",
         "/history <jid> [max] [--start <ISO time>|--since-run] [--no-skip] - Retrieve MAM history (default: 50 messages)",
-        "/join <room> <nick> [pass]   - Join MUC room",
+        "/invite <room> <jid> [reason] - Invite a contact to a MUC room",
+        "/join <room> <nick> [pass] [--name <room name>] - Join MUC room (name: only for a new room)",
         "/keepalive?                  - Test auto-reconnect (disconnect but keep auto-reconnect)",
         "/leave <room>                - Leave MUC room",
         "/mam-check <jid>             - Check if JID supports MAM",
+        "/muc-service                 - Find the group chat service of the server",
         "/marker <jid> <msg_id> <type> - Send chat marker (received/displayed/acknowledged)",
         "/pep-config <node>           - Show the config of an own PEP node",
         "/pep-create <node>           - Create an own PEP node with the server default config",
@@ -869,7 +886,7 @@ async def main(args):
     async def on_muc_invite(room_jid, inviter_jid, reason, password):
         """Handler for MUC invitations."""
         driver.emit('muc_invite', room=room_jid, reason=reason or None,
-                    **{'from': inviter_jid})
+                    password=password or None, **{'from': inviter_jid})
         if driver.json_mode:
             return
         print()
@@ -937,8 +954,17 @@ async def main(args):
                     origin_id=msg['origin_id']['id'] or None, replace_id=replace_id,
                     body=body, encrypted=is_encrypted, source='correction')
 
+    # Rooms made by our join (on_muc_created fires before on_muc_joined)
+    created_rooms = set()
+
+    async def on_muc_created(room_jid, nick, configured):
+        created_rooms.add(str(room_jid))
+        driver.emit('muc_created', room=str(room_jid), nick=nick, configured=configured)
+
     async def on_muc_joined(room_jid, nick):
-        driver.emit('muc_joined', room=str(room_jid), nick=nick)
+        created = str(room_jid) in created_rooms
+        created_rooms.discard(str(room_jid))
+        driver.emit('muc_joined', room=str(room_jid), nick=nick, created=created)
 
     async def on_muc_join_error(room_jid, condition, text):
         driver.emit('muc_join_error', room=str(room_jid), condition=condition, text=text)
@@ -982,6 +1008,7 @@ async def main(args):
         on_message_correction_callback=on_message_correction,
         on_muc_joined_callback=on_muc_joined,
         on_muc_join_error_callback=on_muc_join_error,
+        on_muc_created_callback=on_muc_created,
         enable_omemo=xmpp_config.get('omemo', {}).get('enabled', True),
         allow_any_message_editing=xmpp_config.get('message_editing', {}).get('allow_any_message', False),
         reconnect_max_delay=xmpp_config.get('reconnect_max_delay', 300),
@@ -1416,9 +1443,11 @@ async def main(args):
                     logger.error(f"Failed: {e}")
 
             elif command.startswith("/join "):
-                parts = command.split(None, 3)
+                # "--name <room name>" is the rest of the line (may have spaces)
+                join_args, _, room_name = command.partition(" --name ")
+                parts = join_args.split(None, 3)
                 if len(parts) < 3:
-                    logger.error("Usage: /join <room_jid> <nick> [password]")
+                    logger.error("Usage: /join <room_jid> <nick> [password] [--name <room name>]")
                     continue
 
                 room_jid = parts[1]
@@ -1427,7 +1456,7 @@ async def main(args):
 
                 logger.info(f"Joining MUC {room_jid} as {nick}...")
                 try:
-                    await client.join_room(room_jid, nick, password)
+                    await client.join_room(room_jid, nick, password, room_name=room_name.strip() or None)
                     logger.info(f"✓ Joined {room_jid}")
                 except Exception as e:
                     logger.error(f"Failed: {e}")
@@ -1443,6 +1472,22 @@ async def main(args):
                 try:
                     client.leave_room(room_jid)
                     logger.info(f"✓ Left {room_jid}")
+                except Exception as e:
+                    logger.error(f"Failed: {e}")
+
+            elif command.startswith("/invite "):
+                parts = command.split(None, 3)
+                if len(parts) < 3:
+                    logger.error("Usage: /invite <room_jid> <jid> [reason]")
+                    continue
+
+                room_jid = parts[1]
+                invitee = parts[2]
+                reason = parts[3] if len(parts) > 3 else ''
+                logger.info(f"Inviting {invitee} to {room_jid}...")
+                try:
+                    client.send_muc_invite(room_jid, invitee, reason)
+                    logger.info(f"✓ Invite sent to {invitee}")
                 except Exception as e:
                     logger.error(f"Failed: {e}")
 
@@ -1819,6 +1864,20 @@ async def main(args):
                     import traceback
                     traceback.print_exc()
 
+            elif command == "/muc-service":
+                logger.info("Looking for the group chat service of the server...")
+                try:
+                    service = await client.get_muc_service()
+                    if service:
+                        logger.info(f"✓ Group chat service: {service}")
+                    else:
+                        logger.warning("No group chat service found")
+                    if driver.req is not None:
+                        driver.req['extra']['service'] = service
+                    driver.emit('muc_service', service=service)
+                except Exception as e:
+                    logger.error(f"Failed: {e}")
+
             elif command.startswith("/room-config "):
                 parts = command.split(None, 1)
                 if len(parts) < 2:
@@ -1830,6 +1889,9 @@ async def main(args):
                 logger.info("(Note: Requires room owner permissions)")
                 try:
                     config = await client.get_room_config(room_jid)
+                    # Config fields in the reply ("error" is the reply's own field)
+                    if driver.req is not None and config and not config.get('error'):
+                        driver.req['extra'].update({k: v for k, v in config.items() if k != 'error'})
 
                     if config and config.get('error'):
                         logger.error(f"✗ Failed to query room config: {config['error']}")

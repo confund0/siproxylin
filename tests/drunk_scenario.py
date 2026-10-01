@@ -33,6 +33,7 @@ Scenario file (YAML):
       carol: {fresh_keys: true}  # new OMEMO keys (new device) each run
     rooms:                     # written to Prosody storage before start
       enc: {owner: alice, members: [bob], members_only: true, whois: anyone}
+      pw: {owner: alice, password: secret}   # password: letters, digits, "-", "_", "."
       new: {seed: false}       # only a name, not written
     files:
       f1: {name: small.txt, text: "file content"}
@@ -110,6 +111,7 @@ PID_FILE = PROSODY_DIR / 'prosody.pid'
 NODE_RE = re.compile(r'[a-z0-9._-]+')
 FILE_RE = re.compile(r'[A-Za-z0-9._ -]+')
 BARE_JID_RE = re.compile(r'[a-z0-9._-]+@[a-z0-9.-]+')
+PASSWORD_RE = re.compile(r'[A-Za-z0-9._-]+')
 WHOIS_VALUES = ('anyone', 'moderators')
 
 
@@ -195,7 +197,8 @@ class Prosody:
             self.log.close()
 
 
-def seed_room(node, owner, members, members_only=True, whois='anyone'):
+def seed_room(node, owner, members, members_only=True, whois='anyone',
+              password=None):
     """Write a room to Prosody storage (Prosody stopped).
 
     The tool has no command to create or configure rooms, and a room made
@@ -207,6 +210,8 @@ def seed_room(node, owner, members, members_only=True, whois='anyone'):
             raise StepError(f'bad room member JID {jid!r}')
     if whois not in WHOIS_VALUES:
         raise StepError(f'bad whois {whois!r}: use one of {", ".join(WHOIS_VALUES)}')
+    if password is not None:
+        safe_name(password, PASSWORD_RE, 'room password')
     lines = ['return {', f'\t["{owner}"] = "owner";']
     lines += [f'\t["{m}"] = "member";' for m in members]
     lines += [f'\t["_jid"] = "{node}@{MUC}";',
@@ -215,8 +220,10 @@ def seed_room(node, owner, members, members_only=True, whois='anyone'):
               '\t\t["persistent"] = true;',
               f'\t\t["members_only"] = {"true" if members_only else "false"};',
               f'\t\t["whois"] = "{whois}";',
-              '\t\t["hidden"] = true;',
-              '\t};', '};', '']
+              '\t\t["hidden"] = true;']
+    if password is not None:
+        lines.append(f'\t\t["password"] = "{password}";')
+    lines += ['\t};', '};', '']
     (CONF_DIR / 'config').mkdir(parents=True, exist_ok=True)
     (CONF_DIR / 'config' / f'{node}.dat').write_text('\n'.join(lines))
     pers = CONF_DIR / 'persistent.dat'
@@ -493,8 +500,10 @@ class Scenario:
             if r.get('seed', True):
                 owner = self.values['jid'][r['owner']]
                 members = [self.values['jid'][m] for m in r.get('members') or []]
+                password = r.get('password')
                 seed_room(node, owner, members, bool(r.get('members_only', True)),
-                          r.get('whois', 'anyone'))
+                          r.get('whois', 'anyone'),
+                          None if password is None else str(password))
         for key, f in (self.data.get('files') or {}).items():
             name = subst(str(f.get('name', key)), self.values)
             p = self.dir / 'files' / safe_name(name, FILE_RE, 'file name')
