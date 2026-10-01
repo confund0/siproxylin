@@ -7,12 +7,17 @@ See help function below to get an idea what it can do
 
 Usage:
     test-drunk-xmpp.py [--config PATH] [--json] [--log-dir DIR]
+                       [--verbose] [--events all|none]
 
     --config   Config file. Default: test-drunk-xmpp.conf in the current dir,
                else the one next to this script.
     --json     Agent mode: JSON lines on stdin and stdout (see below).
     --log-dir  Write drunk-xmpp.log and xmpp-protocol.log to DIR
                (turns both files on, the config paths are not used).
+    --verbose  JSON mode: every reply has "logs" (INFO and higher).
+    --events   JSON mode: "all" (default) writes each event as its own
+               line; "none" writes no event lines (wait replies still
+               carry the full event).
 
 End of input (EOF) disconnects and exits with code 0, in both modes.
 
@@ -29,10 +34,18 @@ JSON mode:
 
     Reply (when the command is finished):
         {"id": 1, "done": true, "ok": true, "error": null,
-         "t_start": "...", "t_end": "...",
+         "t_start": "...", "t_end": "...", "msg_id": "...",
          "sent": [{"t", "kind", "type", "id", "origin_id", "to"}, ...],
          "logs": [{"t", "level", "logger", "msg"}, ...]}
+      Only the command itself counts: its own code and the asyncio tasks
+      it starts. Stanzas and logs from incoming traffic (slixmpp
+      callbacks) are not part of the reply.
       ok is false if the command raised or logged an ERROR.
+      "sent" lists the stanzas the command sent (message, presence, iq).
+      "msg_id" is the id of the first message stanza in "sent" (null if
+      none).
+      "logs" is only in the reply when ok is false (WARNING and higher),
+      or always with --verbose (INFO and higher).
       Times are local time "YYYY-MM-DD HH:MM:SS.mmm" (the clock of the
       logs), usable with tools/siplog.py --since/--until.
 
@@ -43,8 +56,19 @@ JSON mode:
       message_error, subscription, roster, bookmarks, muc_invite,
       muc_joined, muc_join_error.
       "message" has the fields it knows: jid, from, to, room, nick, body,
-      encrypted, type, id, stanza_id, origin_id, archive_id, replace_id,
-      attachment_url, source (live, carbon, history, mam, correction).
+      body_clean, encrypted, decrypt_failed, type, id, stanza_id,
+      origin_id, archive_id, replace_id, reply_to_id, attachment_url,
+      source (live, carbon, history, mam, correction).
+      body_clean is the body without the reply quote (XEP-0461
+      fallback); it is only there when a quote was removed.
+      /history writes one "message" event per archived message (source
+      mam); for a group chat it has "room" too. "/history <jid> 50
+      --since-run" asks only for messages since this process started;
+      "--start <ISO time>" sets the start (no zone = local time).
+      "presence" has from (full JID), jid (bare JID), show, status, type.
+      It comes only when one of show, status, type changed for that
+      full JID.
+      "ready" comes after the login and the OMEMO start (or its timeout).
       Commands sent before "ready" wait in a queue.
 
     Built-in commands (also in human mode as /wait and /sleep):
@@ -52,6 +76,8 @@ JSON mode:
          "match": {"body": "hi"}, "timeout": 10}
       Returns the first matching event in "event" of the reply (older
       events not yet taken by a wait count too), or ok=false on timeout.
+      The reply has the full event, also when the event line was
+      already written (use --events none to get each event only once).
       "match": {"body~": "hi"} means "body contains hi".
         {"id": 4, "cmd": "sleep", "args": [1.5]}
         {"id": 5, "cmd": "quit"}
@@ -66,16 +92,20 @@ JSON mode:
 
 import argparse
 import asyncio
+import contextvars
 import json
 import logging
 import sys
 import threading
 import xml.etree.ElementTree as ET
 import yaml
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+
+# Start time of this process (UTC, whole seconds), for /history --since-run
+RUN_START = datetime.now(timezone.utc).replace(microsecond=0)
 
 # Add parent directory to path to import drunk_xmpp module
 sys.path.insert(0, str(SCRIPT_DIR.parent))
@@ -90,6 +120,7 @@ from drunk_xmpp import (
     change_password,
     delete_account
 )
+from drunk_xmpp import xep_0428
 
 
 def load_config(config_path: str) -> dict:
@@ -183,6 +214,11 @@ def now_str(ts=None) -> str:
     return dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
 
 
+# The running request (JSON mode). Set in the task that runs the command;
+# asyncio tasks started by the command inherit it, slixmpp callbacks do not.
+REQUEST = contextvars.ContextVar('request', default=None)
+
+
 class Driver:
     """Events, requests and JSON output (--json).
 
@@ -192,13 +228,16 @@ class Driver:
 
     MAX_EVENTS = 1000
 
-    def __init__(self, json_mode: bool, out):
+    def __init__(self, json_mode: bool, out, verbose: bool = False, event_lines: bool = True):
         self.json_mode = json_mode
         self.out = out  # the real stdout
+        self.verbose = verbose
+        self.event_lines = event_lines
         self.lock = threading.Lock()
         self.events = []  # events not yet taken by a wait
         self.changed = asyncio.Event()
         self.req = None  # the running request (JSON mode only)
+        self.req_token = None
 
     def write(self, obj: dict) -> None:
         line = json.dumps(obj, default=str)
@@ -215,7 +254,7 @@ class Driver:
             del self.events[0]
         self.changed.set()
         self.changed = asyncio.Event()
-        if self.json_mode:
+        if self.json_mode and self.event_lines:
             self.write(rec)
 
     @staticmethod
@@ -251,49 +290,75 @@ class Driver:
                 pass
 
     def begin(self, request: dict) -> None:
+        """Start a request; call it in the task that runs the command."""
         self.req = {'request': request, 't_start': now_str(), 'sent': [],
                     'logs': [], 'error': None, 'extra': {}}
+        self.req_token = REQUEST.set(self.req)
 
     def finish(self) -> None:
         req, self.req = self.req, None
+        REQUEST.reset(self.req_token)
+        self.req_token = None
+        sent = [s for s in (self.stanza_fields(t, data) for t, data in req['sent']) if s]
+        msg_id = next((s['id'] for s in sent if s['kind'] == 'message'), None)
         reply = {'id': req['request'].get('id'), 'done': True,
                  'ok': req['error'] is None, 'error': req['error'],
                  't_start': req['t_start'], 't_end': now_str(),
-                 'sent': req['sent'], 'logs': req['logs']}
+                 'msg_id': msg_id, 'sent': sent}
+        if self.verbose:
+            reply['logs'] = req['logs']
+        elif req['error'] is not None:
+            reply['logs'] = [l for l in req['logs'] if l['levelno'] >= logging.WARNING]
+        for line in reply.get('logs', []):
+            line.pop('levelno', None)
         reply.update(req['extra'])
         self.write(reply)
 
     def on_send(self, data) -> None:
-        """Record an outgoing stanza for the running request."""
-        if self.req is None:
+        """Record an outgoing stanza if the running request sent it."""
+        req = REQUEST.get()
+        if req is None or req is not self.req:
             return
-        if isinstance(data, bytes):
-            data = data.decode('utf-8', 'replace')
-        try:
-            el = ET.fromstring(data)
-        except ET.ParseError:
-            return  # stream header, footer, whitespace
+        req['sent'].append((now_str(), data))
+
+    @staticmethod
+    def stanza_fields(t, data):
+        """Fields of a sent stanza for "sent" (None for other data).
+
+        Read at the end of the request, so ids set by send filters count.
+        """
+        el = getattr(data, 'xml', None)
+        if el is None:
+            if isinstance(data, bytes):
+                data = data.decode('utf-8', 'replace')
+            try:
+                el = ET.fromstring(data)
+            except (ET.ParseError, TypeError):
+                return None  # stream header, footer, whitespace
         kind = el.tag.rsplit('}', 1)[-1]
         if kind not in ('message', 'presence', 'iq'):
-            return
+            return None
         origin = el.find('{urn:xmpp:sid:0}origin-id')
-        self.req['sent'].append({
-            't': now_str(), 'kind': kind, 'type': el.get('type'), 'id': el.get('id'),
+        return {
+            't': t, 'kind': kind, 'type': el.get('type'), 'id': el.get('id'),
             'origin_id': origin.get('id') if origin is not None else None,
             'to': el.get('to'),
-        })
+        }
 
 
 class RequestLogHandler(logging.Handler):
-    """Copy INFO and higher log records into the running request."""
+    """Copy INFO and higher log records of the running request into it.
+
+    Only records logged in the request's context count (see REQUEST).
+    """
 
     def __init__(self, driver: Driver):
         super().__init__(logging.INFO)
         self.driver = driver
 
     def emit(self, record):
-        req = self.driver.req
-        if req is None:
+        req = REQUEST.get()
+        if req is None or req is not self.driver.req:
             return
         try:
             msg = record.getMessage()
@@ -304,7 +369,23 @@ class RequestLogHandler(logging.Handler):
         if not msg.strip('= '):
             return  # empty lines and ==== lines
         req['logs'].append({'t': now_str(record.created), 'level': record.levelname,
-                            'logger': record.name, 'msg': msg})
+                            'logger': record.name, 'msg': msg,
+                            'levelno': record.levelno})
+
+
+REPLY_NS = 'urn:xmpp:reply:0'
+
+
+def body_clean(body, metadata):
+    """Body without the XEP-0461 reply quote, or None if nothing was removed."""
+    if not body or not metadata.fallbacks:
+        return None
+    try:
+        markers = [xep_0428.FallbackMarker.from_dict(f) for f in metadata.fallbacks]
+        clean = xep_0428.strip_fallbacks(body, markers, REPLY_NS)
+    except Exception:
+        return None
+    return clean if clean != body else None
 
 
 def meta_fields(metadata) -> dict:
@@ -317,6 +398,7 @@ def meta_fields(metadata) -> dict:
         'stanza_id': metadata.stanza_id,
         'origin_id': metadata.origin_id,
         'encrypted': metadata.is_encrypted,
+        'decrypt_failed': metadata.decrypt_failed,
         'replace_id': metadata.replaces_id,
         'reply_to_id': metadata.reply_to_id,
         'attachment_url': metadata.attachment_url,
@@ -404,7 +486,9 @@ def print_help_grouped():
     print("  /server-version              - Query server software version (XEP-0092)")
     print("  /server-features             - Query server features/XEPs (XEP-0030)")
     print("  /mam-check <jid>             - Check if JID supports MAM")
-    print("  /history <jid> [max]         - Retrieve MAM history (default: 50 messages)")
+    print("  /history <jid> [max] [--start <ISO time>|--since-run] - Retrieve MAM history (default: 50 messages)")
+    print("                                 --start: only messages from this time on (no zone = local time)")
+    print("                                 --since-run: only messages since this process started")
     print("  /avatar <jid>                - Fetch avatar for JID (XEP-0084/0153)")
     print()
 
@@ -460,7 +544,7 @@ def print_help_alphabetical():
         "/getowndev                   - Get own OMEMO devices",
         "/help                        - Show help grouped by category",
         "/helpa                       - Show all commands alphabetically",
-        "/history <jid> [max]         - Retrieve MAM history (default: 50 messages)",
+        "/history <jid> [max] [--start <ISO time>|--since-run] - Retrieve MAM history (default: 50 messages)",
         "/join <room> <nick> [pass]   - Join MUC room",
         "/keepalive?                  - Test auto-reconnect (disconnect but keep auto-reconnect)",
         "/leave <room>                - Leave MUC room",
@@ -513,7 +597,8 @@ async def main(args):
     json_out = sys.stdout
     if args.json:
         sys.stdout = sys.stderr
-    driver = Driver(args.json, json_out)
+    driver = Driver(args.json, json_out, verbose=args.verbose,
+                    event_lines=(args.events == 'all'))
 
     # JSON mode: read stdin from the start, so early commands wait in the queue
     request_queue = asyncio.Queue()
@@ -564,7 +649,7 @@ async def main(args):
                 message_tracking[room] = message_tracking[room][-2:]
 
         driver.emit('message', **meta_fields(metadata), room=room, nick=nick, body=body,
-                    occupant_id=metadata.occupant_id,
+                    body_clean=body_clean(body, metadata), occupant_id=metadata.occupant_id,
                     source='history' if metadata.is_history else 'live')
         if driver.json_mode:
             return
@@ -629,7 +714,7 @@ async def main(args):
                 message_tracking[from_jid] = message_tracking[from_jid][-2:]
 
         driver.emit('message', **meta_fields(metadata), jid=from_jid, body=body,
-                    carbon_type=metadata.carbon_type,
+                    body_clean=body_clean(body, metadata), carbon_type=metadata.carbon_type,
                     source='carbon' if metadata.is_carbon else 'live')
         if driver.json_mode:
             return
@@ -720,8 +805,7 @@ async def main(args):
 
     # Presence changed callback (RFC 6121)
     async def on_presence_changed(from_jid, show):
-        """Handler for contact presence changes."""
-        driver.emit('presence', **{'from': from_jid, 'show': show})
+        """Handler for contact presence changes (the event comes from on_presence)."""
         if driver.json_mode:
             return
         presence_emoji = {
@@ -832,6 +916,7 @@ async def main(args):
     async def on_message_correction(jid, replace_id, body, is_encrypted, msg):
         driver.emit('message', jid=str(jid), **{'from': str(msg['from']), 'to': str(msg['to'])},
                     type=msg['type'], id=msg['id'] or None,
+                    stanza_id=msg['stanza_id']['id'] or None,
                     origin_id=msg['origin_id']['id'] or None, replace_id=replace_id,
                     body=body, encrypted=is_encrypted, source='correction')
 
@@ -958,8 +1043,8 @@ async def main(args):
         # Get subscription from roster, not from presence stanza
         roster = client.client_roster
         subscription = 'none'
-        if from_jid in roster:
-            subscription = roster[from_jid].get('subscription', 'none')
+        if roster.has_jid(from_jid):
+            subscription = roster[from_jid]['subscription']
         driver.emit('roster', jid=from_jid, subscription=subscription)
         if driver.json_mode:
             return
@@ -975,19 +1060,72 @@ async def main(args):
     client.add_event_handler("presence_unsubscribed", on_presence_unsubscribed)
     client.add_event_handler("changed_subscription", on_changed_subscription)
 
+    # Presence events: one per change of (show, status, type) for a full JID
+    last_presence = {}
+
+    def on_presence(presence):
+        ptype = presence['type']  # the show value for away, xa, dnd, chat
+        if ptype in ('subscribe', 'subscribed', 'unsubscribe', 'unsubscribed',
+                     'probe', 'error'):
+            return
+        if ptype == 'unavailable':
+            show = 'unavailable'
+        else:
+            show = presence['show'] or 'available'
+            if show == 'chat':
+                show = 'available'
+        full_jid = str(presence['from'])
+        state = (show, presence['status'] or None, ptype)
+        if last_presence.get(full_jid) == state:
+            return
+        last_presence[full_jid] = state
+        driver.emit('presence', **{'from': full_jid}, jid=presence['from'].bare,
+                    show=show, status=state[1], type=ptype)
+
+    client.add_event_handler("presence", on_presence)
+
     # Connection state events
-    client.add_event_handler("session_start", lambda _e: driver.emit('connected', jid=client.boundjid.full))
-    client.add_event_handler("session_resumed", lambda _e: driver.emit('connected', jid=client.boundjid.full, resumed=True))
-    client.add_event_handler("disconnected", lambda _e: driver.emit('disconnected'))
+    conn_state = {'session': False, 'failed': False}
 
-    # Record outgoing stanzas for the running request ("sent" in the reply)
-    orig_send_raw = client.send_raw
+    def on_session(_e, resumed=None):
+        conn_state['session'] = True
+        driver.emit('connected', jid=client.boundjid.full, resumed=resumed)
 
-    def send_raw_hook(data):
-        orig_send_raw(data)
+    def on_auth_failed(_e):
+        conn_state['failed'] = True
+
+    client.add_event_handler("session_start", on_session)
+    client.add_event_handler("session_resumed", lambda e: on_session(e, resumed=True))
+    client.add_event_handler("failed_auth", on_auth_failed)
+    client.add_event_handler("failed_all_auth", on_auth_failed)
+    def on_disconnected(_e):
+        # The server sends all presences again after a reconnect
+        last_presence.clear()
+        driver.emit('disconnected')
+
+    client.add_event_handler("disconnected", on_disconnected)
+
+    async def wait_connected(timeout: float = 20.0) -> bool:
+        """Wait for a session start after connect(), up to timeout seconds."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            if conn_state['session'] and client.is_connected():
+                return True
+            if conn_state['failed']:
+                return False
+            await asyncio.sleep(0.05)
+        return False
+
+    # Record outgoing stanzas of the running request ("sent" in the reply).
+    # send() runs in the caller's context, so REQUEST tells who sent it.
+    orig_send = client.send
+
+    def send_hook(data, use_filters=True):
+        orig_send(data, use_filters)
         driver.on_send(data)
 
-    client.send_raw = send_raw_hook
+    client.send = send_hook
 
     # Optional CA file for a server with its own cert (e.g. the local test Prosody)
     if xmpp_config.get('ca_certs'):
@@ -1002,6 +1140,7 @@ async def main(args):
 
     logger.info(f"Connecting to {server}:{port} as {xmpp_config['jid']}...")
 
+    conn_state.update(session=False, failed=False)
     if server:
         client.connect((server, port))
     else:
@@ -1009,9 +1148,7 @@ async def main(args):
 
     # Wait for connection
     logger.info("Waiting for connection...")
-    await asyncio.sleep(3)
-
-    if not client.is_connected():
+    if not await wait_connected():
         logger.error("Failed to connect!")
         driver.emit('connect_failed')
         return 1
@@ -1023,12 +1160,13 @@ async def main(args):
     # Wait for OMEMO to initialize
     if client.omemo_enabled:
         logger.info("Waiting for OMEMO to initialize...")
-        for i in range(30):
+        for i in range(300):
             if client.is_omemo_ready():
                 logger.info(" OMEMO ready!")
                 break
-            logger.info(f"  Still waiting... ({i+1}/30)")
-            await asyncio.sleep(1)
+            if i % 10 == 9:
+                logger.info(f"  Still waiting... ({(i + 1) // 10}/30)")
+            await asyncio.sleep(0.1)
         else:
             logger.warning("OMEMO not ready after 30 seconds")
 
@@ -1074,7 +1212,7 @@ async def main(args):
             except ValueError as e:
                 driver.write({'id': None, 'done': True, 'ok': False,
                               'error': f"Bad request: {e}", 't_start': now_str(),
-                              't_end': now_str(), 'sent': [], 'logs': []})
+                              't_end': now_str(), 'msg_id': None, 'sent': []})
                 continue
             cmd = str(request.get('cmd') or '').strip().lstrip('/')
             cmd_args = request.get('args') or []
@@ -1147,15 +1285,16 @@ async def main(args):
                 server = xmpp_config.get('server')
                 port = xmpp_config.get('port', 5222)
 
+                conn_state.update(session=False, failed=False)
+                # Connect in an empty context: the connection tasks must not
+                # keep this request, or incoming traffic counts for its reply
                 if server:
-                    client.connect((server, port))
+                    contextvars.Context().run(client.connect, (server, port))
                 else:
-                    client.connect()
+                    contextvars.Context().run(client.connect)
 
                 # Wait for connection
-                await asyncio.sleep(3)
-
-                if client.is_connected():
+                if await wait_connected():
                     logger.info(f"✓ Reconnected as {client.boundjid.bare}")
                 else:
                     logger.error("Failed to reconnect!")
@@ -1783,33 +1922,50 @@ async def main(args):
                     logger.error(f"Failed to check MAM support: {e}")
 
             elif command.startswith("/history "):
-                parts = command.split(None, 2)
+                # /history <jid> [max] [--start <ISO time> | --since-run]
+                parts = command.split()
+                usage = "Usage: /history <jid> [max_messages] [--start <ISO time> | --since-run]"
                 if len(parts) < 2:
-                    logger.error("Usage: /history <jid> [max_messages]")
+                    logger.error(usage)
                     continue
 
                 jid = parts[1]
                 max_messages = 50  # default
-                if len(parts) > 2:
-                    try:
-                        max_messages = int(parts[2])
-                    except ValueError:
-                        logger.error("max_messages must be a number")
-                        continue
+                start = None
+                rest = parts[2:]
+                try:
+                    if rest and not rest[0].startswith("--"):
+                        max_messages = int(rest.pop(0))
+                    if rest == ["--since-run"]:
+                        start = RUN_START
+                    elif len(rest) == 2 and rest[0] == "--start":
+                        start = datetime.fromisoformat(rest[1])
+                        if start.tzinfo is None:
+                            start = start.astimezone()  # local time
+                        start = start.astimezone(timezone.utc)
+                    elif rest:
+                        raise ValueError(f"bad arguments {' '.join(rest)!r}")
+                except ValueError as e:
+                    logger.error(f"{usage} ({e})")
+                    continue
 
-                logger.info(f"Retrieving MAM history from {jid} (max: {max_messages})...")
+                since = f", start: {start.isoformat()}" if start else ""
+                logger.info(f"Retrieving MAM history from {jid} (max: {max_messages}{since})...")
                 try:
                     # For 1-1 chats, pass with_jid to filter to this specific contact
                     # For MUC rooms, the jid parameter is sufficient (room archive)
                     # retrieve_history yields pages; skip receipt/marker entries
                     history = []
-                    async for page in client.retrieve_history(jid, max_messages=max_messages, with_jid=jid):
+                    async for page in client.retrieve_history(jid, start=start, max_messages=max_messages,
+                                                              with_jid=jid):
                         history.extend(m for m in page if not m.get('marker_type'))
                     logger.info(f"✓ Retrieved {len(history)} messages:")
                     logger.info("")
+                    # Group chat events get "room", as live group chat events
+                    room = jid if jid in client.rooms else None
                     for i, msg in enumerate(history, 1):
                         stanza = msg.get('message')
-                        driver.emit('message', jid=msg.get('jid'), nick=msg.get('nick'),
+                        driver.emit('message', jid=msg.get('jid'), room=room, nick=msg.get('nick'),
                                     **({'from': str(stanza['from']), 'to': str(stanza['to']),
                                         'type': stanza['type'], 'id': stanza['id'] or None,
                                         'origin_id': stanza['origin_id']['id'] or None}
@@ -2647,4 +2803,8 @@ if __name__ == '__main__':
     parser.add_argument('--json', action='store_true',
                         help="JSON lines on stdin and stdout (for agents and scripts)")
     parser.add_argument('--log-dir', help="write drunk-xmpp.log and xmpp-protocol.log to this dir")
+    parser.add_argument('--verbose', action='store_true',
+                        help="JSON mode: add INFO and higher logs to every reply")
+    parser.add_argument('--events', choices=('all', 'none'), default='all',
+                        help="JSON mode: write event lines (all) or not (none)")
     sys.exit(asyncio.run(main(parser.parse_args())))
