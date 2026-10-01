@@ -742,13 +742,14 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         """Handler for session end - clear state when session truly ends."""
         self.logger.warning("XMPP session ended")
         self.joined_rooms.clear()
-        self.omemo_ready = False
+        # Keep omemo_ready: the OMEMO plugin keeps its session manager and
+        # fires omemo_initialized only once per client object.
 
     async def _on_disconnected(self, event):
         """Handler for disconnection."""
         self.logger.info("Disconnected from XMPP server")
         self._connection_state = False  # Mark as disconnected
-        # Do NOT clear joined_rooms/omemo_ready here - XEP-0198 may resume session
+        # Do NOT clear joined_rooms here - XEP-0198 may resume session
         # State is only cleared in session_end handler when session truly ends
 
         # slixmpp only reconnects after a ping timeout (XEP-0199 keepalive).
@@ -2038,6 +2039,11 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                     self.logger.debug(f"Detected aesgcm:// URL in carbon_received body: {line[:60]}...")
                     break
 
+        # Skip empty messages (no body and no attachment), e.g. chat states
+        if not metadata.has_body and not metadata.has_attachment:
+            self.logger.debug(f"Skipping empty carbon_received from {from_jid}")
+            return
+
         # Log
         enc_str = f"encrypted ({metadata.encryption_type})" if metadata.is_encrypted else "plaintext"
         self.logger.info(f"[CARBON RX] from {from_jid}: {body[:50] if body else '(attachment)'}... [{enc_str}]")
@@ -2225,6 +2231,11 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                     metadata.attachment_encrypted = True
                     self.logger.debug(f"Detected aesgcm:// URL in carbon_sent body: {line[:60]}...")
                     break
+
+        # Skip empty messages (no body and no attachment), e.g. receipts, markers, chat states
+        if not metadata.has_body and not metadata.has_attachment:
+            self.logger.debug(f"Skipping empty carbon_sent to {to_jid}")
+            return
 
         # Log
         enc_str = f"encrypted ({metadata.encryption_type})" if metadata.is_encrypted else "plaintext"

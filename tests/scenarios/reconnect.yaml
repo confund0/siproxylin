@@ -1,0 +1,41 @@
+# Reconnect on the same client object: OMEMO must stay ready after the
+# session ends (SM resume failed or clean close). alice has verbose: true
+# (logs in every reply, for log_text).
+accounts:
+  alice: {verbose: true}
+  bob: {}
+steps:
+  - alice: sendenc ${jid.bob} before $RUN
+  - bob: wait message
+    match: {body: "before $RUN", encrypted: true}
+  - alice: connected?
+    expect: {log_text~: "omemo_ready: True"}
+
+  # manual reconnect (tool /disconnect + /connect)
+  - alice: disconnect
+  - alice: wait disconnected
+    timeout: 5
+  - alice: connect
+  - alice: connected?
+    expect: {log_text~: "omemo_ready: True"}
+  - alice: sendenc ${jid.bob} after1 $RUN
+    timeout: 20
+  - bob: wait message
+    match: {body: "after1 $RUN", encrypted: true}
+    timeout: 15
+  - alice: send ${jid.bob} plain1 $RUN
+  - bob: wait message
+    match: {body: "plain1 $RUN"}
+
+  # auto reconnect path (like the app after a drop)
+  - alice: keepalive?
+  - alice: wait disconnected
+    timeout: 5
+  - sleep: 5
+  - alice: connected?
+    expect: {log_text~: "omemo_ready: True"}
+  - alice: sendenc ${jid.bob} auto1 $RUN
+    timeout: 20
+  - bob: wait message
+    match: {body: "auto1 $RUN", encrypted: true}
+    timeout: 15

@@ -1,0 +1,30 @@
+# A contact's new device: bob2 is a new device of bob (new keys each run).
+# The runner starts bob2 after bob is ready (same bare JID). All accounts are
+# ready before the first step. Each run adds one dead device to bob's device
+# list, until --reset.
+# send_encrypted_private_message gets the recipient's device list again before
+# each send. So this scenario tests that bob2 gets the message, not the live
+# PEP push. The alice2 carbon step in direct.yaml tests the live push of own devices.
+accounts:
+  alice: {}
+  bob: {}
+  bob2: {jid: bob@localhost/second, fresh_keys: true}
+steps:
+  # alice encrypts for bob's new device too
+  - alice: sendenc ${jid.bob} n1 to new device $RUN
+    save: n1
+  - bob: wait message
+    match: {body: "n1 to new device $RUN", encrypted: true, source: live}
+    expect: {id: "${n1.msg_id}"}
+  - bob2: wait message
+    match: {body: "n1 to new device $RUN", encrypted: true, source: live}
+    expect: {id: "${n1.msg_id}"}
+
+  # bob2 sends a receipt for n1; bob gets it as a sent carbon (no body).
+  # It must not count as a message: bob replies to n1 by index 1.
+  - sleep: 1.5
+  - bob: reply ${jid.alice} 1 n2 reply $RUN
+    save: n2
+  - alice: wait message
+    match: {body~: "n2 reply $RUN"}
+    expect: {id: "${n2.msg_id}", reply_to_id: "${n1.msg_id}"}
