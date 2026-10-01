@@ -10,9 +10,14 @@ Run (from the repo root, one Bash command):
 Options:
     --all            print every step (default: only FAIL, XFAIL, XPASS)
     --step-verbose   print the full reply or event under each step
-    --keep-keys      keep OMEMO keys in tmp/scenario-keys/<account>/ between
-                     runs (default: fresh keys per run; then the OMEMO PEP
-                     nodes of the used test users are cleaned before start)
+    --reset          delete tmp/scenario-state/ (kept OMEMO keys) and the
+                     OMEMO PEP items of all test users before the first
+                     scenario (Prosody stopped). Use it when the keys and
+                     the device lists on the server no longer fit.
+OMEMO keys: each account keeps its keys between runs in
+tmp/scenario-state/<account>/keys.json, like an app account (one device per
+account name; alice and alice2 are two devices). fresh_keys: true gives the
+account new keys in the run dir (a new device each run).
 Output: one line per step that did not pass (FAIL, XFAIL, XPASS; with
 --all also PASS), a summary line and the run dir tmp/scenario-runs/<scenario>-<time>/ (per account: .out stdout
 JSON, .err stderr, logs-<account>/, .conf; steps.jsonl with all results;
@@ -21,10 +26,11 @@ Exit code 0 when no step FAILs, 2 when a Prosody already runs (nothing
 is written then). tmp/prosody/data is not wiped.
 
 Scenario file (YAML):
-    accounts:                  # name: options; default jid <name>@localhost,
-      alice: {}                # password <user>pass; verbose: true gives
-      bob: {}                  # logs in every reply (for log_text checks)
-      alice2: {jid: alice@localhost/second}
+    accounts:                  # name: options; default jid
+      alice: {}                # <name>@localhost/<name>, password <user>pass;
+      bob: {}                  # verbose: true gives logs in every reply (for
+      alice2: {jid: alice@localhost/second}   # log_text checks)
+      carol: {fresh_keys: true}  # new OMEMO keys (new device) each run
     rooms:                     # written to Prosody storage before start
       enc: {owner: alice, members: [bob], members_only: true, whois: anyone}
       new: {seed: false}       # only a name, not written
@@ -74,6 +80,7 @@ import os
 import queue
 import re
 import secrets
+import shutil
 import signal
 import socket
 import subprocess
@@ -92,7 +99,7 @@ PROSODY_DATA = PROSODY_DIR / 'data'
 CERT = PROSODY_DIR / 'certs' / 'localhost.crt'
 CONF_DIR = PROSODY_DATA / 'conference%2elocalhost'
 RUNS_DIR = REPO / 'tmp' / 'scenario-runs'
-KEYS_DIR = REPO / 'tmp' / 'scenario-keys'
+STATE_DIR = REPO / 'tmp' / 'scenario-state'
 DOMAIN = 'localhost'
 MUC = 'conference.localhost'
 TEST_USERS = ('alice', 'bob', 'carol', 'dave')
@@ -228,8 +235,8 @@ BUNDLE_ENTRY_RE = re.compile(
 def clean_omemo_pep(users):
     """Delete the OMEMO PEP items of users (Prosody stopped).
 
-    Fresh keys publish new devices; without this the device lists keep
-    the devices of old runs. Old bundle nodes are also removed from
+    Used by --reset: new keys publish new devices; without this the
+    device lists keep the old devices. Old bundle nodes are also removed from
     pep/<user>.dat. Other PEP nodes (bookmarks, ...) stay."""
     host = PROSODY_DATA / 'localhost'
     for node_dir in host.glob('pep_*'):
@@ -247,6 +254,16 @@ def clean_omemo_pep(users):
             new = BUNDLE_ENTRY_RE.sub('', text)
             if new != text:
                 dat.write_text(new)
+
+
+def reset_state():
+    """--reset: delete the kept keys and the OMEMO PEP items (Prosody stopped)."""
+    check_no_prosody()  # before any write to Prosody storage
+    if STATE_DIR.is_dir():
+        shutil.rmtree(STATE_DIR)
+    clean_omemo_pep(TEST_USERS)
+    print(f'== reset: deleted {STATE_DIR.relative_to(REPO)}/ content and OMEMO PEP items'
+          f' of {", ".join(TEST_USERS)}', flush=True)
 
 
 # ------------------------------------------------------------------ clients
@@ -455,12 +472,14 @@ class Scenario:
         accounts = self.data.get('accounts') or {}
         if not accounts:
             raise StepError('no accounts')
+        for name in accounts:  # names become paths: check before any write
+            safe_name(str(name), NODE_RE, 'account name')
         check_no_prosody()  # before any write to Prosody storage
         self.values = {'RUN': self.run_tag, 'jid': {}, 'room': {}, 'file': {}}
         self.accounts = {}
         for name, a in accounts.items():
             a = a or {}
-            jid = a.get('jid') or f'{name}@{DOMAIN}'
+            jid = a.get('jid') or f'{name}@{DOMAIN}/{name}'
             bare = jid.split('/')[0]
             user = bare.split('@')[0]
             self.accounts[name] = dict(a, jid=jid, bare=bare, user=user,
@@ -482,9 +501,6 @@ class Scenario:
             p.parent.mkdir(exist_ok=True)
             p.write_text(subst(f.get('text', 'scenario file\n'), self.values))
             self.values['file'][key] = str(p)
-        if not self.opts.keep_keys:
-            users = sorted({a['user'] for a in self.accounts.values() if a['user'] in TEST_USERS})
-            clean_omemo_pep(users)
         self.prosody = Prosody(self.dir)
         self.prosody.start()
         last_by_bare = {}  # bare JID -> name of the last started account
@@ -494,7 +510,10 @@ class Scenario:
                 # same bare JID: OMEMO device list publishes race; start after "ready"
                 self.ready_reps[prev] = self.wait_ready(self.clients[prev])
             last_by_bare[a['bare']] = name
-            keys = (KEYS_DIR / name) if self.opts.keep_keys else (self.dir / f'{name}-omemo')
+            if a.get('fresh_keys'):
+                keys = self.dir / f'{name}-omemo'
+            else:
+                keys = STATE_DIR / name
             keys.mkdir(parents=True, exist_ok=True)
             conf = self.dir / f'{name}.conf'
             write_conf(conf, a['jid'], a['password'], keys)
@@ -709,13 +728,15 @@ def main():
     ap.add_argument('--all', action='store_true',
                     help='print every step (default: only FAIL, XFAIL, XPASS)')
     ap.add_argument('--step-verbose', action='store_true', help='print full replies and events')
-    ap.add_argument('--keep-keys', action='store_true',
-                    help='keep OMEMO keys in tmp/scenario-keys/ and do not clean PEP')
+    ap.add_argument('--reset', action='store_true',
+                    help='delete tmp/scenario-state/ and the OMEMO PEP items of the test users')
     opts = ap.parse_args()
     signal.signal(signal.SIGTERM, on_term)
     ok = True
     t0 = time.time()
     try:
+        if opts.reset:
+            reset_state()
         for path in opts.scenarios:
             ok &= Scenario(Path(path).resolve(), opts).run()
     except KeyboardInterrupt:

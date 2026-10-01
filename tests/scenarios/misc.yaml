@@ -69,9 +69,9 @@ steps:
   - dave: unsubscribe ${jid.alice}
   - dave: revoke ${jid.alice}
 
-  # OMEMO devices (fresh keys: one device each)
+  # OMEMO devices (kept keys; alice has 2 own devices once direct.yaml ran: alice, alice2)
   - alice: getowndev
-    expect: {log_text~: "Found 1 own device"}
+    expect: {log_text~: "own device(s):"}
   # getdev reads the local cache only; discover fetches the device list first
   - alice: discover ${jid.dave}
     expect: {log_text~: "Device ID"}

@@ -21,7 +21,6 @@ steps:
   - alice2: wait message
     match: {body: "e1 secret $RUN", encrypted: true, source: carbon}
     expect: {id: "${e1.msg_id}"}
-    known_fail: "first presence has no OMEMO +notify caps, so alice never learns of alice2's device"
 
   # reply (bob replies to the last message from alice = e1)
   - bob: reply ${jid.alice} 1 r1 plain reply $RUN
@@ -77,7 +76,6 @@ steps:
 
   # history (MAM), only the messages of this run
   - alice: history ${jid.bob} 1000 --since-run
-    known_fail: "history: ok=false, an OMEMO message decrypted live does not decrypt again from MAM"
   - alice: wait message
     match: {source: mam, id: "${p1.msg_id}"}
     expect: {archive_id: "*"}

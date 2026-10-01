@@ -31,6 +31,10 @@ JSON mode:
       with spaces, so only the last arg may contain spaces.
       Commands that ask for "DELETE" take it from the request:
         {"id": 2, "cmd": "pep-delete", "args": ["node"], "confirm": "DELETE"}
+      PEP checks: "/pep-get <node> <jid>" reads the node of another JID
+      (what a contact can read); "/pep-config <node>" logs the config of
+      an own node; "/pep-create <node>" creates an own node with the
+      server default config.
 
     Reply (when the command is finished):
         {"id": 1, "done": true, "ok": true, "error": null,
@@ -65,6 +69,8 @@ JSON mode:
       mam); for a group chat it has "room" too. "/history <jid> 50
       --since-run" asks only for messages since this process started;
       "--start <ISO time>" sets the start (no zone = local time).
+      /history skips messages already seen live or as carbon in this
+      process (like the app); "--no-skip" turns this off.
       "presence" has from (full JID), jid (bare JID), show, status, type.
       It comes only when one of show, status, type changed for that
       full JID.
@@ -461,7 +467,9 @@ def print_help_grouped():
 
     print("PEP/PUBSUB (XEP-0060/0163):")
     print("  /pep-nodes                   - List all PEP nodes on server")
-    print("  /pep-get <node>              - Get items from a PEP node")
+    print("  /pep-get <node> [jid]        - Get items from a PEP node (own, or of another JID)")
+    print("  /pep-config <node>           - Show the config of an own PEP node")
+    print("  /pep-create <node>           - Create an own PEP node with the server default config")
     print("  /pep-delete <node>           - Delete a PEP node (WARNING: permanent!)")
     print("  /pep-subscriptions           - List all PEP subscriptions")
     print("  /pep-unsubscribe <jid> <node> - Unsubscribe from a PEP node")
@@ -486,7 +494,7 @@ def print_help_grouped():
     print("  /server-version              - Query server software version (XEP-0092)")
     print("  /server-features             - Query server features/XEPs (XEP-0030)")
     print("  /mam-check <jid>             - Check if JID supports MAM")
-    print("  /history <jid> [max] [--start <ISO time>|--since-run] - Retrieve MAM history (default: 50 messages)")
+    print("  /history <jid> [max] [--start <ISO time>|--since-run] [--no-skip] - Retrieve MAM history (default: 50 messages)")
     print("                                 --start: only messages from this time on (no zone = local time)")
     print("                                 --since-run: only messages since this process started")
     print("  /avatar <jid>                - Fetch avatar for JID (XEP-0084/0153)")
@@ -544,14 +552,16 @@ def print_help_alphabetical():
         "/getowndev                   - Get own OMEMO devices",
         "/help                        - Show help grouped by category",
         "/helpa                       - Show all commands alphabetically",
-        "/history <jid> [max] [--start <ISO time>|--since-run] - Retrieve MAM history (default: 50 messages)",
+        "/history <jid> [max] [--start <ISO time>|--since-run] [--no-skip] - Retrieve MAM history (default: 50 messages)",
         "/join <room> <nick> [pass]   - Join MUC room",
         "/keepalive?                  - Test auto-reconnect (disconnect but keep auto-reconnect)",
         "/leave <room>                - Leave MUC room",
         "/mam-check <jid>             - Check if JID supports MAM",
         "/marker <jid> <msg_id> <type> - Send chat marker (received/displayed/acknowledged)",
+        "/pep-config <node>           - Show the config of an own PEP node",
+        "/pep-create <node>           - Create an own PEP node with the server default config",
         "/pep-delete <node>           - Delete a PEP node (WARNING: permanent!)",
-        "/pep-get <node>              - Get items from a PEP node",
+        "/pep-get <node> [jid]        - Get items from a PEP node (own, or of another JID)",
         "/pep-nodes                   - List all PEP nodes on server",
         "/pep-subscriptions           - List all PEP subscriptions",
         "/pep-unsubscribe <jid> <node> - Unsubscribe from a PEP node",
@@ -699,6 +709,13 @@ async def main(args):
 
     # Private message callback (for 1-to-1 chat AND carbon copies)
     async def on_private_message(from_jid, body, metadata, msg):
+        # The raw "message" handler sees only the carbon wrapper ids.
+        # The app stores carbons under the inner ids, so add them too.
+        if metadata.is_carbon:
+            for value in (metadata.stanza_id, metadata.origin_id, metadata.message_id):
+                if value:
+                    seen_ids.add(value)
+
         # Extract message ID from metadata (XEP-0359)
         # Lookup preference: origin_id → stanza_id → message_id
         msg_id = metadata.origin_id or metadata.stanza_id or metadata.message_id
@@ -976,6 +993,21 @@ async def main(args):
         proxy_username=proxy_username,
         proxy_password=proxy_password,
     )
+
+    # Ids of messages seen live in this process. /history passes them as
+    # is_stored (like the app), so OMEMO messages that were already decrypted
+    # live are not decrypted again from MAM (that fails).
+    seen_ids = set()
+
+    def remember_ids(msg):
+        for value in (msg['stanza_id']['id'], msg['origin_id']['id'], msg['id']):
+            if value:
+                seen_ids.add(value)
+
+    def is_stored(archive_id, origin_id, message_id):
+        return any(x in seen_ids for x in (archive_id, origin_id, message_id) if x)
+
+    client.add_event_handler("message", remember_ids)
 
     # NOTE: Carbon copy event handlers NO LONGER REGISTERED (as of 2025-12-16)
     # DrunkXMPP now handles carbons internally and calls on_private_message_callback
@@ -1922,9 +1954,9 @@ async def main(args):
                     logger.error(f"Failed to check MAM support: {e}")
 
             elif command.startswith("/history "):
-                # /history <jid> [max] [--start <ISO time> | --since-run]
+                # /history <jid> [max] [--start <ISO time> | --since-run] [--no-skip]
                 parts = command.split()
-                usage = "Usage: /history <jid> [max_messages] [--start <ISO time> | --since-run]"
+                usage = "Usage: /history <jid> [max_messages] [--start <ISO time> | --since-run] [--no-skip]"
                 if len(parts) < 2:
                     logger.error(usage)
                     continue
@@ -1933,6 +1965,9 @@ async def main(args):
                 max_messages = 50  # default
                 start = None
                 rest = parts[2:]
+                # --no-skip: do not skip messages seen in this process
+                skip = "--no-skip" not in rest
+                rest = [x for x in rest if x != "--no-skip"]
                 try:
                     if rest and not rest[0].startswith("--"):
                         max_messages = int(rest.pop(0))
@@ -1957,7 +1992,8 @@ async def main(args):
                     # retrieve_history yields pages; skip receipt/marker entries
                     history = []
                     async for page in client.retrieve_history(jid, start=start, max_messages=max_messages,
-                                                              with_jid=jid):
+                                                              with_jid=jid,
+                                                              is_stored=is_stored if skip else None):
                         history.extend(m for m in page if not m.get('marker_type'))
                     logger.info(f"✓ Retrieved {len(history)} messages:")
                     logger.info("")
@@ -2135,18 +2171,19 @@ async def main(args):
                     traceback.print_exc()
 
             elif command.startswith("/pep-get "):
-                parts = command.split(None, 1)
+                parts = command.split(None, 2)
                 if len(parts) < 2:
-                    logger.error("Usage: /pep-get <node>")
+                    logger.error("Usage: /pep-get <node> [jid]")
                     continue
 
                 node = parts[1]
                 logger.info(f"Getting items from PEP node: {node}")
                 try:
                     xep_0060 = client.plugin['xep_0060']
-                    own_jid = client.boundjid.bare
+                    # Another JID: tests what a contact can read
+                    pep_jid = parts[2] if len(parts) > 2 else client.boundjid.bare
 
-                    result = await xep_0060.get_items(own_jid, node)
+                    result = await xep_0060.get_items(pep_jid, node)
 
                     if result and 'pubsub' in result and 'items' in result['pubsub']:
                         items = result['pubsub']['items']
@@ -2171,6 +2208,39 @@ async def main(args):
                     logger.error(f"Failed: {e}")
                     import traceback
                     traceback.print_exc()
+
+            elif command.startswith("/pep-config "):
+                parts = command.split(None, 1)
+                if len(parts) < 2:
+                    logger.error("Usage: /pep-config <node>")
+                    continue
+
+                node = parts[1]
+                logger.info(f"Getting config of PEP node: {node}")
+                try:
+                    xep_0060 = client.plugin['xep_0060']
+                    result = await xep_0060.get_node_config(client.boundjid.bare, node)
+                    form = result['pubsub_owner']['configure']['form']
+                    for var, field in form.get_fields().items():
+                        if var != 'FORM_TYPE':
+                            logger.info(f"  {var} = {field['value']}")
+                except Exception as e:
+                    logger.error(f"Failed: {e}")
+
+            elif command.startswith("/pep-create "):
+                parts = command.split(None, 1)
+                if len(parts) < 2:
+                    logger.error("Usage: /pep-create <node>")
+                    continue
+
+                node = parts[1]
+                logger.info(f"Creating PEP node with the server default config: {node}")
+                try:
+                    xep_0060 = client.plugin['xep_0060']
+                    await xep_0060.create_node(client.boundjid.bare, node)
+                    logger.info(f"✓ PEP node created: {node}")
+                except Exception as e:
+                    logger.error(f"Failed: {e}")
 
             elif command.startswith("/pep-delete "):
                 parts = command.split(None, 1)

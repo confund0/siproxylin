@@ -56,6 +56,11 @@ steps:
   - carol: join ${room.enc} carol
   - carol: wait muc_joined
     match: {room: "${room.enc}"}
+  # sendmucenc encrypts for the occupants alice knows: give their presence
+  # time to come in. "wait presence" does not work here: the slixmpp MUC
+  # plugin sets ignore_updates on the room after the first presence, so the
+  # tool gets no "presence" event for the other occupants.
+  - sleep: 0.5
   - alice: sendmucenc ${room.enc} me1 enc hello room $RUN
     save: me1
   - bob: wait message
@@ -77,13 +82,12 @@ steps:
     match: {emojis: ["🎉"], nick: bob}
 
   # history of the rooms
-  - carol: history ${room.plain} 50 --since-run
+  - carol: history ${room.plain} 50 --since-run --no-skip
     known_fail: "history room: \"Couldn't find real JID\" for an OMEMO message in a semi-anonymous room"
   - carol: wait message
     match: {room: "${room.plain}", source: mam, id: "${m1.msg_id}"}
     expect: {body: "m1 hello room $RUN", archive_id: "*"}
   - carol: history ${room.enc} 50 --since-run
-    known_fail: "history: ok=false, an OMEMO message decrypted live does not decrypt again from MAM"
   - carol: mam-check ${room.enc}
 
   # leave
