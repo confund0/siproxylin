@@ -8,6 +8,28 @@ Provides methods for managing server-side MUC room bookmarks.
 
 from typing import List, Dict, Any, Optional
 from slixmpp.exceptions import IqError
+from slixmpp.plugins.xep_0004 import Form
+
+
+BOOKMARKS_NODE = 'urn:xmpp:bookmarks:1'
+
+# Node config from XEP-0402: keep all items, only the owner can read them
+BOOKMARKS_NODE_CONFIG = {
+    'pubsub#persist_items': 'true',
+    'pubsub#max_items': 'max',
+    'pubsub#send_last_published_item': 'never',
+    'pubsub#access_model': 'whitelist',
+}
+
+
+def _config_form(form_type: str) -> Form:
+    """Build a publish-options or node_config form with the bookmarks node config."""
+    form = Form()
+    form['type'] = 'submit'
+    form.add_field(var='FORM_TYPE', ftype='hidden', value=form_type)
+    for var, value in BOOKMARKS_NODE_CONFIG.items():
+        form.add_field(var=var, value=value)
+    return form
 
 
 class BookmarksMixin:
@@ -99,14 +121,40 @@ class BookmarksMixin:
             if password:
                 conf['password'] = password
 
-            # Publish to bookmarks node
-            await xep_0060.publish(
-                jid=self.boundjid.bare,
-                node='urn:xmpp:bookmarks:1',
-                id=jid,
-                payload=conf,
-                timeout=10
-            )
+            # Publish to bookmarks node. The publish-options create a new
+            # node with the right config, or check the config of the node.
+            options = _config_form('http://jabber.org/protocol/pubsub#publish-options')
+            try:
+                await xep_0060.publish(
+                    jid=self.boundjid.bare,
+                    node=BOOKMARKS_NODE,
+                    id=jid,
+                    payload=conf,
+                    options=options,
+                    timeout=10
+                )
+            except IqError as e:
+                precondition = e.iq['error'].xml.find(
+                    '{http://jabber.org/protocol/pubsub#errors}precondition-not-met')
+                if precondition is None:
+                    raise
+                # The node exists with another config (for example the server
+                # default: contacts can read it). Set the config, publish again.
+                self.logger.info("Bookmarks node has another config: setting the node config")
+                await xep_0060.set_node_config(
+                    jid=self.boundjid.bare,
+                    node=BOOKMARKS_NODE,
+                    config=_config_form('http://jabber.org/protocol/pubsub#node_config'),
+                    timeout=10
+                )
+                await xep_0060.publish(
+                    jid=self.boundjid.bare,
+                    node=BOOKMARKS_NODE,
+                    id=jid,
+                    payload=conf,
+                    options=_config_form('http://jabber.org/protocol/pubsub#publish-options'),
+                    timeout=10
+                )
 
             self.logger.info(f"Added/updated bookmark: {jid} (autojoin={autojoin})")
 
@@ -128,11 +176,12 @@ class BookmarksMixin:
         try:
             xep_0060 = self.plugin['xep_0060']
 
-            # Delete item from bookmarks node
+            # Delete item from bookmarks node; notify tells our other clients
             await xep_0060.retract(
                 jid=self.boundjid.bare,
-                node='urn:xmpp:bookmarks:1',
+                node=BOOKMARKS_NODE,
                 id=jid,
+                notify=True,
                 timeout=10
             )
 

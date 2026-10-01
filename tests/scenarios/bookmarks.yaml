@@ -1,0 +1,78 @@
+# Bookmarks node (XEP-0402): config of the urn:xmpp:bookmarks:1 node.
+# The node must keep all items and only the owner may read it, also
+# when contacts have a presence subscription.
+# dave has verbose: true (logs in every reply, for log_text).
+accounts:
+  dave: {verbose: true}
+  carol: {}
+rooms:
+  a: {seed: false}
+  b: {seed: false}
+steps:
+  # carol gets a presence subscription to dave. Remove an old one first:
+  # with it the server answers the subscribe itself.
+  - carol: unsubscribe ${jid.dave}
+  - dave: revoke ${jid.carol}
+  - carol: subscribe ${jid.dave}
+  - dave: wait subscription
+    match: {kind: subscribe, from: "${jid.carol}"}
+    timeout: 5
+  - dave: approve ${jid.carol}
+  - carol: wait subscription
+    match: {kind: subscribed, from: "${jid.dave}"}
+    timeout: 5
+
+  # new node: drunk_xmpp creates it with the first bookmark
+  # (the add makes sure the node exists, so the delete works)
+  - dave: bookmark-add ${room.a} RoomA dave
+  - dave: pep-delete urn:xmpp:bookmarks:1
+    confirm: DELETE
+  - dave: bookmark-add ${room.a} RoomA dave
+  - dave: bookmark-add ${room.b} RoomB dave secret$RUN
+  - dave: bookmarks
+    expect: {log_text~: "${room.a}"}
+  - dave: bookmarks
+    expect: {log_text~: "${room.b}"}
+  - dave: pep-config urn:xmpp:bookmarks:1
+    expect: {log_text~: "pubsub#access_model = whitelist"}
+  - dave: pep-config urn:xmpp:bookmarks:1
+    expect: {log_text~: "pubsub#send_last_published_item = never"}
+  - carol: pep-get urn:xmpp:bookmarks:1 ${jid.dave}
+    expect_fail: true
+    expect: {error~: "forbidden"}
+
+  # old node with the server default config: drunk_xmpp sets the config
+  - dave: pep-delete urn:xmpp:bookmarks:1
+    confirm: DELETE
+  - dave: pep-create urn:xmpp:bookmarks:1
+  - dave: pep-config urn:xmpp:bookmarks:1
+    expect: {log_text~: "pubsub#access_model = presence"}
+  - dave: bookmark-add ${room.a} RoomA dave
+    expect: {log_text~: "setting the node config"}
+  - dave: bookmark-add ${room.b} RoomB dave secret$RUN
+  - dave: bookmarks
+    expect: {log_text~: "${room.a}"}
+  - dave: bookmarks
+    expect: {log_text~: "${room.b}"}
+  - dave: pep-config urn:xmpp:bookmarks:1
+    expect: {log_text~: "pubsub#access_model = whitelist"}
+  - dave: pep-config urn:xmpp:bookmarks:1
+    expect: {log_text~: "pubsub#send_last_published_item = never"}
+  - carol: pep-get urn:xmpp:bookmarks:1 ${jid.dave}
+    expect_fail: true
+    expect: {error~: "forbidden"}
+
+  # node with the right config: publish works, the config stays
+  - dave: bookmark-add ${room.a} RoomA2 dave
+    expect: {log_text!~: "node config"}
+  - dave: bookmark-rm ${room.a}
+  - dave: bookmarks
+    expect: {log_text!~: "${room.a}"}
+  - dave: bookmarks
+    expect: {log_text~: "${room.b}"}
+
+  # reset for the next run
+  - dave: pep-delete urn:xmpp:bookmarks:1
+    confirm: DELETE
+  - carol: unsubscribe ${jid.dave}
+  - dave: revoke ${jid.carol}
