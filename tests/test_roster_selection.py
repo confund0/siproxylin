@@ -44,9 +44,10 @@ class RightClickSelectionTests(unittest.TestCase):
         self.w.search_box = QLineEdit()
         self.w.contact_tree = QTreeWidget()
         self.w.contact_tree.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.w.contact_tree.customContextMenuRequested.connect(self.w._on_context_menu)
-        self.w.contact_tree.viewport().installEventFilter(self.w)
         self.w._on_context_menu = mock.Mock()  # no real menu (it blocks)
+        # As in the app; a second menu from this signal must not open
+        self.w.contact_tree.customContextMenuRequested.connect(lambda pos: self.w._on_context_menu(pos))
+        self.w.contact_tree.viewport().installEventFilter(self.w)
         QVBoxLayout(self.w).addWidget(self.w.contact_tree)
         self.open_chat = QTreeWidgetItem(self.w.contact_tree, ['open chat'])
         self.other = QTreeWidgetItem(self.w.contact_tree, ['other'])

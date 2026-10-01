@@ -11,8 +11,8 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QHBoxLayout, QMenu, QPushButton, QFrame, QToolButton, QMessageBox,
     QListWidget, QListWidgetItem
 )
-from PySide6.QtCore import Qt, Signal, QEvent
-from PySide6.QtGui import QIcon, QAction, QColor
+from PySide6.QtCore import Qt, Signal, QEvent, QTimer
+from PySide6.QtGui import QIcon, QAction, QColor, QContextMenuEvent
 
 from ..db.database import get_db
 from ..core import get_account_manager
@@ -539,13 +539,13 @@ class ContactListWidget(QWidget):
                 logger.debug(f"Cannot get participant count for {room_jid}: XEP-0045 plugin not available")
                 return None
 
-            # Access rooms dictionary (only has rooms we're actively joined to)
-            if room_jid not in xep_0045.rooms:
-                logger.debug(f"Cannot get participant count for {room_jid}: room not joined (not in xep_0045.rooms)")
+            # Only rooms we are joined to (xep_0045.rooms is keyed by our JID, not by room)
+            if not account.client.is_joined(room_jid):
+                logger.debug(f"Cannot get participant count for {room_jid}: room not joined")
                 return None
 
             # Count participants (same logic as chat_view.py)
-            room_roster = xep_0045.rooms[room_jid]
+            room_roster = xep_0045.get_roster(room_jid)
             count = len(room_roster)
             logger.debug(f"MUC {room_jid} has {count} participants")
             return count
@@ -1097,14 +1097,19 @@ class ContactListWidget(QWidget):
         IMPORTANT: This ensures Enter/ESC go to the search field, not main window.
         Event filter intercepts events BEFORE they propagate to parent widgets.
         """
-        # Right click in the roster: open the context menu here and stop the press,
-        # so the selection stays on the open chat
-        if (obj is self.contact_tree.viewport()
-                and event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick)
-                and event.button() == Qt.RightButton):
-            if event.type() == QEvent.MouseButtonPress:
-                self._on_context_menu(event.position().toPoint())
-            return True
+        # Right click in the roster: stop the press, so the selection stays on
+        # the open chat, and open the menu here after the press. Qt can also send
+        # a context menu event for the press (depends on the Qt version): stop it,
+        # else a second menu opens. The keyboard menu key still uses the signal.
+        if obj is self.contact_tree.viewport():
+            if (event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick)
+                    and event.button() == Qt.RightButton):
+                if event.type() == QEvent.MouseButtonPress:
+                    pos = event.position().toPoint()
+                    QTimer.singleShot(0, lambda: self._on_context_menu(pos))
+                return True
+            if event.type() == QEvent.ContextMenu and event.reason() == QContextMenuEvent.Mouse:
+                return True
 
         if obj == self.search_box and event.type() == QEvent.KeyPress:
             key = event.key()
