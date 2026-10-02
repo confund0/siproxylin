@@ -499,8 +499,8 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         loop.set_exception_handler(self._asyncio_exception_handler)
         self.muc_history_default = muc_history_default
 
-        # Track pending server ACKs: {msg_id: seq_number}
-        self.pending_server_acks = {}
+        # Message IDs that wait for a server ACK (XEP-0198)
+        self.pending_server_acks = set()
 
         # Track our own occupant-id per room (XEP-0421)
         # Key: room_jid (bare), Value: occupant_id string
@@ -555,15 +555,8 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         # Stream Management - ACKs tell us when stanzas reached the server
         self.register_plugin('xep_0198', {'window': 5})  # Default window
 
-        # Register our own handler for ACK stanzas directly
-        from slixmpp.xmlstream.handler import Callback
-        from slixmpp.xmlstream.matcher import MatchXPath
-        self.register_handler(
-            Callback('Custom SM Ack Handler',
-                MatchXPath('{urn:xmpp:sm:3}a'),
-                self._on_sm_ack_received,
-                instream=True))
-        self.logger.debug("Registered custom XEP-0198 ACK handler")
+        # The plugin fires stanza_acked for each stanza the server has (by its queue, not by seq)
+        self.add_event_handler('stanza_acked', self._on_stanza_acked)
 
         self.register_plugin('xep_0030')  # Service Discovery (required by many XEPs)
         self.register_plugin('xep_0077')  # In-Band Registration (required for room membership requests)
@@ -776,6 +769,9 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         for task in self._join_tasks.values():
             task.cancel()
         self._join_tasks.clear()
+        # The XEP-0198 plugin drops its unacked queue on session end:
+        # old entries never get an ACK. Their rows stay pending for the retry.
+        self.pending_server_acks.clear()
         # Keep omemo_ready: the OMEMO plugin keeps its session manager and
         # fires omemo_initialized only once per client object.
 
@@ -2515,37 +2511,44 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             except Exception as e:
                 self.logger.exception(f"Error in chat state callback: {e}")
 
-    def _on_sm_ack_received(self, ack_stanza):
+    def _on_stanza_acked(self, stanza):
         """
-        Handler for XEP-0198 ACK stanzas (<a h="X" />).
-        Checks if any of our pending messages are covered by this ACK.
+        Handler for the XEP-0198 plugin event stanza_acked.
+        The plugin fires it for each sent stanza the server has acked.
         """
         try:
-            # Get the h value (number of stanzas server has received)
-            ack_h = int(ack_stanza['h'])
-            self.logger.debug(f"[XEP-0198] Server ACK received: h={ack_h}")
+            msg_id = stanza['id'] if isinstance(stanza, Message) else None
+            if not msg_id or msg_id not in self.pending_server_acks:
+                return
+            self.pending_server_acks.discard(msg_id)
+            self.logger.info(f"[SERVER ACK] Message {msg_id} acknowledged by server")
 
-            # Check which of our pending messages are now acked
-            acked_messages = []
-            for msg_id, msg_seq in list(self.pending_server_acks.items()):
-                if msg_seq <= ack_h:
-                    self.logger.info(f"[SERVER ACK] Message {msg_id} acknowledged by server (seq {msg_seq} <= h {ack_h})")
-                    acked_messages.append(msg_id)
-
-                    # Call user callback if provided
-                    if self.on_server_ack_callback:
-                        # Create a simple object with the message ID
-                        class AckInfo:
-                            def __init__(self, msg_id):
-                                self.msg_id = msg_id
-                        self.on_server_ack_callback(AckInfo(msg_id))
-
-            # Remove acked messages from pending
-            for msg_id in acked_messages:
-                del self.pending_server_acks[msg_id]
+            # Call user callback if provided
+            if self.on_server_ack_callback:
+                # Create a simple object with the message ID
+                class AckInfo:
+                    def __init__(self, msg_id):
+                        self.msg_id = msg_id
+                self.on_server_ack_callback(AckInfo(msg_id))
 
         except Exception as e:
             self.logger.debug(f"Could not process server ACK: {e}")
+
+    def _track_server_ack(self, msg_id: str):
+        """
+        Wait for the server ACK of a sent message (XEP-0198) and ask the server for it.
+        Call it right after msg.send().
+        """
+        # No stream management on this stream: a <r/> is a stream error
+        # (unsupported-stanza-type) and the server closes the connection.
+        if not self.plugin['xep_0198'].enabled_out:
+            return
+        self.pending_server_acks.add(msg_id)
+        self.logger.debug(f"Tracking message {msg_id} for server ACK")
+        # Queue the request behind the message: request_ack() uses send_raw
+        # and goes out before the queued message.
+        from slixmpp.plugins.xep_0198 import stanza as sm_stanza
+        self.send(str(sm_stanza.RequestAck(self)))
 
     async def send_to_muc(self, room_jid: str, message: str, message_type: str = 'groupchat') -> str:
         """
@@ -2585,12 +2588,9 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
 
         msg.send()
 
-        # Track seq number and request server ACK (XEP-0198)
+        # Request server ACK (XEP-0198)
         msg_id = msg['id']
-        if hasattr(self.plugin['xep_0198'], 'seq'):
-            self.pending_server_acks[msg_id] = self.plugin['xep_0198'].seq
-            self.logger.debug(f"Tracking MUC message {msg_id} with seq {self.plugin['xep_0198'].seq}")
-            self.plugin['xep_0198'].request_ack()
+        self._track_server_ack(msg_id)
 
         self.logger.info(f"Message sent to {room_jid} (id: {msg_id})")
         return msg_id
@@ -2696,11 +2696,9 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                 last_msg_id = encrypted_msg['id']
                 self.logger.info(f"OMEMO-encrypted message sent to {room_jid} (namespace: {namespace}, id: {last_msg_id})")
 
-            # Track seq number and request server ACK (XEP-0198)
-            if last_msg_id and hasattr(self.plugin['xep_0198'], 'seq'):
-                self.pending_server_acks[last_msg_id] = self.plugin['xep_0198'].seq
-                self.logger.debug(f"Tracking MUC message {last_msg_id} with seq {self.plugin['xep_0198'].seq}")
-                self.plugin['xep_0198'].request_ack()
+            # Request server ACK (XEP-0198)
+            if last_msg_id:
+                self._track_server_ack(last_msg_id)
 
             return last_msg_id
 
@@ -2733,13 +2731,9 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
 
         msg.send()
 
-        # Track seq number and request server ACK (XEP-0198)
+        # Request server ACK (XEP-0198)
         msg_id = msg['id']
-        if hasattr(self.plugin['xep_0198'], 'seq'):
-            self.pending_server_acks[msg_id] = self.plugin['xep_0198'].seq
-            self.logger.debug(f"Tracking message {msg_id} with seq {self.plugin['xep_0198'].seq}")
-            # Request immediate ACK from server
-            self.plugin['xep_0198'].request_ack()
+        self._track_server_ack(msg_id)
 
         self.logger.info(f"Private message sent to {jid} (id: {msg_id})")
         return msg_id
@@ -2814,12 +2808,9 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                 last_msg_id = encrypted_msg['id']
                 self.logger.info(f"OMEMO-encrypted private message sent to {jid} (namespace: {namespace}, id: {last_msg_id})")
 
-            # Track seq number and request server ACK (XEP-0198)
-            if last_msg_id and hasattr(self.plugin['xep_0198'], 'seq'):
-                self.pending_server_acks[last_msg_id] = self.plugin['xep_0198'].seq
-                self.logger.debug(f"Tracking message {last_msg_id} with seq {self.plugin['xep_0198'].seq}")
-                # Request immediate ACK from server
-                self.plugin['xep_0198'].request_ack()
+            # Request server ACK (XEP-0198)
+            if last_msg_id:
+                self._track_server_ack(last_msg_id)
 
             return last_msg_id
 

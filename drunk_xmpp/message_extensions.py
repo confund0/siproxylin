@@ -160,11 +160,9 @@ class MessageExtensionsMixin:
             msg.send()
             self.logger.info(f"Reply sent to {to_jid}")
 
-        # Track seq number and request server ACK (XEP-0198)
-        if message_id and hasattr(self.plugin['xep_0198'], 'seq'):
-            self.pending_server_acks[message_id] = self.plugin['xep_0198'].seq
-            self.logger.debug(f"Tracking reply {message_id} with seq {self.plugin['xep_0198'].seq}")
-            self.plugin['xep_0198'].request_ack()
+        # Request server ACK (XEP-0198)
+        if message_id:
+            self._track_server_ack(message_id)
 
         return message_id
 
