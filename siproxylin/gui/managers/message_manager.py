@@ -14,6 +14,8 @@ from datetime import datetime
 from PySide6.QtWidgets import QMessageBox
 from PySide6.QtCore import Slot, QTimer
 
+from ...services.message_retry import get_retry_handler
+
 
 logger = logging.getLogger('siproxylin.message_manager')
 
@@ -143,6 +145,10 @@ class MessageManager:
             # Message stays marked=0 with hourglass, will be retried when connection restored
             return
 
+        # The retry on reconnect skips this row while this task runs
+        retry_handler = get_retry_handler()
+        retry_handler.start_send(db_message_id)
+        sent = False
         try:
             # Now try to send message
             if is_muc:
@@ -152,6 +158,7 @@ class MessageManager:
                     message_id = await account.client.send_to_muc(jid, message)
             else:
                 message_id = await account.send_message(jid, message, encrypted)
+            sent = True
 
             # Update message with real origin_id
             self.db.execute("""
@@ -172,6 +179,11 @@ class MessageManager:
             import traceback
             logger.error(traceback.format_exc())
             # Message stays marked=0 and will be retried on reconnect
+        finally:
+            retry_handler.end_send(db_message_id)
+            # The retry on reconnect skipped this row while this task ran: retry it now
+            if retry_handler.take_skipped(db_message_id) and not sent and account.is_connected():
+                await retry_handler.retry_message(account.account_id, db_message_id, account.client, self.db)
 
     @Slot(int, str, str, bool)
     def on_send_file(self, account_id: int, jid: str, file_path: str, encrypted: bool):
@@ -512,9 +524,14 @@ class MessageManager:
             logger.debug(f"Account {account.account_id} not connected, reply will be retried on reconnect")
             return
 
+        # The retry on reconnect skips this row while this task runs
+        retry_handler = get_retry_handler()
+        retry_handler.start_send(db_message_id)
+        sent = False
         try:
             # Send reply via DrunkXMPP (XEP-0461)
             message_id = await account.client.send_reply(jid, reply_to_id, reply_body, fallback_body=fallback_body, encrypt=encrypted)
+            sent = True
 
             logger.debug(f"Reply sent successfully to {jid} (message_id={message_id})")
 
@@ -550,3 +567,8 @@ class MessageManager:
                 "Reply Failed",
                 f"Failed to send reply:\n\n{error_msg}"
             ))
+        finally:
+            retry_handler.end_send(db_message_id)
+            # The retry on reconnect skipped this row while this task ran: retry it now
+            if retry_handler.take_skipped(db_message_id) and not sent and account.is_connected():
+                await retry_handler.retry_message(account.account_id, db_message_id, account.client, self.db)

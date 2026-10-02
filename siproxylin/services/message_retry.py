@@ -40,7 +40,25 @@ class MessageRetryHandler(QObject):
     def __init__(self):
         """Initialize message retry handler."""
         super().__init__()
+        # Message row IDs with a send task that is still running.
+        # The retry skips them: the old task can still send after a reconnect.
+        self._in_flight = set()
+        # Message row IDs the retry skipped because their send task still ran.
+        # A failed send task retries its row once when this mark is set.
+        self._skipped = set()
         logger.info("MessageRetryHandler initialized")
+
+    def start_send(self, message_id: int):
+        """Mark a message row as in flight (a send task runs for it)."""
+        self._in_flight.add(message_id)
+
+    def end_send(self, message_id: int):
+        """Remove the in-flight mark. A failed row stays pending for the next retry."""
+        self._in_flight.discard(message_id)
+
+    def is_in_flight(self, message_id: int) -> bool:
+        """True if a send task still runs for this message row."""
+        return message_id in self._in_flight
 
     async def retry_pending_messages_for_account(
         self,
@@ -83,48 +101,11 @@ class MessageRetryHandler(QObject):
             acc_logger.info(f"Found {len(pending)} pending messages to retry")
 
             for msg in pending:
-                try:
-                    # Initialize retry tracking if first attempt
-                    if msg['first_retry_attempt'] is None:
-                        db.initialize_retry_tracking(msg['id'])
-                        acc_logger.debug(f"Initialized retry tracking for message {msg['id']}")
-
-                    # Check if message has been failing for >24h
-                    if self._should_prompt_user(msg):
-                        # Emit signal for UI dialog (will be handled by main window)
-                        self.user_prompt_needed.emit(dict(msg), account_id)
-                        acc_logger.info(f"User prompt needed for message {msg['id']} (failing >24h)")
-                        stats["skipped_user_prompt"] += 1
-                        continue
-
-                    # Step 1: Check MAM for deduplication
-                    acc_logger.debug(f"Checking MAM for message {msg['id']} (origin_id: {msg['origin_id']})")
-                    exists_in_mam = await self._check_message_in_mam(
-                        msg, xmpp_client, acc_logger
-                    )
-
-                    if exists_in_mam:
-                        # Message already on server, just update DB
-                        db.mark_message_delivered(msg['id'])
-                        acc_logger.info(f"Message {msg['id']} found in MAM, marked as delivered")
-                        stats["found_in_mam"] += 1
-                        continue
-
-                    # Step 2: Resend message
-                    acc_logger.info(f"Resending message {msg['id']} (attempt {msg['retry_count'] + 1})")
-                    result = await self._resend_message(msg, xmpp_client, db, acc_logger)
-
-                    if result == "discarded":
-                        stats["discarded"] += 1
-                    else:
-                        # Update retry count and timestamp
-                        db.increment_retry_count(msg['id'])
-                        stats["resent"] += 1
-
-                except Exception as e:
-                    acc_logger.error(f"Failed to retry message {msg['id']}: {e}", exc_info=True)
-                    stats["failed"] += 1
-                    # Continue with next message
+                if self.is_in_flight(msg['id']):
+                    acc_logger.info(f"Message {msg['id']} skipped: its send task still runs")
+                    self._skipped.add(msg['id'])
+                    continue
+                await self._retry_row(msg, xmpp_client, db, acc_logger, stats, account_id)
 
             acc_logger.info(f"Retry completed: {stats}")
             return stats
@@ -132,6 +113,82 @@ class MessageRetryHandler(QObject):
         except Exception as e:
             acc_logger.error(f"Message retry failed for account {account_id}: {e}", exc_info=True)
             raise
+
+    async def _retry_row(self, msg, xmpp_client, db: 'Database', acc_logger, stats: Dict[str, int], account_id: int):
+        """Retry one pending row: MAM check, then resend. Adds the result to stats."""
+        self._skipped.discard(msg['id'])
+        self.start_send(msg['id'])
+        try:
+            # Initialize retry tracking if first attempt
+            if msg['first_retry_attempt'] is None:
+                db.initialize_retry_tracking(msg['id'])
+                acc_logger.debug(f"Initialized retry tracking for message {msg['id']}")
+
+            # Check if message has been failing for >24h
+            if self._should_prompt_user(msg):
+                # Emit signal for UI dialog (will be handled by main window)
+                self.user_prompt_needed.emit(dict(msg), account_id)
+                acc_logger.info(f"User prompt needed for message {msg['id']} (failing >24h)")
+                stats["skipped_user_prompt"] += 1
+                return
+
+            # Step 1: Check MAM for deduplication
+            acc_logger.debug(f"Checking MAM for message {msg['id']} (origin_id: {msg['origin_id']})")
+            exists_in_mam = await self._check_message_in_mam(
+                msg, xmpp_client, acc_logger
+            )
+
+            if exists_in_mam:
+                # Message already on server, just update DB
+                db.mark_message_delivered(msg['id'])
+                acc_logger.info(f"Message {msg['id']} found in MAM, marked as delivered")
+                stats["found_in_mam"] += 1
+                return
+
+            # Step 2: Resend message
+            acc_logger.info(f"Resending message {msg['id']} (attempt {msg['retry_count'] + 1})")
+            result = await self._resend_message(msg, xmpp_client, db, acc_logger)
+
+            if result == "discarded":
+                stats["discarded"] += 1
+            else:
+                # Update retry count and timestamp
+                db.increment_retry_count(msg['id'])
+                stats["resent"] += 1
+
+        except Exception as e:
+            acc_logger.error(f"Failed to retry message {msg['id']}: {e}", exc_info=True)
+            stats["failed"] += 1
+        finally:
+            self.end_send(msg['id'])
+
+    def take_skipped(self, message_id: int) -> bool:
+        """True if the last retry skipped this row while its send task ran. Clears the mark."""
+        if message_id in self._skipped:
+            self._skipped.discard(message_id)
+            return True
+        return False
+
+    async def retry_message(self, account_id: int, message_id: int, xmpp_client, db: 'Database') -> Dict[str, int]:
+        """
+        Retry one row now, if it is still pending.
+
+        For a send task that failed after the retry on reconnect skipped its row.
+        Without this, the row waits for the next session start.
+        """
+        from ..utils.logger import get_account_logger
+
+        acc_logger = get_account_logger(account_id)
+        stats = {"resent": 0, "found_in_mam": 0, "failed": 0, "skipped_user_prompt": 0, "discarded": 0}
+        if self.is_in_flight(message_id):
+            return stats
+        for msg in db.get_pending_messages(account_id):
+            if msg['id'] == message_id:
+                acc_logger.info(f"Message {message_id} retried: its send task failed after the retry skipped it")
+                await self._retry_row(msg, xmpp_client, db, acc_logger, stats, account_id)
+                acc_logger.info(f"Retry of message {message_id} completed: {stats}")
+                break
+        return stats
 
     def _should_prompt_user(self, msg: dict) -> bool:
         """
