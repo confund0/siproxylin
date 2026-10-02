@@ -16,6 +16,7 @@ import sys
 import asyncio
 import logging
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -106,7 +107,8 @@ class InFlightRetryTests(unittest.TestCase):
                 hang.set_exception(ConnectionError('device list timeout'))
                 await task
             mam.assert_awaited_once()
-            account.client.send_private_message.assert_awaited_once_with(PEER, 'A')
+            account.client.send_private_message.assert_awaited_once_with(
+                PEER, 'A', message_id='temp-1', delay=datetime(1970, 1, 1, tzinfo=timezone.utc))
             mm.db.increment_retry_count.assert_called_once_with(ROW_ID)
             self.assertFalse(self.handler.is_in_flight(ROW_ID))
             self.assertFalse(self.handler.take_skipped(ROW_ID))
@@ -177,7 +179,8 @@ class InFlightRetryTests(unittest.TestCase):
             await task
             self.assertFalse(self.handler.is_in_flight(ROW_ID))
             stats, client = await self.retry()
-            client.send_private_message.assert_awaited_once_with(PEER, 'A')
+            client.send_private_message.assert_awaited_once_with(
+                PEER, 'A', message_id='temp-1', delay=datetime(1970, 1, 1, tzinfo=timezone.utc))
             self.assertEqual(stats['resent'], 1)
             self.assertFalse(self.handler.is_in_flight(ROW_ID))
 

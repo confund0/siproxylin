@@ -88,3 +88,22 @@ steps:
   - alice2: wait message
     match: {body: "p3 from bob $RUN"}
     expect: {id: "${p3.msg_id}"}
+
+  # resend like the app's message retry: the id of the first send and a
+  # delay stamp (XEP-0203) with the original send time
+  - alice: resend ${jid.bob} rs1-$RUN 2026-01-01T10:00:00Z rs1 resend $RUN
+    save: rs1
+  - expect: {rs1.msg_id: "rs1-$RUN"}
+  - bob: wait message
+    match: {body: "rs1 resend $RUN", encrypted: false, source: live}
+    expect: {id: "rs1-$RUN", origin_id: "rs1-$RUN", delay: "2026-01-01T10:00:00+00:00"}
+  - alice: wait receipt
+    match: {id: "rs1-$RUN", from~: "bob@"}
+  - alice: resendenc ${jid.bob} rs2-$RUN 2026-01-01T12:00:00+02:00 rs2 resend enc $RUN
+    save: rs2
+  - expect: {rs2.msg_id: "rs2-$RUN"}
+  - bob: wait message
+    match: {body: "rs2 resend enc $RUN", encrypted: true, source: live}
+    expect: {id: "rs2-$RUN", origin_id: "rs2-$RUN", delay: "2026-01-01T10:00:00+00:00"}
+  - alice: wait receipt
+    match: {id: "rs2-$RUN", from~: "bob@"}

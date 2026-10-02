@@ -36,6 +36,7 @@ class MessageRetryHandler(QObject):
     # Configuration
     RETRY_DIALOG_THRESHOLD_HOURS = 24  # Show user prompt after 24h of failures
     MAM_QUERY_WINDOW_SECONDS = 600  # Query ±10 min around message timestamp
+    MAM_CHECK_MAX_ENTRIES = 1000  # Safety cap for the archive entries one check reads
 
     def __init__(self):
         """Initialize message retry handler."""
@@ -242,20 +243,30 @@ class MessageRetryHandler(QObject):
             # keys are used up; only the IDs are compared here).
             is_muc = counterpart_jid in xmpp_client.rooms
             origin_id = msg['origin_id']
+            # The whole window is read (all pages): in a busy chat the message
+            # can come after many older entries.
             history = xmpp_client.retrieve_history(
                 jid=counterpart_jid,
                 start=start_time,
                 end=end_time,
-                max_messages=50,
+                max_messages=None,
                 with_jid=None if is_muc else counterpart_jid,
                 include_own_ids=True,
                 is_stored=lambda _archive_id, msg_origin_id, message_id: origin_id not in (msg_origin_id, message_id)
             )
 
             # Look for our origin_id in the results
+            n_read = 0
             try:
                 async for page in history:
                     for archived_msg in page:
+                        n_read += 1
+                        if n_read > self.MAM_CHECK_MAX_ENTRIES:
+                            acc_logger.warning(
+                                f"MAM check stopped after {self.MAM_CHECK_MAX_ENTRIES} entries, "
+                                f"origin_id {origin_id} not found in them"
+                            )
+                            return False
                         # Skip receipt/marker entries (no stanza)
                         if archived_msg.get('marker_type'):
                             continue
@@ -267,7 +278,7 @@ class MessageRetryHandler(QObject):
             finally:
                 await history.aclose()
 
-            acc_logger.debug(f"Message with origin_id {origin_id} not found in MAM")
+            acc_logger.debug(f"Message with origin_id {origin_id} not found in MAM ({n_read} entries read)")
             return False
 
         except RuntimeError as e:
@@ -315,22 +326,30 @@ class MessageRetryHandler(QObject):
                 db.mark_message_discarded(msg['id'])
                 return "discarded"  # Don't attempt resend, don't raise exception
 
+        # Same ID as the first send (receivers drop the copy if the first one came
+        # through) and a delay stamp with the original send time (XEP-0203).
+        # msg['time'] is a Unix timestamp.
+        origin_id = msg['origin_id']
+        delay = datetime.fromtimestamp(msg['time'], tz=timezone.utc)
+
         try:
             # Resend using appropriate method based on message type
             if is_groupchat:
                 if is_encrypted:
-                    msg_id = await xmpp_client.send_encrypted_to_muc(counterpart_jid, body)
+                    msg_id = await xmpp_client.send_encrypted_to_muc(
+                        counterpart_jid, body, message_id=origin_id, delay=delay)
                 else:
-                    msg_id = await xmpp_client.send_to_muc(counterpart_jid, body)
+                    msg_id = await xmpp_client.send_to_muc(
+                        counterpart_jid, body, message_id=origin_id, delay=delay)
             else:
                 if is_encrypted:
-                    msg_id = await xmpp_client.send_encrypted_private_message(counterpart_jid, body)
+                    msg_id = await xmpp_client.send_encrypted_private_message(
+                        counterpart_jid, body, message_id=origin_id, delay=delay)
                 else:
-                    msg_id = await xmpp_client.send_private_message(counterpart_jid, body)
+                    msg_id = await xmpp_client.send_private_message(
+                        counterpart_jid, body, message_id=origin_id, delay=delay)
 
-            # Update origin_id in DB to track new message_id
-            db.update_message_origin_id(msg['id'], msg_id)
-            acc_logger.info(f"Message resent successfully with new origin_id {msg_id}")
+            acc_logger.info(f"Message resent successfully with origin_id {msg_id}")
             return "sent"
 
         except Exception as e:

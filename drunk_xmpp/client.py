@@ -2550,7 +2550,18 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         from slixmpp.plugins.xep_0198 import stanza as sm_stanza
         self.send(str(sm_stanza.RequestAck(self)))
 
-    async def send_to_muc(self, room_jid: str, message: str, message_type: str = 'groupchat') -> str:
+    def _set_resend_fields(self, msg, message_id: Optional[str], delay: Optional[datetime]):
+        """
+        For a resend: use the given message ID and add a delay stamp (XEP-0203).
+        Call it before origin-id is set. For OMEMO, call it on the encrypted stanza.
+        """
+        if message_id:
+            msg['id'] = message_id
+        if delay:
+            msg['delay']['stamp'] = delay
+
+    async def send_to_muc(self, room_jid: str, message: str, message_type: str = 'groupchat',
+                          message_id: Optional[str] = None, delay: Optional[datetime] = None) -> str:
         """
         Send an unencrypted message to a MUC room.
 
@@ -2558,6 +2569,8 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             room_jid: Room JID
             message: Message text
             message_type: 'groupchat' or 'chat' (for private messages)
+            message_id: Optional message ID (a resend uses the ID of the first send)
+            delay: Optional original send time with time zone (a resend adds a delay stamp)
 
         Returns:
             Message ID (for tracking/editing)
@@ -2578,6 +2591,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
 
         self.logger.debug(f"Sending message to {room_jid}: {message[:100]}...")
         msg = self.make_message(mto=room_jid, mbody=message, mtype=message_type)
+        self._set_resend_fields(msg, message_id, delay)
 
         # Add origin-id for message tracking and editing (XEP-0359)
         msg['origin_id']['id'] = msg['id']
@@ -2595,7 +2609,8 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.logger.info(f"Message sent to {room_jid} (id: {msg_id})")
         return msg_id
 
-    async def send_encrypted_to_muc(self, room_jid: str, message: str) -> str:
+    async def send_encrypted_to_muc(self, room_jid: str, message: str,
+                                    message_id: Optional[str] = None, delay: Optional[datetime] = None) -> str:
         """
         Send an OMEMO-encrypted message to a MUC room.
         Automatically encrypts for all participants in the room.
@@ -2603,6 +2618,9 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         Args:
             room_jid: Room JID
             message: Message text to encrypt
+            message_id: Optional message ID (a resend uses the ID of the first send).
+                Only the last encrypted stanza gets it (its ID is the return value).
+            delay: Optional original send time with time zone (a resend adds a delay stamp)
 
         Returns:
             Message ID (for tracking/editing)
@@ -2681,9 +2699,18 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
 
             # Send all encrypted versions and capture last message ID
             last_msg_id = None
-            for namespace, encrypted_msg in messages.items():
+            for i, (namespace, encrypted_msg) in enumerate(messages.items()):
                 encrypted_msg['eme']['namespace'] = namespace
                 encrypted_msg['eme']['name'] = self['xep_0380'].mechanisms.get(namespace, 'OMEMO')
+
+                # Resend: the delay stamp goes in the outer (plain) stanza
+                new_id = message_id if i == len(messages) - 1 else None
+                if new_id and new_id != encrypted_msg['id']:
+                    # slixmpp-omemo keeps the plain text of the reflection by stanza ID
+                    cache = getattr(xep_0384, '_XEP_0384__muc_reflection_cache', None)
+                    if cache is not None and encrypted_msg['id'] in cache:
+                        cache[new_id] = cache.pop(encrypted_msg['id'])
+                self._set_resend_fields(encrypted_msg, new_id, delay)
 
                 # Add origin-id for message tracking and editing (XEP-0359)
                 encrypted_msg['origin_id']['id'] = encrypted_msg['id']
@@ -2706,19 +2733,23 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             self.logger.exception(f"Failed to encrypt message: {e}")
             raise
 
-    async def send_private_message(self, jid: str, message: str) -> str:
+    async def send_private_message(self, jid: str, message: str,
+                                   message_id: Optional[str] = None, delay: Optional[datetime] = None) -> str:
         """
         Send an unencrypted private message to a user.
 
         Args:
             jid: User JID (can be full or bare)
             message: Message text
+            message_id: Optional message ID (a resend uses the ID of the first send)
+            delay: Optional original send time with time zone (a resend adds a delay stamp)
 
         Returns:
             Message ID (for tracking/editing)
         """
         self.logger.debug(f"Sending private message to {jid}: {message[:100]}...")
         msg = self.make_message(mto=jid, mbody=message, mtype='chat')
+        self._set_resend_fields(msg, message_id, delay)
 
         # Add origin-id for message tracking and editing (XEP-0359)
         msg['origin_id']['id'] = msg['id']
@@ -2738,13 +2769,18 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.logger.info(f"Private message sent to {jid} (id: {msg_id})")
         return msg_id
 
-    async def send_encrypted_private_message(self, jid: str, message: str) -> str:
+    async def send_encrypted_private_message(self, jid: str, message: str,
+                                             message_id: Optional[str] = None,
+                                             delay: Optional[datetime] = None) -> str:
         """
         Send an OMEMO-encrypted private message to a user.
 
         Args:
             jid: User JID (can be full or bare)
             message: Message text to encrypt
+            message_id: Optional message ID (a resend uses the ID of the first send).
+                Only the last encrypted stanza gets it (its ID is the return value).
+            delay: Optional original send time with time zone (a resend adds a delay stamp)
 
         Returns:
             Message ID (for tracking/editing)
@@ -2793,9 +2829,12 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
 
             # Send all encrypted versions and capture last message ID
             last_msg_id = None
-            for namespace, encrypted_msg in messages.items():
+            for i, (namespace, encrypted_msg) in enumerate(messages.items()):
                 encrypted_msg['eme']['namespace'] = namespace
                 encrypted_msg['eme']['name'] = self['xep_0380'].mechanisms.get(namespace, 'OMEMO')
+
+                # Resend: the delay stamp goes in the outer (plain) stanza
+                self._set_resend_fields(encrypted_msg, message_id if i == len(messages) - 1 else None, delay)
 
                 # Add origin-id for message tracking and editing (XEP-0359)
                 encrypted_msg['origin_id']['id'] = encrypted_msg['id']
