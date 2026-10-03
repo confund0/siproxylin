@@ -121,7 +121,7 @@ class ReceiptHandler:
         Args:
             account_id: Account ID
             counterpart_jid: Sender's bare JID
-            message_id: origin_id or message_id of our sent message that was displayed
+            message_id: origin_id or message_id of our sent message or file that was displayed
                 (messages from our other devices may have no origin-id)
 
         Returns:
@@ -140,7 +140,7 @@ class ReceiptHandler:
 
             counterpart_id = jid_row['id']
 
-            # First, get the timestamp of the marked message
+            # First, get the timestamp of the marked message or file
             marked_msg = self.db.fetchone(
                 """
                 SELECT time
@@ -149,8 +149,16 @@ class ReceiptHandler:
                   AND counterpart_id = ?
                   AND (origin_id = ? OR message_id = ?)
                   AND direction = 1
+                UNION ALL
+                SELECT time
+                FROM file_transfer
+                WHERE account_id = ?
+                  AND counterpart_id = ?
+                  AND (origin_id = ? OR message_id = ?)
+                  AND direction = 1
                 """,
-                (account_id, counterpart_id, message_id, message_id)
+                (account_id, counterpart_id, message_id, message_id,
+                 account_id, counterpart_id, message_id, message_id)
             )
 
             if not marked_msg:

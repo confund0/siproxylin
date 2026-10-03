@@ -956,15 +956,15 @@ class MessageDisplayWidget(QObject):
             read_up_to_item = conv['read_up_to_item']
 
             # Get most recent received content (message OR file) that hasn't been marked yet
-            # We update read_up_to_item for ANY content to clear unread counters,
-            # but only send XMPP markers for messages (files don't have stanza IDs)
+            # We update read_up_to_item for ANY content to clear unread counters.
+            # File rows store the same IDs as message rows, so the marker goes for both.
             result = self.db.fetchone("""
                 SELECT
                     ci.id as content_item_id,
                     ci.content_type,
-                    m.message_id,
-                    m.origin_id,
-                    m.stanza_id
+                    COALESCE(m.message_id, ft.message_id) AS message_id,
+                    COALESCE(m.origin_id, ft.origin_id) AS origin_id,
+                    COALESCE(m.stanza_id, ft.stanza_id) AS stanza_id
                 FROM content_item ci
                 LEFT JOIN message m ON ci.foreign_id = m.id AND ci.content_type = 0
                 LEFT JOIN file_transfer ft ON ci.foreign_id = ft.id AND ci.content_type = 2
@@ -983,12 +983,10 @@ class MessageDisplayWidget(QObject):
                 return
 
             content_item_id = result['content_item_id']
-            content_type = result['content_type']
 
-            # For 1-to-1: Try to send XMPP marker if this is a message (files don't have stanza IDs)
+            # For 1-to-1: Try to send XMPP marker (message or file)
             # For MUC: Just update read_up_to_item locally (no XMPP marker sent)
-            if not self.current_is_muc and content_type == 0 and markers_enabled:
-                # This is a message - try to send XMPP marker
+            if not self.current_is_muc and markers_enabled:
                 message_id = result['message_id'] or result['origin_id'] or result['stanza_id']
                 if message_id:
                     # Send ONE marker for the most recent message (XEP-0333 compliant)
@@ -999,8 +997,6 @@ class MessageDisplayWidget(QObject):
                         logger.info(f"Sent 'displayed' marker for message {message_id} to {self.current_jid}")
                     except Exception as e:
                         logger.warning(f"Failed to send marker for {message_id} (will update locally anyway): {e}")
-            elif content_type == 2:
-                logger.debug(f"Most recent content is a file (no XMPP marker to send, will update locally)")
 
             # Update conversation.read_up_to_item (for both 1-to-1 and MUC, for both messages and files)
             # This clears unread counters locally regardless of whether XMPP marker was sent.
