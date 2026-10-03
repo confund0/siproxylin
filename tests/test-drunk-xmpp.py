@@ -79,6 +79,8 @@ JSON mode:
       /resend and /resendenc <jid> <id> <time> <message> send like the
       app's resend: the given id (stanza id and origin-id) and a delay
       stamp with <time> (ISO with zone, e.g. 2026-01-01T10:00:00Z).
+      /resendmuc and /resendmucenc <room> <id> <time> <message> do the
+      same for a group chat.
       body_clean is the body without the reply quote (XEP-0461
       fallback); it is only there when a quote was removed.
       /history writes one "message" event per archived message (source
@@ -464,6 +466,8 @@ def print_help_grouped():
     print("  /invite <room> <jid> [reason] - Invite a contact to a MUC room")
     print("  /sendmuc <room> <message>    - Send plaintext to MUC room")
     print("  /sendmucenc <room> <message> - Send OMEMO-encrypted to MUC room")
+    print("  /resendmuc <room> <id> <time> <message>    - Send plaintext to MUC room with this id and a delay stamp")
+    print("  /resendmucenc <room> <id> <time> <message> - The same with OMEMO (time: ISO with zone)")
     print("  /bookmarks                   - List server bookmarks")
     print("  /bookmark-add <jid> <name> <nick> [password] - Add/update bookmark")
     print("  /bookmark-rm <jid>           - Remove bookmark")
@@ -605,6 +609,8 @@ def print_help_alphabetical():
         "/resendenc <jid> <id> <time> <message> - The same with OMEMO (time: ISO with zone)",
         "/sendmuc <room> <message>    - Send plaintext to MUC room",
         "/sendmucenc <room> <message> - Send OMEMO-encrypted to MUC room",
+        "/resendmuc <room> <id> <time> <message>    - Send plaintext to MUC room with this id and a delay stamp",
+        "/resendmucenc <room> <id> <time> <message> - The same with OMEMO (time: ISO with zone)",
         "/server-features             - Query server features/XEPs (XEP-0030)",
         "/server-version              - Query server software version (XEP-0092)",
         "/sleep <seconds>             - Wait some seconds",
@@ -1473,6 +1479,34 @@ async def main(args):
                     else:
                         msg_id = await client.send_private_message(jid, message, message_id=msg_id, delay=delay)
                     track_sent_message(jid, msg_id, message, encrypted=encrypted)
+                    logger.info("✓ Sent!")
+                except Exception as e:
+                    logger.error(f"Failed: {e}")
+
+            elif command.startswith("/resendmuc ") or command.startswith("/resendmucenc "):
+                # Like the app's resend, for a group chat: the given message id and a delay stamp (XEP-0203)
+                parts = command.split(None, 4)
+                if len(parts) < 5:
+                    logger.error(f"Usage: {parts[0]} <room_jid> <id> <time> <message>")
+                    continue
+
+                cmd, room_jid, msg_id, stamp, message = parts
+                encrypted = cmd == "/resendmucenc"
+                try:
+                    delay = datetime.fromisoformat(stamp)
+                except ValueError:
+                    logger.error(f"Bad time {stamp!r}: use ISO format with zone, e.g. 2026-01-01T10:00:00Z")
+                    continue
+                if delay.tzinfo is None:
+                    logger.error(f"Time {stamp!r} has no zone: add Z or +hh:mm")
+                    continue
+                logger.info(f"Resending to MUC {room_jid} (id {msg_id}, delay {delay.isoformat()}, encrypted={encrypted})...")
+                try:
+                    if encrypted:
+                        msg_id = await client.send_encrypted_to_muc(room_jid, message, message_id=msg_id, delay=delay)
+                    else:
+                        msg_id = await client.send_to_muc(room_jid, message, message_id=msg_id, delay=delay)
+                    track_sent_message(room_jid, msg_id, message, encrypted=encrypted)
                     logger.info("✓ Sent!")
                 except Exception as e:
                     logger.error(f"Failed: {e}")

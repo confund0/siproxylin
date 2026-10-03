@@ -96,6 +96,15 @@ steps:
   - carol: wait message
     match: {room: "${room.plain}", body: "m1 hello room $RUN", source: live}
     expect: {id: "${m1.msg_id}", nick: alice, encrypted: false}
+  # resend like the app's message retry (and like Dino): the id of the first
+  # send and a delay stamp (XEP-0203). It is a live message, not history.
+  - alice: resendmuc ${room.plain} rsm1-$RUN 2026-01-01T10:00:00Z rsm1 resend room $RUN
+    save: rsm1
+  - expect: {rsm1.msg_id: "rsm1-$RUN"}
+  - bob: wait message
+    match: {room: "${room.plain}", body: "rsm1 resend room $RUN"}
+    known_fail: "resend in a group chat: the sender's delay stamp makes it history, not live"
+    expect: {id: "rsm1-$RUN", nick: alice, encrypted: false, source: live}
   - alice: room-features ${room.plain}
   - alice: room-config ${room.plain}
   - bob: room-config ${room.plain}
@@ -127,6 +136,14 @@ steps:
   - carol: wait message
     match: {room: "${room.enc}", body: "me1 enc hello room $RUN", source: live}
     expect: {id: "${me1.msg_id}", nick: alice, encrypted: true}
+  # resend with OMEMO: also a live message
+  - alice: resendmucenc ${room.enc} rsm2-$RUN 2026-01-01T12:00:00+02:00 rsm2 resend enc room $RUN
+    save: rsm2
+  - expect: {rsm2.msg_id: "rsm2-$RUN"}
+  - bob: wait message
+    match: {room: "${room.enc}", body: "rsm2 resend enc room $RUN"}
+    known_fail: "resend in a group chat: the sender's delay stamp makes it history, not live"
+    expect: {id: "rsm2-$RUN", nick: alice, encrypted: true, source: live}
   - bob: sendmucenc ${room.enc} me2 enc from bob $RUN
     save: me2
   - alice: wait message
