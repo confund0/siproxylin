@@ -7,6 +7,10 @@ DrunkXMPP then sets is_history. The message must still notify the GUI
 (message_received with is_marker False), once only. A sent carbon with a
 delay stamp must not notify. The same for a file message (OOB URL).
 
+Group chat: a live resend keeps the sender's delay stamp (no from). It
+must notify and store the sender's time. Join history has a delay with
+from=room JID: it must not notify.
+
 The stanza goes through DrunkXMPP's handler into MessageBarrel's
 _on_private_message (and FileBarrel for files), with the real Database
 on a file in tmp/.
@@ -138,6 +142,51 @@ class DelayedPrivateMessageTests(unittest.TestCase):
         self.run_stanzas([xml])
         self.assertEqual(self.emits, [])
         self.assertEqual(len(self.file_rows()), 1)
+
+
+ROOM = 'room@conference.example.net'
+
+
+class DelayedGroupchatMessageTests(unittest.TestCase):
+
+    setUp = DelayedPrivateMessageTests.setUp
+    rows = DelayedPrivateMessageTests.rows
+
+    def run_stanzas(self, xmls):
+        async def body():
+            signals = {'message_received': types.SimpleNamespace(
+                emit=lambda *a: self.emits.append(a))}
+            barrel = MessageBarrel.__new__(MessageBarrel)
+            barrel.account_id = ACCOUNT
+            barrel.db = self.db
+            barrel.logger = None
+            barrel.signals = signals
+            barrel.receipt_handler = None
+            client = DrunkXMPP(
+                jid=OUR_JID + '/test', password='secret',
+                rooms={ROOM: {'nick': 'me'}}, enable_omemo=False,
+                on_message_callback=barrel._on_message,
+            )
+            barrel.client = client
+            for xml in xmls:
+                await client._on_groupchat_message(stanza(xml))
+
+        asyncio.run(body())
+
+    def test_live_resend_notifies(self):
+        self.run_stanzas([
+            f'<message xmlns="jabber:client" type="groupchat" from="{ROOM}/peer" to="{OUR_JID}/test" id="g1">'
+            f'<body>resent</body><delay xmlns="urn:xmpp:delay" stamp="{STAMP}"/></message>'])
+        self.assertEqual(self.emits, [(ACCOUNT, ROOM, False)])
+        self.assertEqual(self.rows(), [(0, STAMP_TS, 'resent')])
+
+    def test_join_history_no_notify(self):
+        self.run_stanzas([
+            f'<message xmlns="jabber:client" type="groupchat" from="{ROOM}/peer" to="{OUR_JID}/test" id="g2">'
+            f'<body>old</body><delay xmlns="urn:xmpp:delay" stamp="{STAMP}"/>'
+            f'<delay xmlns="urn:xmpp:delay" stamp="2026-10-02T10:00:00Z" from="{ROOM}"/></message>'])
+        self.assertEqual(self.emits, [])
+        self.assertEqual(len(self.rows()), 1)
 
 
 if __name__ == '__main__':

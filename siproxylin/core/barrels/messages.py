@@ -400,7 +400,8 @@ class MessageBarrel:
             from datetime import datetime
 
             # Get timestamp from metadata
-            if metadata.is_history and metadata.delay_timestamp:
+            # A live resend also has a delay stamp: keep the original time
+            if metadata.delay_timestamp:
                 timestamp = int(metadata.delay_timestamp.timestamp())
             else:
                 timestamp = int(datetime.now().timestamp())

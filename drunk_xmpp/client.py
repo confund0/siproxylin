@@ -1585,9 +1585,17 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             pass
 
         # Check for history (XEP-0203: Delayed Delivery)
+        # Only a delay from the room itself marks join history. Any other
+        # delay is the sender's stamp (offline send or resend): the room
+        # keeps it on the live message, so it is not history.
         if msg['delay']['stamp']:
-            metadata.is_history = True
             metadata.delay_timestamp = msg['delay']['stamp']
+            for d in msg.xml.findall('{urn:xmpp:delay}delay'):
+                try:
+                    if d.get('from') and JID(d.get('from')).bare == room:
+                        metadata.is_history = True
+                except Exception:
+                    pass  # Invalid from: not the room
 
         # Extract occupant-id (XEP-0421)
         try:

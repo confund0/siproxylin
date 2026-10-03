@@ -103,8 +103,17 @@ steps:
   - expect: {rsm1.msg_id: "rsm1-$RUN"}
   - bob: wait message
     match: {room: "${room.plain}", body: "rsm1 resend room $RUN"}
-    known_fail: "resend in a group chat: the sender's delay stamp makes it history, not live"
-    expect: {id: "rsm1-$RUN", nick: alice, encrypted: false, source: live}
+    expect: {id: "rsm1-$RUN", nick: alice, encrypted: false, source: live,
+             delay: "2026-01-01T10:00:00+00:00"}
+  # join history of the resent message: the room adds its own delay
+  # (from=room JID), so it stays history
+  - carol: leave ${room.plain}
+  - carol: join ${room.plain} carol
+  - carol: wait muc_joined
+    match: {room: "${room.plain}"}
+  - carol: wait message
+    match: {room: "${room.plain}", body: "rsm1 resend room $RUN", source: history}
+    expect: {id: "rsm1-$RUN", nick: alice}
   - alice: room-features ${room.plain}
   - alice: room-config ${room.plain}
   - bob: room-config ${room.plain}
@@ -142,8 +151,8 @@ steps:
   - expect: {rsm2.msg_id: "rsm2-$RUN"}
   - bob: wait message
     match: {room: "${room.enc}", body: "rsm2 resend enc room $RUN"}
-    known_fail: "resend in a group chat: the sender's delay stamp makes it history, not live"
-    expect: {id: "rsm2-$RUN", nick: alice, encrypted: true, source: live}
+    expect: {id: "rsm2-$RUN", nick: alice, encrypted: true, source: live,
+             delay: "2026-01-01T10:00:00+00:00"}
   - bob: sendmucenc ${room.enc} me2 enc from bob $RUN
     save: me2
   - alice: wait message
