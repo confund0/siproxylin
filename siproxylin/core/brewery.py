@@ -18,6 +18,9 @@ from PySide6.QtCore import QObject, Signal
 # Import from refactored drunk_xmpp package
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from drunk_xmpp import DrunkXMPP, MessageMetadata
+
+logger = logging.getLogger('siproxylin.account_manager')
+
 try:
     from drunk_call_hook import CallBridge
     from drunk_call_hook.protocol.jingle import JingleAdapter
@@ -42,9 +45,6 @@ from .barrels.files import FileBarrel
 from .barrels.messages import MessageBarrel
 from .barrels.calls import CallBarrel
 from .barrels.muc import MucBarrel
-
-
-logger = logging.getLogger('siproxylin.account_manager')
 
 
 # Account fields that do not need a reconnect when they change.
