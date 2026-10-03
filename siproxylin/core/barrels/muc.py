@@ -721,6 +721,8 @@ class MucBarrel:
         Same rules as the duplicate check of insert_message_atomic and
         insert_file_transfer_atomic (archive_id is stored as stanza_id), so a
         message is skipped only when the insert would drop it as a duplicate.
+        One gap: insert_file_transfer_atomic also matches origin_id against
+        message_id; this check does not, so such a copy is not counted here.
         """
         for column, value in (('stanza_id', archive_id), ('origin_id', origin_id), ('message_id', message_id)):
             if not value:

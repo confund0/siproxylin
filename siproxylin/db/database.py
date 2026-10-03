@@ -713,12 +713,14 @@ class Database:
                     return (None, None)
 
             if origin_id:
-                # Check file_transfer table
+                # Check file_transfer table. Also match message_id: an archive copy
+                # of a file we sent may have the id in the other field.
                 existing = self.fetchone("""
-                    SELECT id FROM file_transfer
-                    WHERE account_id = ? AND origin_id = ?
+                    SELECT id FROM file_transfer WHERE account_id = ? AND origin_id = ?
+                    UNION ALL
+                    SELECT id FROM file_transfer WHERE account_id = ? AND message_id = ?
                     LIMIT 1
-                """, (account_id, origin_id))
+                """, (account_id, origin_id, account_id, origin_id))
                 if existing:
                     logger.debug(f"Caught duplicate (file_transfer table): origin_id={origin_id}, stanza_id={stanza_id}, message_id={message_id}")
                     return (None, None)
@@ -734,12 +736,14 @@ class Database:
                     return (None, None)
 
             if message_id:
-                # Check file_transfer table
+                # Check file_transfer table. Also match origin_id: a plain file we sent
+                # has no origin-id element, so its archive copy has the id only here.
                 existing = self.fetchone("""
-                    SELECT id FROM file_transfer
-                    WHERE account_id = ? AND message_id = ?
+                    SELECT id FROM file_transfer WHERE account_id = ? AND message_id = ?
+                    UNION ALL
+                    SELECT id FROM file_transfer WHERE account_id = ? AND origin_id = ?
                     LIMIT 1
-                """, (account_id, message_id))
+                """, (account_id, message_id, account_id, message_id))
                 if existing:
                     logger.debug(f"Caught duplicate (file_transfer table): message_id={message_id}, origin_id={origin_id}, stanza_id={stanza_id}")
                     return (None, None)
