@@ -575,7 +575,7 @@ class MessageBarrel:
                     direction, is_muc=False,
                     trusted=(direction == 0 and self.files_barrel.is_trusted_sender(jid_id))
                 )
-                await self.files_barrel.handle_incoming_file(
+                file_transfer_id = await self.files_barrel.handle_incoming_file(
                     jid_id=jid_id,
                     from_jid=from_jid,
                     file_url=metadata.attachment_url,
@@ -589,6 +589,9 @@ class MessageBarrel:
                     stanza_id=stanza_id,  # For deduplication
                     auto_download=auto_download
                 )
+                if file_transfer_id is None:
+                    # Duplicate or error: nothing new, no notification
+                    return
             else:
                 # Regular text message (not a file)
                 result = self.db.insert_message_atomic(
@@ -625,9 +628,11 @@ class MessageBarrel:
             if self.logger:
                 self.logger.debug(f"Private message stored in database (direction={direction}, is_carbon={1 if is_from_other_device else 0})")
 
-            # Emit signal to notify GUI only for live INCOMING messages (not history, not our sent messages)
+            # Emit signal to notify GUI for INCOMING messages, also with a delay stamp
+            # (offline delivery or a resend). A duplicate message or file does not
+            # get here: the code above returns first.
             # Our sent messages (direction=1, carbons) should not trigger notifications
-            if not metadata.is_history and direction == 0:
+            if direction == 0:
                 self.signals['message_received'].emit(self.account_id, from_jid, False)
 
         except Exception as e:

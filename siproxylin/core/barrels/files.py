@@ -288,7 +288,7 @@ class FileBarrel:
             if self.logger:
                 self.logger.info(f"Pending file transfer stored (ID: {file_transfer_id}, auto_download={auto_download})")
 
-            # Refresh only. The caller emits the new-message signal for live incoming messages.
+            # Refresh only. The caller emits the new-message signal for incoming messages.
             if refresh:
                 self._refresh_chat(from_jid)
 
