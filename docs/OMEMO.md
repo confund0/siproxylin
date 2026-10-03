@@ -256,15 +256,14 @@ The OMEMO implementation is functional but has some limitations:
 - No automated fingerprint exchange
 
 **Settings:**
-- BTBV checkbox exists and saves to database, but DrunkXMPP `_btbv_enabled()` is hardcoded to `return True` (drunk_xmpp/client.py:247, omemo_support.py:98)
-- "required" OMEMO mode not fully enforced
+- The BTBV checkbox is saved, but blind trust is always on
+- The "required" OMEMO mode is not fully enforced yet
 
 ### Known Issues
 
 **Phantom Subscriptions:**
 - PubSub subscriptions can corrupt device lists
 - Symptom: Duplicate devices, missing devices
-- See: `old_docs/HISTORY/OMEMO-PHANTOM.md`
 
 **JID Normalization:**
 - JIDs must be lowercase for database lookups
@@ -332,4 +331,4 @@ A: Log into another device, open "OMEMO - Own" tab, mark the lost device as Comp
 ---
 
 **Last Updated:** 2026-02-23
-**Based on:** Current implementation + research from `old_docs/PHASE-CHATS/`
+**Based on:** Current implementation

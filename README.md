@@ -4,23 +4,13 @@
 
 ---
 
-## Breaking News!
+## News
 
-**2026-10-03 v0.0.32 "Morning beer" released: bookmark sync, read state and notification fixes**
+**2026-10-03 v0.0.32 "Morning beer" released: live bookmark sync**
 
 Group chat bookmarks now sync live with your other devices. A room you add, remove or change on your phone is joined or left here at once, without a restart.
 
 **Updating from v0.0.31:** a group chat that is not in your server bookmarks is no longer joined at login. To join it at every login, and to see it on your other devices, turn on Auto-join (right-click the room, or open the room details).
-
-Read state is fixed in several places: received files now get a read mark, a chat that is open but hidden is no longer marked read, and the notification closes when you read the chat. Messages that were sent again after a reconnect (1:1 and group chats) now notify. Plain files you send are no longer stored twice. The chat view, roster and archive (MAM) OMEMO handling got more fixes.
-
-**2026-09-29 v0.0.31 "On the rocks" released: notifications and read marks fixed**
-
-No more notifications with an old message after a reconnect: messages you sent from your phone while Siproxylin was offline no longer count as new. A received file now shows its name in the notification. An open chat in a window in the background shows notifications again.
-
-Messages you send from another device (for example your phone) now show delivered and read marks too, in light blue, also when they were read while Siproxylin was offline.
-
-The check before a message is sent again now works; outside the UTC time zone it could send a message twice.
 
 **2026-09-29 v0.0.30 "Drunk dial" released: outgoing calls fixed, files through the proxy**
 
@@ -86,7 +76,7 @@ chmod +x Siproxylin-*.AppImage
 - ✅ **Audio calls** - Works with Conversations, Monal and Dino (calls always go through a TURN relay)
 - ✅ **File attachments** - HTTP Upload (XEP-0363). Received and sent files go through the account proxy
 - ✅ **Message features** - Reactions, replies, corrections
-- ⚠️ **Per-account proxy** - SOCKS5/HTTP proxy for XMPP, registration, received and sent files. Not yet on all call sockets
+- ⚠️ **Per-account proxy** - SOCKS5/HTTP proxy for XMPP, registration, received and sent files. Not yet for call media
 - ✅ **Account registration** - XEP-0077 with CAPTCHA support (XEP-0158)
 - ✅ **Multi-language spell checking** - en, de, ru, lt, es, ro, ar
 - ✅ **Themes** - Multiple color schemes (matters at night!)
@@ -137,7 +127,7 @@ But I like XMPP. Since the first time I heard about it back when Google enabled 
 But after a short while I realized we don't really have a solid desktop application. Sure there is Dino, and it's good — it even respects HTTPS_PROXY variables to bring you some anonymity — but it lacks many features I'd love to see in an e2e messenger. So I quickly drafted in my head the missing features:
 
 1. **Proxy per account** - Route different identities through different networks
-2. **Enforced call relays** - No IP leaks during calls
+2. **Enforced call relays** - the peer never sees your IP address
 3. **Multi-platform** - Works everywhere (Linux first, others coming)
 4. **Contacts grouped by account** - Clean separation of identities
 5. **Configurable logging** - Debug when needed, silent when not
@@ -164,9 +154,9 @@ So definitely **use it with caution**, and please don't be shy about reporting i
 ## Known Issues
 
 - **Platform:** Currently Linux-only. A Windows build exists but lags behind; macOS is planned.
-- **Call leaks:** The proxy is not applied on all sockets of the call service yet.
-- **Unread counters:** Sometimes pops up after app restart, investigating
-- **Unclear process of MUC membership:** There is lack of information on how members-only MUC are handled, currently it relies on the mercy of auto-approve by server
+- **Calls:** Call media does not go through the proxy yet.
+- **Unread counters:** sometimes wrong after a restart.
+- **Members-only group chats:** joining depends on the server approving you automatically.
 
 Report bugs: [GitHub Issues](https://github.com/confund0/siproxylin/issues)
 
@@ -221,8 +211,6 @@ For production, two command-line parameters are available:
 
 ## Proxies
 
-**Beware of potential leaks during the calls!** After migration from Go / Pion to C++ / GStreamer I noticed that proxies are not applied on all sockets. The work is ongoing and the issues will be fixed.
-
 Siproxylin supports **proxies per account**. Even the **registration wizard** asks if you'd like to use a proxy. SOCKS5 and HTTP are both supported, and if you register an account using a proxy, it's automatically saved with that account's settings.
 
 **Received files** are downloaded through the account proxy, and the proxy resolves the host name. If the proxy setting is broken, the download fails; it never falls back to a direct connection. Files download automatically only from roster contacts with a subscription and from your own other devices, up to 25 MB. Files from other senders and from group chats show "Click to download" (up to 256 MB). Only https links are fetched. Sent files (HTTP Upload, plain and OMEMO) also go through the account proxy.
@@ -231,9 +219,7 @@ Siproxylin supports **proxies per account**. Even the **registration wizard** as
 
 1. **Don't want to expose your private XMPP server?** Add Wireguard directly on your server and use **wireproxy** with the SOCKS5 socket.
 2. **Sensitive group chats** - Joining a group about stuff like flat earth, alcoholism or BDSM for beginers? Install Tor and point Siproxylin to its SOCKS5 socket.
-3. **Corporate network** - Only way out is via Squid proxy? Route your account through the HTTP proxy and enjoy texts and calls.
-
-**Leak testing:** With the old Go service, tcpdump showed no IP leaks. The new C++ service does not yet apply the proxy on all call sockets. Do not trust calls to hide your IP until this is fixed.
+3. **Corporate network** - Only way out is via Squid proxy? Route your account through the HTTP proxy and enjoy texts. Calls do not go through the proxy yet.
 
 ---
 
@@ -243,7 +229,7 @@ Siproxylin supports **audio and video calls**. They are tested with Conversation
 
 ### Call Privacy
 
-Siproxylin **forces calls to be relayed** to avoid IP leaks. The call window shows technical details: advertised IP addresses of both ends and the connection choice. Siproxylin requests TURN details from your XMPP server (XEP-0215). If your server gives no TURN details, the call cannot connect, because Siproxylin allows only relayed connections. Your XMPP server must offer a TURN server (XEP-0215).
+Siproxylin **forces calls to be relayed**, so the peer never sees your IP address. The TURN server sees it. The call window shows technical details: advertised IP addresses of both ends and the connection choice. Siproxylin requests TURN details from your XMPP server (XEP-0215). If your server gives no TURN details, the call cannot connect, because Siproxylin allows only relayed connections. Your XMPP server must offer a TURN server (XEP-0215).
 
 ---
 

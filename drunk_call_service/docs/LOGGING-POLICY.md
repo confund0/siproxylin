@@ -172,27 +172,6 @@ bool WebRTCSession::initialize(const SessionConfig& config) {
 
 ---
 
-## Migration Checklist
-
-When fixing existing code:
-
-### Replace std::cout
-- [ ] `std::cout` → `LOG_DEBUG()` or `LOG_INFO()`
-- [ ] Debug messages → `LOG_DEBUG()`
-- [ ] Important events → `LOG_INFO()`
-
-### Replace std::cerr
-- [ ] Errors → `LOG_ERROR()`
-- [ ] Exceptions in try/catch → `LOG_ERROR()` or `LOG_CRITICAL()`
-- [ ] Fatal errors (main.cpp only, before logger init) → Keep `std::cerr`
-
-### Add context
-- [ ] Include session_id in logs where available
-- [ ] Include peer_jid for peer-related operations
-- [ ] Use format strings: `LOG_DEBUG("Event: {} from {}", event_type, peer)`
-
----
-
 ## Log Level Guidelines
 
 ### DEBUG (development)

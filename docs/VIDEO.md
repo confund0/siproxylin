@@ -1,8 +1,7 @@
 # Video Calls Implementation
 
 **Last Updated**: 2026-03-29
-**Branch**: `video`
-**Status**: ✅ **ALL WORKING** - Ready for Windows Testing
+**Status**: Working with Conversations and Dino
 
 ---
 
@@ -15,7 +14,7 @@
 | SP → Conversations | Mobile | ✅ Works perfectly both ways |
 | SP → Dino | Desktop | ✅ Works both ways (slow window start ~15s) |
 | Dino → SP | Desktop | ✅ Works both ways (slow window start ~15s) |
-| Conversations → SP | Mobile | ✅ **FIXED** - Works both ways now! |
+| Conversations → SP | Mobile | ✅ Works both ways (not tested again) |
 
 **Configuration**:
 - OFFERER: bundle-policy=BALANCED (adapts to peer)
@@ -55,7 +54,7 @@
 
 ### Overview
 
-Video calls use **GStreamer native video display** (autovideosink), not VLC. This is a recent architectural change that eliminated UDP streaming complexity.
+Video calls use **GStreamer native video display** (autovideosink), not VLC.
 
 ```
 Python (Signaling + GUI)         C++ (Media + WebRTC)
@@ -74,19 +73,7 @@ Python (Signaling + GUI)         C++ (Media + WebRTC)
 
 **Removed**: Commit 1175758 (2026-03-28)
 
-**Previous Architecture** (VLC/WebM - FAILED):
-```
-webrtcbin → rtpvp8depay → webmmux(streamable) → udpsink(127.0.0.1:port)
-                                                         ↓
-                                        VLC playback: udp://@:port
-```
-
-**Problems with VLC Approach**:
-1. **Video froze after first frame** - VLC displayed first frame but never updated
-2. **WebM cluster timing issues** - Even with `min-cluster-duration=0`, frames buffered
-3. **VLC demuxer compatibility** - VLC had issues with GStreamer-generated WebM
-4. **UDP fragmentation concerns** - WebM clusters potentially too large
-5. **Complex debugging** - Multiple layers (GStreamer → UDP → VLC)
+The old VLC/WebM path (local UDP stream to VLC) froze after the first frame.
 
 **Why GStreamer Native Won**:
 - Direct connection: webrtcbin → vp8dec → autovideosink
@@ -95,50 +82,15 @@ webrtcbin → rtpvp8depay → webmmux(streamable) → udpsink(127.0.0.1:port)
 - Simpler architecture (fewer moving parts)
 - Native GStreamer timestamps throughout
 
-**What We Tried Before Switching**:
-- ❌ H.264 + MPEG-TS container (VP8 not supported in MPEG-TS)
-- ❌ Different WebM muxer settings (streamable=false, various cluster durations)
-- ❌ VLC caching tweaks (network-caching=50ms, live-caching=50ms)
-- ❌ Testing with GStreamer playback (`gst-launch-1.0 udpsrc ! matroskademux ! vp8dec`) - also froze
-
-**Conclusion**: VLC/WebM approach fundamentally broken. GStreamer native solved it immediately.
-
 ---
 
-## Key Technical Decisions & Historical Mistakes
+## Key Technical Decisions
 
-### 1. Bundle-Policy Evolution (The Longest Journey)
+### 1. Bundle Policy
 
 **TL;DR**: Different peers have different bundling, need role-specific policy.
 
-#### Initial Approach: MAX_BUNDLE (FAILED)
-- **When**: Before commit ec1aebb
-- **Setting**: Static `bundle-policy=MAX_BUNDLE` for all calls
-- **Result**: FAILED with Dino (unbundled offers)
-- **Why**: Dino sends separate ICE credentials per media, expects separate transports
-- **Symptom**: ICE negotiation failed, no connection
-
-#### Second Attempt: MAX_COMPAT Static (PARTIALLY WORKED)
-- **When**: Commit ec1aebb (2026-03-28)
-- **Setting**: Static `bundle-policy=MAX_COMPAT` for all calls
-- **Result**:
-  - ✅ Incoming from Dino worked (matched unbundled offer)
-  - ❌ Outgoing to both Dino and Conversations broke
-- **Why**: MAX_COMPAT in offerer creates separate transports, but peers expected bundled answer
-
-#### Third Attempt: NONE Static (FAILED)
-- **When**: Between commits (not pushed)
-- **Setting**: `bundle-policy=NONE` to match Dino's behavior
-- **Result**:
-  - ✅ Outgoing to Dino worked
-  - ❌ Incoming from Conversations broke (they send bundled offers)
-
-#### Fourth Attempt: MAX_BUNDLE in Offerer (FAILED)
-- **When**: Testing phase
-- **Result**: Same as initial - broke Dino calls
-
-#### Final Solution: Dynamic Role-Based Policy ✅
-- **When**: Commit d435d70 (2026-03-29)
+#### Dynamic Role-Based Policy
 - **Implementation**:
   - **OFFERER**: `bundle-policy=BALANCED` - adapts to peer's answer
   - **ANSWERER**: `bundle-policy=MAX_COMPAT` - matches peer's offer structure
@@ -157,34 +109,11 @@ webrtcbin → rtpvp8depay → webmmux(streamable) → udpsink(127.0.0.1:port)
 - ✅ OFFERER: Use BALANCED (adapts to peer)
 - ✅ ANSWERER: Use MAX_COMPAT (matches peer)
 
-### 2. Zero Timestamps Mystery (The Root Cause Hunt)
+### 2. Zero Timestamps
 
 **Symptom**: Video appeared frozen/slideshow on remote side (Dino, Conversations)
 
-#### What We Tried (ALL FAILED):
-1. **Queue buffering optimization**
-   - Set `max-size-buffers=3`, `leaky=2` (drop old frames)
-   - **Result**: ❌ Zero effect
-
-2. **Resolution constraint**
-   - Added capsfilter: 1280x720@24fps (from unconstrained 1080p@30fps)
-   - Expected 55% fewer pixels = faster encoding
-   - **Result**: ❌ Zero effect
-
-3. **Bitrate reduction**
-   - 1.5Mbps → 1.2Mbps
-   - **Result**: ❌ Zero effect
-
-4. **Keyframe interval tweaks**
-   - Various values tested
-   - **Result**: ❌ Zero effect on freeze, but see separate issue below
-
-5. **Aggressive encoding settings**
-   - Already using `cpu-used=8` (fastest)
-   - **Result**: Not the bottleneck
-
-#### Root Cause Discovery:
-- **Investigation**: Enabled `GST_DEBUG=vp8enc:7`, analyzed logs
+#### Root Cause:
 - **Finding**: ALL video frames had timestamp `0:00:00.000000000`
 - **Impact**: RTP/WebRTC jitter buffers require timestamps to schedule playback
 - **Result**: With zero timestamps, receiver couldn't determine frame order/timing → massive buffering/drops
@@ -193,16 +122,6 @@ webrtcbin → rtpvp8depay → webmmux(streamable) → udpsink(127.0.0.1:port)
 - **Solution**: v4l2src `do-timestamp=TRUE` property
 - **File**: `drunk_call_service/src/webrtc_session.cpp` (setup_answerer_video_pipeline, setup_offerer_video_pipeline)
 - **Result**: Timestamps now increment properly (~33ms intervals at 30fps), smooth video at 1.8-2.0 Mbps
-
-#### What We Tried Before Finding do-timestamp:
-- **autovideosrc with GstChildProxy** (FAILED)
-  - Attempted to set do-timestamp via child proxy on autovideosrc bin
-  - **Result**: 30-second hangs, GstChildProxy issues
-  - **Why Failed**: autovideosrc is a bin wrapper, property access problematic
-
-- **Switched to v4l2src directly** (WORKED)
-  - Direct element, clean property setting
-  - **Setting**: `g_object_set(video_src_, "do-timestamp", TRUE, nullptr)`
 
 **Key Learning**: v4l2src doesn't generate timestamps by default. MUST enable do-timestamp for RTP streaming.
 
@@ -217,10 +136,9 @@ webrtcbin → rtpvp8depay → webmmux(streamable) → udpsink(127.0.0.1:port)
 - ✅ Verify timestamps with `GST_DEBUG=vp8enc:7` (check "src ts:" values)
 - ✅ Use videotestsrc `is-live=TRUE` for testing (generates proper timestamps)
 
-### 3. Keyframe Interval Mistake
+### 3. Keyframe Interval
 
-**Initial Setting**: `keyframe-max-dist=2000`
-- **Source**: Blindly copied from official GStreamer example
+**Old Setting**: `keyframe-max-dist=2000`
 - **Problem**: 2000 frames at 30fps = **66 seconds** between keyframes
 - **Impact**:
   - Video decoders REQUIRE keyframe to start decoding
@@ -256,7 +174,6 @@ webrtcbin → rtpvp8depay → webmmux(streamable) → udpsink(127.0.0.1:port)
 **The Fix**:
 - Move `sync_state_with_parent()` to AFTER all linking complete
 - **File**: `drunk_call_service/src/webrtc_session.cpp` (setup_offerer_video_pipeline, setup_answerer_video_pipeline)
-- Commit d435d70 (2026-03-29)
 
 **Key Learning**: GStreamer state management is critical. Elements must be linked before syncing state.
 
@@ -303,23 +220,9 @@ webrtcbin → rtpvp8depay → webmmux(streamable) → udpsink(127.0.0.1:port)
 - ✅ Use media list order to determine mline_index
 - ✅ Test with both bundled and unbundled peers
 
-### 6. Transceiver 'mid' Property Attempt (FAILED)
+### 6. Transceiver 'mid' Property
 
-**Attempt**: Set explicit `mid` values on transceivers
-- **Code**: `g_object_set(trans, "mid", "audio0", nullptr)`
-- **Goal**: Help webrtcbin map transceivers to transport streams
-- **Result**: ❌ Property is **read-only**, assignments failed silently
-- **Commit**: Added in 3dbe32f, removed in d435d70
-
-**Why We Thought It Would Help**:
-- With MAX_COMPAT, saw both transceivers mapped to transportstream0
-- Expected explicit mid would fix mapping
-
-**Actual Fix**:
-- Bundle-policy change (dynamic role-based)
-- Letting webrtcbin manage mid values automatically
-
-**Key Learning**: Don't fight webrtcbin's internal transceiver management. Fix bundle-policy instead.
+The `mid` property of a transceiver is **read-only**. Setting it fails silently. Transport mapping depends on the bundle policy (see 1).
 
 **DO NOT**:
 - ❌ Try to set 'mid' property on transceivers (read-only)
@@ -330,7 +233,7 @@ webrtcbin → rtpvp8depay → webmmux(streamable) → udpsink(127.0.0.1:port)
 - ✅ Use correct bundle-policy for your role
 - ✅ Trust webrtcbin's transceiver mapping
 
-### 7. Transceiver Order Mismatch (Session 6, FIXED ✅)
+### 7. Transceiver Order Mismatch
 
 **Problem**: Hardcoded pad request order assumed audio-first
 - **Code**: Always requested audio pad first (sink_0), video pad second (sink_1)
@@ -348,7 +251,7 @@ webrtcbin → rtpvp8depay → webmmux(streamable) → udpsink(127.0.0.1:port)
 
 **Why Dino Worked**: Dino sends audio=m-line 0, video=m-line 1 (matched old hardcoded order)
 
-**The Fix** (Commit: Current):
+**The Fix**:
 1. Parse m-line order from SDP offer in `set_remote_description()`
 2. Set `video_first_mline_` flag based on which media type is at m-line 0
 3. Request pads in same order as SDP m-lines in `on_offer_set_for_answer()`:
@@ -377,10 +280,10 @@ webrtcbin → rtpvp8depay → webmmux(streamable) → udpsink(127.0.0.1:port)
 - ✅ Request pads in same order as m-lines
 - ✅ Support both audio-first (Dino) and video-first (Conversations) peers
 
-### 8. Video Payload Type Mismatch (Session 6, FIXED ✅)
+### 8. Video Payload Type Mismatch
 
 **Problem**: Hardcoded `payload=98` in answerer video pipeline
-- **Code**: `setup_answerer_video_pipeline()` line 1321: `int payload = 98;`
+- **Code**: `setup_answerer_video_pipeline()` used a fixed payload type 98
 - **Dino's offer**: Uses PT=98 for VP8 ✓
 - **Conversations' offer**: Uses PT=96 for VP8 ✗
 
@@ -395,7 +298,7 @@ webrtcbin → rtpvp8depay → webmmux(streamable) → udpsink(127.0.0.1:port)
 **Key Clue**: "if Siproxylin calls Conversations - then video works fine in both directions" (offerer mode)
 - This revealed answerer-mode specific bug
 
-**The Fix** (Commit: Current):
+**The Fix**:
 1. Added `int negotiated_video_payload_` to `webrtc_session.h`
 2. Modified `parse_video_codec_from_offer()` to return payload via output parameter
 3. Store parsed payload in `set_remote_description()`
@@ -422,7 +325,7 @@ webrtcbin → rtpvp8depay → webmmux(streamable) → udpsink(127.0.0.1:port)
 - ✅ Use negotiated payload in RTP capsfilter
 - ✅ Verify SDP answer matches actual pipeline config
 
-### 9. Missing RTCP Feedback Capabilities (Session 6, FIXED ✅)
+### 9. Missing RTCP Feedback Capabilities
 
 **Problem**: No RTCP feedback capabilities in SDP answer
 - **Our answer**: `<payload-type id="96" name="VP8" clockrate="90000" />` (bare minimum)
@@ -441,10 +344,10 @@ webrtcbin → rtpvp8depay → webmmux(streamable) → udpsink(127.0.0.1:port)
 - SDP answer advertised minimal capabilities
 - Phone's encoder adapted overly conservatively without feedback signals
 
-**The Fix** (Commit: Current):
+**The Fix**:
 Added RTCP feedback capabilities to video codec-preferences in 3 locations:
-1. `parse_video_codec_from_offer()` (answerer mode - lines 197-219)
-2. `create_offer()` offerer codec-preferences (lines 525-542)
+1. `parse_video_codec_from_offer()` (answerer mode)
+2. `create_offer()` offerer codec-preferences
 3. Both now include:
    ```cpp
    "rtcp-fb-nack-pli", G_TYPE_BOOLEAN, TRUE,      // Picture Loss Indication
@@ -511,7 +414,6 @@ v4l2src → videoconvert → queue → vp8enc → rtpvp8pay → queue → capsfi
 **Key Settings**:
 - **v4l2src**:
   - `do-timestamp=TRUE` (CRITICAL for timestamps)
-  - TODO: Device selection (currently defaults to /dev/video0)
 
 - **vp8enc**:
   - `deadline=1` (realtime encoding, lowest latency)
@@ -634,98 +536,13 @@ webrtcbin → rtpvp8depay → vp8dec → videoconvert → autovideosink
 
 ---
 
-## Session History (Major Milestones)
-
-**Session 1** (ec1aebb, 2026-03-28): Restored video after main branch merge
-- ~400 lines added across 7 files
-- Video connecting but quality issues
-- Static MAX_COMPAT bundle-policy (partially worked)
-
-**Session 2** (1175758, 2026-03-28): Replaced VLC with GStreamer native
-- Removed ~200 lines of VLC/UDP code
-- Added native autovideosink pipeline
-- Eliminated video freeze issue completely
-
-**Session 3** (579f680, 2026-03-29): Timestamp and keyframe fixes
-- Fixed zero timestamp issue (do-timestamp)
-- Fixed keyframe interval (2000→60)
-- Added picture-id-mode
-- Achieved smooth video on Dino
-
-**Session 4** (3dbe32f, 2026-03-29): Transceiver mapping and mline_index
-- Fixed Python media list bug
-- Fixed ICE candidate mline_index
-- Added explicit transceiver mid (failed, later reverted)
-
-**Session 5** (d435d70, 2026-03-29): Dynamic bundle-policy
-- Fixed v4l2src race condition
-- Implemented BALANCED/MAX_COMPAT strategy
-- Removed failed transceiver mid attempt
-- Fixed outgoing calls to Dino
-
-**Overall Progress**:
-- Complete video call functionality
-- 3 of 4 scenarios working perfectly
-- ~300 net new lines of C++ code
-- Multiple failed approaches documented above
-
----
-
-## Next Steps
-
-### High Priority
-
-**Fix Conversations → SP One-Way Video**:
-- **Status**: Phone→SP video works, SP→phone missing
-- **Likely issue**: Video send pipeline not created properly in answerer mode for bundled offers
-- **Debug approach**:
-  - Compare SDP answer from Conversations vs Dino calls
-  - Verify video transceiver created in answerer mode
-  - Check if video pipeline links to correct transceiver
-  - Check bundle group in SDP answer
-  - Verify do-timestamp set in answerer pipeline
-  - Compare with working Dino incoming (also answerer mode)
-
-### Medium Priority
-
-**Qt Video Embedding**:
-- Replace autovideosink separate window with Qt-embedded video
-- Use GStreamer Qt video overlay (`gst_video_overlay_set_window_handle()`)
-- Rewrite `video_widget.py` for GStreamer (not VLC)
-- Benefits: Single call window, better UX, window management
-
-**Camera Device Selection**:
-- Currently hardcoded to default camera (`/dev/video0`)
-- Implement device enumeration (similar to audio devices)
-- Add settings UI for camera selection
-- Support per-account camera preference
-
-### Low Priority
-
-**Codec Negotiation**:
-- Add H.264 support (in addition to VP8)
-- Implement codec preference ordering
-- Fallback codecs for compatibility
-
-**Performance Monitoring**:
-- Implement WebRTC statistics collection
-- Display in UI: bitrate, packet loss, jitter, RTT
-- Adaptive bitrate based on network conditions
-
-**Platform Support**:
-- Windows: Switch v4l2src → ksvideosrc
-- macOS: Switch v4l2src → avfvideosrc
-- Platform detection in C++ code
-
----
-
 ## Testing Checklist
 
 - [x] Audio-only calls work (no regressions)
 - [x] SP → Conversations video (both ways)
 - [x] SP → Dino video (both ways)
 - [x] Dino → SP video (both ways)
-- [ ] Conversations → SP video (both ways) - **BLOCKED: one-way issue**
+- [ ] Conversations → SP video (both ways) - not tested again
 - [ ] Long call stability (30+ minutes)
 - [ ] Network condition changes (WiFi → mobile)
 - [ ] Multiple sequential calls without restart
@@ -737,4 +554,3 @@ webrtcbin → rtpvp8depay → vp8dec → videoconvert → autovideosink
 
 **Last Updated**: 2026-03-29
 **Document Status**: Current Implementation Reference
-**Supersedes**: docs/VIDEO/STATUS.md, IMPLEMENTATION.md, QUICK-REF.md

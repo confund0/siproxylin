@@ -292,6 +292,9 @@ Messages follow Dino-compatible state model:
 4. **Use get_db()**: Never create new SQLite connections
 5. **Async callbacks**: All DrunkXMPP callbacks must be `async`
 6. **Let handlers update state**: Don't manually set message `marked` field
+7. **Codec parameters from SDP**: Parse `a=fmtp` from the webrtcbin SDP answer into Jingle parameter elements; never hardcode codec parameters
+8. **Group chat message direction**: Compare the occupant-id (XEP-0421) first; use the nick only as fallback
+9. **Call state**: Python owns the call signaling state, C++ reports media and ICE state; every end path cleans up both layers
 
 ## External Dependencies
 
@@ -323,8 +326,8 @@ All dependencies are AGPL-3.0 compatible.
 
 ## Security Considerations
 
-- **Proxy Isolation**: Per-account proxies prevent correlation
-- **Call Relaying**: Enforced TURN prevents IP leaks
+- **Proxy Isolation**: Each account uses its own proxy for XMPP, registration and files. Call media does not use the proxy yet (planned)
+- **Call Relaying**: Calls use only TURN relay candidates, so the peer does not see your IP address. The TURN server sees it
 - **OMEMO**: E2E encryption for messages and files
 - **File Permissions**: All data directories created with 0700 (user-only)
 - **Database**: No sensitive data in plaintext (OMEMO keys encrypted by library)
@@ -336,9 +339,6 @@ All dependencies are AGPL-3.0 compatible.
 - **Multi-Window Support**: Separate conversation windows
 - **Plugin System**: Third-party extensions
 - **Backend Service**: Headless daemon with GUI client
-
-### Technical Debt
-See `docs/TECH-DEBT/` for tracked architectural improvements.
 
 ---
 

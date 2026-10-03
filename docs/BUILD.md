@@ -417,23 +417,12 @@ make release
 
 ---
 
-## Just a drop in section on how to run on Alpine Linux
-Alpine 3.21 and 3.22 ships Python 3.12 which causes very strange issues. 
-As a quick and safe solution I'd recommend:
+## Debian 12 Package List (Reference)
 
-1. Install Debian 12 chroot
-2. Do the prep in the chroot (see below)
-3. Setup init to mount dev and proc
-4. Use bubble-wrap to provide in-chroot directory mappings and restrictions (sound, video, attachments, configs) 
+The full package list for a Debian 12 (bookworm) system.
 
-P.S. Debian 13 has strange behavior when creating GStreamer pipelines in chroot+bwrap.
-Stick with Debian 12 (bookworm) for now
-
-### The full package list to install in the chroot
 ```
 # Debian 12 (bookworm) prep for Siproxylin
-# This was used to create chrooted installation on Alpine
-# Run for chrrot, but also serves as a reference
 
 # Basic OS prep
 apt update && apt upgrade -y

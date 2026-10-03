@@ -1,4 +1,4 @@
-# WebRTC Standalone Test - Option #0
+# WebRTC Standalone Test
 
 ## Purpose
 
@@ -18,7 +18,7 @@ They use:
 ## Build
 
 ```bash
-cd /home/m/claude/siproxylin/drunk_call_service/tests/standalone
+cd drunk_call_service/tests/standalone
 make test_webrtc_caller test_webrtc_answerer
 ```
 
@@ -150,11 +150,7 @@ SUCCESS: YES ✅
 
 ### ✅ SUCCESS (bandwidth > 0 kbps on BOTH sides)
 
-**Interpretation**: WebRTC C++ code works correctly!
-
-**Next steps**: The bug is in gRPC threading. Proceed to:
-- Option #3: Implement `g_idle_add()` dispatch (quick fix)
-- OR Option #1: Replace gRPC with libsoup (clean solution)
+**Interpretation**: WebRTC C++ code works correctly. If calls still fail in the app, look at the gRPC, Python or Jingle layers.
 
 ### ❌ FAILURE (bandwidth = 0 kbps)
 
@@ -253,4 +249,3 @@ STATS: bytes_sent=XXXX bandwidth=XX.XX kbps ice=connected
 ---
 
 **Last Updated**: 2026-03-05
-**Related**: docs/CALLS/GLIB-gRPC-THREAD-FIX.md (Option #0)

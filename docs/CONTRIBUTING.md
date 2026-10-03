@@ -15,7 +15,6 @@ Thank you for your interest in contributing! Siproxylin is a privacy-focused XMP
 
 - **Architecture**: `docs/ARCHITECTURE.md` - Understand the system design
 - **Build Instructions**: `docs/BUILD.md` - Set up your development environment
-- **Architecture Decision Records**: `docs/ADR.md` - Learn the "10 Commandments" (critical rules)
 - **Call System**: `docs/CALLS.md` - Audio/video call architecture
 
 ### Development Environment
@@ -30,7 +29,7 @@ Thank you for your interest in contributing! Siproxylin is a privacy-focused XMP
 **Setup**:
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/siproxylin.git
+git clone https://github.com/confund0/siproxylin.git
 cd siproxylin
 
 # Install Python dependencies
@@ -45,13 +44,13 @@ cd ..
 python main.py
 ```
 
-**Development Data**: Dev mode stores all data in `./app_dev_paths/` (git-ignored)
+**Development Data**: Dev mode stores all data in `./sip_dev_paths/` (git-ignored)
 
 ## Development Workflow
 
 ### 1. Pick or Create an Issue
 
-- Check [Issues](https://github.com/yourusername/siproxylin/issues) for open tasks
+- Check [Issues](https://github.com/confund0/siproxylin/issues) for open tasks
 - Comment on the issue to claim it
 - For new features, create an issue first to discuss approach
 
@@ -71,7 +70,7 @@ git checkout -b fix/bug-description
 
 ### 3. Follow the Architectural Rules
 
-**The 10 Commandments** (from `docs/ADR.md`):
+Read the Code Quality Rules in `docs/ARCHITECTURE.md`. In short:
 
 1. **DrunkXMPP is STABLE**: Test changes in `tests/test-drunk-xmpp.py` first
 2. **Use Library Methods**: Never manually parse XML (use slixmpp APIs)
@@ -134,8 +133,8 @@ print("Connection established")  # Never use print()
 # Run DrunkXMPP tests
 python tests/test-drunk-xmpp.py
 
-# Run unit tests
-pytest tests/
+# Run unit tests (Qt tests need QT_QPA_PLATFORM=offscreen)
+QT_QPA_PLATFORM=offscreen python -m unittest tests/test_*.py
 ```
 
 **Test Account Setup**:
@@ -148,22 +147,22 @@ pytest tests/
 **Migrations**:
 ```bash
 # Create new migration
-cd app/db/migrations/
-touch 010_add_feature.sql
+cd siproxylin/db/migrations/
+touch v17_to_v18.sql
 
 # Write SQL
--- app/db/migrations/010_add_feature.sql
+-- siproxylin/db/migrations/v17_to_v18.sql
 CREATE TABLE new_table (
     id INTEGER PRIMARY KEY,
     data TEXT
 );
 
 -- Update version
-UPDATE db_version SET version = 10;
+UPDATE _meta SET int_val = 18 WHERE name = 'schema_version';
 ```
 
 **Testing Migrations**:
-- Delete `app_dev_paths/data/siproxylin.db`
+- Delete `sip_dev_paths/data/siproxylin.db`
 - Run app to create fresh database
 - Verify all migrations apply correctly
 
@@ -213,7 +212,7 @@ Fixes #789
 ### 8. Submit Pull Request
 
 **Before Submitting**:
-- [ ] Code follows the 10 Commandments
+- [ ] Code follows the Code Quality Rules
 - [ ] All files use logger (no `print()` statements)
 - [ ] Database uses `get_db()` singleton
 - [ ] Changes are tested manually
@@ -241,7 +240,7 @@ How to test these changes:
 [Attach screenshots]
 
 ## Checklist
-- [ ] Follows architectural rules (ADR.md)
+- [ ] Follows the Code Quality Rules (ARCHITECTURE.md)
 - [ ] Uses logger (no print())
 - [ ] Uses get_db() for database
 - [ ] Tested with 2+ accounts
@@ -264,12 +263,12 @@ How to test these changes:
 3. Add callback handling in appropriate barrel
 4. Update GUI if needed
 5. Add to `SUPPORTED_XEPS` list
-6. Document in `docs/` or reference in `old_docs/` if detailed implementation notes
+6. Document in `docs/` if needed
 
 ### GUI Improvements
 
 1. Use PySide6 (Qt6) widgets
-2. Follow existing patterns (see `app/gui/`)
+2. Follow existing patterns (see `siproxylin/gui/`)
 3. Use Qt signals for async communication
 4. Test on different screen sizes
 5. Consider accessibility (keyboard navigation, screen readers)
@@ -294,6 +293,9 @@ How to test these changes:
 
 - Technical docs go in `docs/`
 - User-facing docs go in `README.md` or wiki
+- No code samples in docs: name the file and function instead (code changes, docs do not)
+- No line numbers in docs: they go out of date
+- Describe the current state only; the git log keeps the history
 - Keep code comments concise
 - Prefer self-documenting code over comments
 
@@ -310,7 +312,7 @@ Create an issue with:
 - **Logs**: Relevant log excerpts (redact JIDs/passwords!)
 
 **Log Locations**:
-- Dev mode: `app_dev_paths/logs/`
+- Dev mode: `sip_dev_paths/logs/`
 - XDG mode: `~/.local/share/siproxylin/logs/`
 - Dot mode: `~/.siproxylin/logs/`
 
@@ -345,8 +347,7 @@ Contributors will be:
 ## Getting Help
 
 **Stuck?**
-- Read `docs/ADR.md` for architectural guidance
-- Check `docs/ARCHITECTURE.md` for system overview
+- Check `docs/ARCHITECTURE.md` for system overview and the Code Quality Rules
 - Look at existing code for patterns
 - Ask questions in issue comments
 

@@ -2,8 +2,6 @@
 
 **Quick Reference**: How to use ThreadSafeQueue and SessionManager in the gRPC service
 
-**Status**: Phase 4.1 Complete (2026-03-03)
-**Full Documentation**: See `docs/CALLS/GSTREAMER-THREADING.md` for threading patterns
 **Test Examples**: See `tests/standalone/test_step8_thread_safe_queue.cpp` and `test_step9_session_manager.cpp`
 
 ---
@@ -300,13 +298,3 @@ make test_step8_thread_safe_queue test_step9_session_manager
 
 **Critical test**: `test_step9_session_manager` Test 6 validates the "remove while in use" pattern - 5 threads hold 50 shared_ptrs while map is cleared.
 
----
-
-## Next Steps
-
-**Phase 4.2**: gRPC Service Skeleton
-- main.cpp with GLib main loop thread
-- CallServiceImpl with 13 RPC handlers
-- Uses ThreadSafeQueue + SessionManager
-
-See `docs/CALLS/4-GRPC-PLAN.md` for implementation details.

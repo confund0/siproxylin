@@ -156,7 +156,7 @@ set_remote_description(remote_offer);
 - **srflx** (server reflexive): Public IP via STUN
 - **relay**: TURN relay address
 
-**Privacy Mode** (relay-only): Filter out host/srflx candidates to prevent IP leaks:
+**Relay-only mode** (always on): `drunk_call_hook/bridge.py` always asks for relay-only. `WebRTCSession::configure_webrtcbin()` sets the ICE policy to relay, and `WebRTCSession::on_ice_candidate()` does not send host/srflx candidates to the peer. So the peer does not see your IP address. The TURN server sees it. Candidate filter:
 
 ```cpp
 void on_ice_candidate(GstElement *webrtc, guint mlineindex, gchar *candidate, ...) {
@@ -299,7 +299,7 @@ g_object_set(nice_agent,
     NULL);
 ```
 
-**Security Requirement**: MUST fail calls if proxy configured but unavailable (no fallback to direct connection).
+**Current state**: the account proxy is set in the call service, but call media does not go through it yet. A call does not fail when the proxy is down. Planned: call media through the proxy, and a failed call when a proxy is set but not usable.
 
 ## Device Enumeration
 
@@ -358,37 +358,17 @@ for (const auto& device : audio_inputs) {
 - Service managed by `drunk_call_hook/bridge.py` (CallService class)
 - Logs: `~/.siproxylin/logs/drunk-call-service.log` (or `sip_dev_paths/logs/` in dev mode)
 
-## Current Status
+## Testing
 
-**Implemented and Working**:
-- ✅ Audio bidirectional calls
-- ✅ SDP offer/answer creation
-- ✅ Trickle ICE
-- ✅ Bundle and RTCP-MUX (automatic)
-- ✅ Proxy support (HTTP/SOCKS5)
-- ✅ Relay-only mode (privacy)
-- ✅ Device enumeration
-- ✅ Statistics collection
-- ✅ Audio processing (echo cancel, noise suppression, AGC)
-- ✅ Mute/unmute
-- ✅ Logger (spdlog, file rotation)
-- ✅ Interoperability: Conversations.im, Dino
-
-**In Progress**:
-- ⏳ Video streams (add_video_stream() at library level)
-
-**Testing**:
 - Standalone tests: `tests/standalone/test_*.cpp`
 - Integration: Real calls with Conversations.im (Android) and Dino (Linux)
 
 ## Security Considerations
 
-1. **Proxy Isolation**: Per-account proxies prevent traffic correlation
-2. **Relay-Only Mode**: Forces TURN, prevents IP leaks
-3. **Leak Prevention**: Fail calls if proxy unavailable (no direct fallback)
+1. **Relay-Only Mode**: Always on. Only TURN relay candidates are used and sent, so the peer does not see your IP address. The TURN server sees it. Without TURN details from the server (XEP-0215), the call cannot connect.
+2. **Proxy for calls**: Planned. Call signaling goes over the XMPP connection of the account, but call media does not use the account proxy (see Proxy Support).
+3. **Leak Prevention**: Planned. Today a call does not fail when the proxy is down.
 4. **DTLS-SRTP**: All media encrypted end-to-end
-
-See: `docs/ADR.md` security requirements section.
 
 ## Call State Machine & Layer Coordination
 
@@ -454,7 +434,7 @@ The call system uses a **distributed state machine** split across two layers:
 
 ### Failure Handling & Synchronization
 
-Critical rule from ADR #11: **NEVER let layers get out of sync**. All termination paths must cleanup both layers.
+Critical rule (see Code Quality Rules in `docs/ARCHITECTURE.md`): **NEVER let layers get out of sync**. All termination paths must cleanup both layers.
 
 #### Path 1: User Hangup (Normal Termination)
 
@@ -610,4 +590,4 @@ When application restarts, only Python state is restored (for history). Active c
 
 ---
 
-**For detailed implementation history, see git log. For AI assistant context, see `docs/ADR.md`.**
+**For detailed implementation history, see git log.**

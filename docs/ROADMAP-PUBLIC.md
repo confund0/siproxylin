@@ -35,9 +35,9 @@ This document outlines the vision and development direction for Siproxylin.
 
 ### Privacy & Security
 - Per-account proxy support (HTTP/SOCKS5)
-- TURN relay enforcement (no IP leaks)
+- TURN relay enforcement (the peer does not see your IP address)
 - OMEMO encryption for messages and files
-- Proxy support for calls and registration
+- Proxy support for registration (calls: planned)
 
 ### User Experience
 - Multiple theme support
