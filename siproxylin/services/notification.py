@@ -7,6 +7,7 @@ Sends desktop notifications for incoming messages with privacy controls.
 import platform
 import logging
 import subprocess
+import threading
 from typing import Optional, Dict, Tuple
 
 from ..db.database import get_db
@@ -228,7 +229,7 @@ class NotificationService:
         if icon:
             cmd.extend(['-i', icon])
 
-        cmd.extend([title, body])
+        cmd.extend(["--", title, body])  # "--": a body like "-----" is not an option
 
         # Run notify-send and capture notification ID
         result = subprocess.run(cmd, check=False, capture_output=True, text=True)
@@ -342,7 +343,8 @@ class NotificationService:
 
         try:
             if self.system == 'Linux':
-                self._dismiss_linux(notification_id)
+                # In a thread: gdbus and notify-send must not block the GUI
+                threading.Thread(target=self._dismiss_linux, args=(notification_id,), daemon=True).start()
             elif self.system == 'Darwin':  # macOS
                 self._dismiss_macos(notification_id)
             elif self.system == 'Windows':
@@ -360,9 +362,18 @@ class NotificationService:
         """
         Dismiss notification on Linux using D-Bus.
 
+        Runs in a thread. Never raises.
+
         Args:
             notification_id: Notification ID to close
         """
+        try:
+            self._close_linux(notification_id)
+        except Exception as e:
+            logger.debug(f"Could not close notification {notification_id}: {e}")
+
+    def _close_linux(self, notification_id: int):
+        """Close notification via gdbus, else replace it with one that expires at once."""
         # Try D-Bus method first (proper way to close notifications)
         cmd = [
             'gdbus', 'call', '--session',
@@ -372,11 +383,18 @@ class NotificationService:
             str(notification_id)
         ]
 
-        result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        try:
+            result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        except OSError as e:  # no gdbus binary
+            result = None
+            logger.debug(f"gdbus not found, trying notify-send replace: {e}")
 
-        if result.returncode != 0:
-            logger.debug(f"gdbus close failed, trying notify-send replace: {result.stderr}")
-
+        if result is not None and result.returncode != 0:
+            # D-Bus error (for example the notification is already closed).
+            # No notify-send fallback here: an unknown -r id makes a new
+            # empty notification on some daemons.
+            logger.debug(f"gdbus close failed: {result.stderr}")
+        elif result is None:
             # Fallback: Replace notification with empty message (auto-expires)
             cmd_replace = [
                 'notify-send', '-a', 'DRUNK-XMPP',

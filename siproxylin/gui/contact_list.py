@@ -16,6 +16,7 @@ from PySide6.QtGui import QIcon, QAction, QColor, QContextMenuEvent
 
 from ..db.database import get_db
 from ..core import get_account_manager
+from ..services.notification import get_notification_service
 from ..styles.theme_manager import get_theme_manager
 from .models import ContactDisplayData, AccountDisplayData
 from .utils import TooltipEventFilter
@@ -751,6 +752,12 @@ class ContactListWidget(QWidget):
                 # Update data model
                 child_data.unread_count = unread_count
                 self._update_item_from_data(child_item, child_data)
+
+                # Chat read here or on another device: close its OS notification
+                if unread_count == 0:
+                    notification_service = get_notification_service()
+                    if (acc_id, child_jid) in notification_service.chat_notification_ids:
+                        notification_service.dismiss_notification(acc_id, child_jid)
 
         logger.debug(f"Updated unread indicators (account_id={account_id}, jid={jid})")
 
