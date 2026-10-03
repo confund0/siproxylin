@@ -269,6 +269,8 @@ class XMPPAccount(QObject):
             'on_chat_state_callback': self.messages._on_chat_state,
             'on_presence_changed_callback': self._on_presence_changed,
             'on_bookmarks_received_callback': self.muc.sync_bookmarks,
+            'on_bookmark_changed_callback': self.muc.on_bookmark_changed,
+            'on_bookmark_removed_callback': self.muc.on_bookmark_removed,
             'on_muc_invite_callback': self.muc.on_muc_invite,
             'on_muc_joined_callback': self._on_muc_joined,
             'on_muc_join_error_callback': self.muc.on_muc_join_error,
@@ -852,6 +854,12 @@ class XMPPAccount(QObject):
 
         # Delegate to barrel for MAM and metadata fetch
         await self.muc.on_muc_joined(room_jid, nick)
+
+        # Send messages kept pending while the room was not joined
+        try:
+            await self.retry_handler.retry_held_for_room(self.account_id, room_jid, self.client, self.db)
+        except Exception as e:
+            logger.error(f"[Account {self.account_id}] Retry of held messages for {room_jid} failed: {e}")
 
     async def _on_muc_role_changed(self, room_jid: str, old_role: str, new_role: str):
         """

@@ -2,6 +2,7 @@
 # argument errors. alice has verbose: true (logs in every reply, for log_text).
 accounts:
   alice: {verbose: true}
+  alice2: {jid: alice@localhost/second}
   dave: {}
 rooms:
   bm: {seed: false}
@@ -20,16 +21,24 @@ steps:
   - alice: blocked
     expect: {log_text!~: "${jid.dave}"}
 
-  # bookmarks
+  # bookmarks: a push goes to every device of the account
+  # (alice2 is a second device of alice), also to the device that made it
   - alice: bookmark-add ${room.bm} ScenarioBM alice
-  # match the new bookmark, not the bookmarks event of the login
-  - alice: wait bookmarks
-    match: {bookmarks~: "${room.bm}"}
-    timeout: 3
-    known_fail: "bookmark-add: no bookmarks event (no PEP notification comes)"
+  - alice: wait bookmark
+    match: {jid: "${room.bm}", name: ScenarioBM, autojoin: true}
+    timeout: 5
+  - alice2: wait bookmark
+    match: {jid: "${room.bm}", name: ScenarioBM, nick: alice, autojoin: true}
+    timeout: 5
   - alice: bookmarks
     expect: {log_text~: "${room.bm}"}
   - alice: bookmark-rm ${room.bm}
+  - alice2: wait bookmark_retract
+    match: {jid: "${room.bm}"}
+    timeout: 5
+  - alice: wait bookmark_retract
+    match: {jid: "${room.bm}"}
+    timeout: 5
   - alice: bookmarks
     expect: {log_text!~: "${room.bm}"}
 

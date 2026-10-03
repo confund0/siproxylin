@@ -11,6 +11,7 @@ Responsibilities:
 - Room configuration updates
 """
 
+import asyncio
 import logging
 import base64
 from typing import Optional, List, Dict, Any
@@ -18,6 +19,9 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 
 from ...db.database import get_db
+
+# Seconds auto join waits for the bookmark sync of the session
+BOOKMARK_SYNC_WAIT = 30
 
 
 # =============================================================================
@@ -175,7 +179,8 @@ class MucBarrel:
                 self.logger.error(f"Failed to join room {room_jid}: {e}")
             raise
 
-        if already_joined and bookmark:
+        # Join button: an existing bookmark row stays as it is, also its autojoin value
+        if already_joined and bookmark and not (origin == 'header' and self.get_bookmark(room_jid)):
             await self.create_or_update_bookmark(room_jid=room_jid, **bookmark)
 
     async def _update_room_features_from_dict(self, room_jid: str, features: dict):
@@ -426,9 +431,23 @@ class MucBarrel:
         # Join from the Add Group dialog: the join worked, now write the bookmark
         user_join_key = next((r for r in self._user_joins if r.lower() == room_lower), room_jid)
         user_join = self._user_joins.pop(user_join_key, None)
-        if user_join and user_join['bookmark']:
+        bookmark_args = user_join['bookmark'] if user_join else None
+        # Join button with a bookmark row (also one written in the meantime, for
+        # example by a push): the row stays as it is, also its autojoin value.
+        # Publish it as stored, so a local-only row (invite) gets to the other devices.
+        stored = self.get_bookmark(room_jid) if user_join and user_join['origin'] == 'header' else None
+        if stored:
+            bookmark_args = None
+            if hasattr(self.client, 'add_bookmark'):
+                try:
+                    await self.client.add_bookmark(jid=room_jid, name=stored.name, nick=stored.nick,
+                                                   password=stored.password, autojoin=stored.autojoin)
+                except Exception as e:
+                    if self.logger:
+                        self.logger.warning(f"Failed to publish bookmark for {room_jid} after join: {e}")
+        if bookmark_args:
             try:
-                await self.create_or_update_bookmark(room_jid=room_jid, **user_join['bookmark'])
+                await self.create_or_update_bookmark(room_jid=room_jid, **bookmark_args)
             except Exception as e:
                 if self.logger:
                     self.logger.error(f"Failed to write bookmark for {room_jid} after join: {e}")
@@ -801,6 +820,16 @@ class MucBarrel:
         Called on session start (after OMEMO ready).
         Room metadata (features, config) will be fetched in on_muc_joined callback.
         """
+        # Wait for the bookmark sync of this session first. It turns autojoin off
+        # for rooms removed or changed on another device while we were offline.
+        synced = getattr(self.client, 'bookmarks_synced', None)
+        if isinstance(synced, asyncio.Event):
+            try:
+                await asyncio.wait_for(synced.wait(), BOOKMARK_SYNC_WAIT)
+            except asyncio.TimeoutError:
+                if self.logger:
+                    self.logger.warning(f"No bookmark sync after {BOOKMARK_SYNC_WAIT} s: auto-join with the local bookmarks")
+
         if self.logger:
             self.logger.info("Checking for rooms to auto-join...")
 
@@ -836,13 +865,16 @@ class MucBarrel:
                 if self.logger:
                     self.logger.error(f"Failed to auto-join {room_jid}: {e}")
 
-    async def sync_bookmarks(self, bookmarks: list):
+    async def sync_bookmarks(self, bookmarks: list, full_list: bool = True):
         """
         Handle bookmarks received from server (XEP-0402).
         Syncs bookmarks to database. Does NOT auto-join (that's done separately on session start).
 
         Args:
             bookmarks: List of bookmark dicts with keys: jid, name, nick, autojoin
+            full_list: True for the full list from the server (session start): local
+                       bookmarks with autojoin on that are not in the list were removed
+                       on another device. False for one pushed bookmark.
         """
         if self.logger:
             self.logger.info(f"📚 Received {len(bookmarks)} bookmarks from server (XEP-0402)")
@@ -853,6 +885,8 @@ class MucBarrel:
 
         try:
             db = get_db()
+            # Rooms with autojoin turned off on another device: leave them after the commit
+            autojoin_off = []
 
             for bm in bookmarks:
                 room_jid = bm.get('jid')
@@ -864,10 +898,11 @@ class MucBarrel:
                     continue
 
                 # Check if this is a new bookmark or an update
+                # (without case: old rows can have another case than the server)
                 existing = db.fetchone("""
-                    SELECT b.autojoin, b.name FROM bookmark b
+                    SELECT b.autojoin, b.name, b.jid_id FROM bookmark b
                     JOIN jid j ON b.jid_id = j.id
-                    WHERE b.account_id = ? AND j.bare_jid = ?
+                    WHERE b.account_id = ? AND lower(j.bare_jid) = lower(?)
                 """, (self.account_id, room_jid))
 
                 if self.logger:
@@ -878,10 +913,14 @@ class MucBarrel:
                             self.logger.debug(f"Syncing bookmark: {room_jid} (autojoin={autojoin})")
                     else:
                         self.logger.info(f"➕ NEW bookmark from server: {room_jid} (autojoin={autojoin})")
+                if existing and existing['autojoin'] and not autojoin:
+                    autojoin_off.append(room_jid)
 
-                # Get or create JID entry
-                jid_row = db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (room_jid,))
-                if jid_row:
+                # Get or create JID entry (the one of the bookmark row, if there is one)
+                jid_row = db.fetchone("SELECT id FROM jid WHERE lower(bare_jid) = lower(?)", (room_jid,))
+                if existing:
+                    jid_id = existing['jid_id']
+                elif jid_row:
                     jid_id = jid_row['id']
                 else:
                     cursor = db.execute("INSERT INTO jid (bare_jid) VALUES (?)", (room_jid,))
@@ -900,34 +939,131 @@ class MucBarrel:
 
             db.commit()
 
-            # Detect removed bookmarks (in local DB but not on server)
-            local_bookmarks = db.fetchall("""
-                SELECT j.bare_jid FROM bookmark b
-                JOIN jid j ON b.jid_id = j.id
-                WHERE b.account_id = ?
-            """, (self.account_id,))
+            # Autojoin was on here and is off on the server: leave the room (like
+            # XEP-0402 clients do). Our own publish writes the row first, so its
+            # push does not land here.
+            for room_jid in autojoin_off:
+                self._apply_bookmark_removal(room_jid)
 
-            server_jids = {bm.get('jid') for bm in bookmarks if bm.get('jid')}
-            local_jids = {row['bare_jid'] for row in local_bookmarks}
-            removed_jids = local_jids - server_jids
+            removed_jids = set()
+            if full_list:
+                # Detect removed bookmarks (in local DB but not on server)
+                local_bookmarks = db.fetchall("""
+                    SELECT j.bare_jid, b.autojoin FROM bookmark b
+                    JOIN jid j ON b.jid_id = j.id
+                    WHERE b.account_id = ?
+                """, (self.account_id,))
 
-            if removed_jids and self.logger:
-                for jid in removed_jids:
-                    self.logger.info(f"🗑️  Bookmark REMOVED from server: {jid}")
-                # We don't delete from local DB - server is source of truth
-                # But we could detect this as a phone "leave room" action
+                # Without case: old rows can have another case than the server
+                server_jids = {bm.get('jid').lower() for bm in bookmarks if bm.get('jid')}
+                removed = [row for row in local_bookmarks if row['bare_jid'].lower() not in server_jids]
+                removed_jids = {row['bare_jid'] for row in removed if row['autojoin']}
+
+                for row in removed:
+                    # Autojoin on: the room was removed on another device while we
+                    # were offline. Autojoin off can be a local bookmark only (invite): keep it.
+                    if row['autojoin']:
+                        if self.logger:
+                            self.logger.info(f"Bookmark removed on another device (not on server): {row['bare_jid']}, turning autojoin off")
+                        self._apply_bookmark_removal(row['bare_jid'])
+                    elif self.logger:
+                        self.logger.debug(f"Local-only bookmark (not on server, autojoin off), kept as is: {row['bare_jid']}")
 
             # Emit roster_updated to refresh GUI
             self.signals['roster_updated'].emit(self.account_id)
 
             if self.logger:
-                self.logger.info(f"✅ Bookmarks synced successfully ({len(bookmarks)} on server, {len(removed_jids)} removed)")
+                self.logger.info(f"✅ Bookmarks synced successfully ({len(bookmarks)} on server, {len(removed_jids)} removed on another device)")
 
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Failed to sync bookmarks: {e}")
                 import traceback
                 self.logger.error(traceback.format_exc())
+
+    async def on_bookmark_changed(self, bookmark: dict):
+        """
+        Handle a bookmark push (XEP-0402): a bookmark was added or changed on
+        one of our devices (also our own publish). Store it like the session
+        start sync (it leaves the room if autojoin was turned off), and join
+        the room if autojoin was turned on by this push and we are not in it.
+
+        Args:
+            bookmark: Bookmark dict with keys: jid, name, nick, password, autojoin
+        """
+        room_jid = bookmark.get('jid')
+        if not room_jid:
+            return
+        # Autojoin before this push. Our own publish writes the row first, so its
+        # push finds autojoin already on and does not join (autojoin is only a setting).
+        before = self.get_bookmark(room_jid)
+        was_autojoin = bool(before and before.autojoin)
+        await self.sync_bookmarks([bookmark], full_list=False)
+
+        if not bookmark.get('autojoin') or was_autojoin or not self.client:
+            return
+        room_lower = room_jid.lower()
+        if any(r.lower() == room_lower for r in self.client.rooms):
+            return
+
+        stored = self.get_bookmark(room_jid)
+        nick = stored.nick if stored else bookmark.get('nick')
+        password = bookmark.get('password') or (stored.password if stored else None)
+        if self.logger:
+            self.logger.info(f"Joining {room_jid}: bookmark with autojoin from another device")
+        try:
+            await self._perform_room_join(room_jid, nick, password)
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to join {room_jid} after bookmark push: {e}")
+
+    async def on_bookmark_removed(self, room_jid: str):
+        """
+        Handle a bookmark retract push (XEP-0402): a bookmark was removed on
+        one of our devices. Turn autojoin off and leave the room. Messages
+        and the bookmark row stay (the GUI leave deletes them).
+
+        Args:
+            room_jid: Room JID of the removed bookmark
+        """
+        if self.logger:
+            self.logger.info(f"🗑️  Bookmark removed on another device: {room_jid}")
+        try:
+            self._apply_bookmark_removal(room_jid)
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Failed to handle bookmark removal for {room_jid}: {e}")
+        self.signals['roster_updated'].emit(self.account_id)
+
+    def _apply_bookmark_removal(self, room_jid: str):
+        """
+        Turn autojoin off for a room whose bookmark was removed on the server,
+        and leave the room. No messages are deleted.
+
+        Args:
+            room_jid: Room JID
+        """
+        db = get_db()
+        # Without case: slixmpp gives lowercase room JIDs, old rows can have another case
+        db.execute("""
+            UPDATE bookmark SET autojoin = 0
+            WHERE account_id = ? AND jid_id IN (SELECT id FROM jid WHERE lower(bare_jid) = lower(?))
+        """, (self.account_id, room_jid))
+        db.commit()
+
+        if not self.client:
+            return
+        room_lower = room_jid.lower()
+        joined = next((r for r in self.client.joined_rooms if r.lower() == room_lower), None)
+        if joined:
+            # Also removes the room from client.rooms (no auto rejoin)
+            self.client.leave_room(joined)
+        # Not joined yet, or another case: remove it, so the next session does not join it
+        for key in [r for r in self.client.rooms if r.lower() == room_lower]:
+            del self.client.rooms[key]
+        self._pending_mam_rooms -= {r for r in self._pending_mam_rooms if r.lower() == room_lower}
+        if self.logger:
+            self.logger.info(f"Autojoin off for {room_jid}" + (", left the room" if joined else ""))
 
     async def on_muc_invite(self, room_jid: str, inviter_jid: str, reason: str, password: str):
         """

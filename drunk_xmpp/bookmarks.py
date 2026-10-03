@@ -7,8 +7,11 @@ Provides methods for managing server-side MUC room bookmarks.
 """
 
 from typing import List, Dict, Any, Optional
+from slixmpp import register_stanza_plugin
 from slixmpp.exceptions import IqError
 from slixmpp.plugins.xep_0004 import Form
+from slixmpp.plugins.xep_0060.stanza import EventItem
+from slixmpp.plugins.xep_0402.stanza import Conference
 
 
 BOOKMARKS_NODE = 'urn:xmpp:bookmarks:1'
@@ -20,6 +23,9 @@ BOOKMARKS_NODE_CONFIG = {
     'pubsub#send_last_published_item': 'never',
     'pubsub#access_model': 'whitelist',
 }
+
+# xep_0402 reads <conference> only in pubsub results. Read it in pushes too.
+register_stanza_plugin(EventItem, Conference)
 
 
 def _config_form(form_type: str) -> Form:
@@ -46,7 +52,7 @@ class BookmarksMixin:
     # XEP-0402: PEP Native Bookmarks
     # ============================================================================
 
-    async def get_bookmarks(self) -> List[Dict[str, Any]]:
+    async def get_bookmarks(self) -> Optional[List[Dict[str, Any]]]:
         """
         Retrieve bookmarks from server using PEP Native Bookmarks (XEP-0402).
 
@@ -57,6 +63,8 @@ class BookmarksMixin:
             - nick: Nickname to use
             - password: Room password (if any)
             - autojoin: Boolean indicating if room should be auto-joined
+            Empty list if the node does not exist. None if the fetch failed
+            (then the caller must not treat local bookmarks as removed).
         """
         try:
             xep_0060 = self.plugin['xep_0060']
@@ -90,10 +98,10 @@ class BookmarksMixin:
                 self.logger.info("No bookmarks found (node doesn't exist)")
                 return []
             self.logger.warning(f"Failed to retrieve bookmarks: {e.iq['error']['condition']}")
-            return []
+            return None
         except Exception as e:
             self.logger.exception(f"Failed to retrieve bookmarks: {e}")
-            return []
+            return None
 
     async def add_bookmark(self, jid: str, name: str, nick: str,
                           password: Optional[str] = None, autojoin: bool = True):
@@ -194,3 +202,60 @@ class BookmarksMixin:
         except Exception as e:
             self.logger.exception(f"Failed to remove bookmark: {e}")
             raise
+
+    # ============================================================================
+    # Bookmark pushes (changes from our other devices, and our own publishes)
+    # ============================================================================
+
+    def _setup_bookmark_events(self):
+        """Raise bookmarks_publish and bookmarks_retract for pushes of the bookmarks node."""
+        self.plugin['xep_0060'].map_node_event(BOOKMARKS_NODE, 'bookmarks')
+        self.add_event_handler('bookmarks_publish', self._on_bookmark_publish)
+        self.add_event_handler('bookmarks_retract', self._on_bookmark_retract)
+
+    def _is_own_bookmark_push(self, msg) -> bool:
+        """Only our own account sends pushes of our bookmarks node. Others can fake them."""
+        sender = msg['from'].bare
+        if sender and sender != self.boundjid.bare:
+            self.logger.warning(f"Ignored bookmarks push from {sender} (not our account)")
+            return False
+        return True
+
+    async def _on_bookmark_publish(self, msg):
+        """A bookmark was added or changed (on any of our devices)."""
+        if not self._is_own_bookmark_push(msg):
+            return
+        for item in msg['pubsub_event']['items']:
+            if item.name != 'item' or not item['id']:
+                continue
+            if item.xml.find('{%s}conference' % BOOKMARKS_NODE) is None:
+                continue
+            conf = item['conference']
+            bookmark = {
+                'jid': item['id'],  # Item ID is the room JID
+                'name': conf.get('name', ''),
+                'nick': conf.get('nick', ''),
+                'password': conf.get('password', ''),
+                'autojoin': conf.get('autojoin', False)
+            }
+            self.logger.info(f"Bookmark push: {bookmark['jid']} added or changed (autojoin={bookmark['autojoin']})")
+            if self.on_bookmark_changed_callback:
+                try:
+                    await self.on_bookmark_changed_callback(bookmark)
+                except Exception as e:
+                    self.logger.exception(f"Error in bookmark changed callback: {e}")
+
+    async def _on_bookmark_retract(self, msg):
+        """A bookmark was removed (on any of our devices)."""
+        if not self._is_own_bookmark_push(msg):
+            return
+        for item in msg['pubsub_event']['items']:
+            if item.name != 'retract' or not item['id']:
+                continue
+            room_jid = item['id']
+            self.logger.info(f"Bookmark push: {room_jid} removed")
+            if self.on_bookmark_removed_callback:
+                try:
+                    await self.on_bookmark_removed_callback(room_jid)
+                except Exception as e:
+                    self.logger.exception(f"Error in bookmark removed callback: {e}")

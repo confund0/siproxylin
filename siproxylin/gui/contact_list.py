@@ -4,6 +4,7 @@ Contact list widget for Siproxylin.
 Displays roster contacts with presence indicators, grouped by account.
 """
 
+import asyncio
 import logging
 from typing import Optional
 from PySide6.QtWidgets import (
@@ -951,6 +952,13 @@ class ContactListWidget(QWidget):
         invite_action.triggered.connect(lambda: self.invite_to_muc_requested.emit(account_id, room_jid))
         menu.addAction(invite_action)
 
+        # Auto-join setting (same call as the room details dialog). The tab puts
+        # the marker in the right column. Only a setting: no join, no leave.
+        autojoin_action = QAction("Auto-join\t[x]" if data.autojoin else "Auto-join\t[ ]", self)
+        autojoin_action.triggered.connect(
+            lambda: self._on_toggle_autojoin(account_id, room_jid, not data.autojoin))
+        menu.addAction(autojoin_action)
+
         menu.addSeparator()
 
         # Copy Room JID
@@ -977,6 +985,20 @@ class ContactListWidget(QWidget):
 
         # Show menu
         menu.exec_(self.contact_tree.viewport().mapToGlobal(position))
+
+    def _on_toggle_autojoin(self, account_id: int, room_jid: str, autojoin: bool):
+        """Set autojoin of a room: writes the row, publishes the bookmark, refreshes the roster."""
+        account = self.account_manager.get_account(account_id)
+        if not account:
+            return
+
+        async def do_update():
+            try:
+                await account.muc.update_room_settings(room_jid=room_jid, autojoin=autojoin)
+            except Exception as e:
+                logger.error(f"Failed to set autojoin for {room_jid}: {e}")
+
+        asyncio.create_task(do_update())
 
     def _show_account_context_menu(self, position, data: AccountDisplayData):
         """Show context menu for an account."""

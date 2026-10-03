@@ -6,7 +6,9 @@ A message typed just as the link dies: its send task can hang and survive
 the reconnect. The retry must skip the row while the task runs. When the
 task fails after that, it retries its row once. Also: a message is marked
 server-acked only by the XEP-0198 ACK of its own stanza, and server ACK
-entries of an old session are dropped on session end.
+entries of an old session are dropped on session end. A group chat
+message for a room that is bookmarked but not joined stays pending until
+the room is joined; with no bookmark it is discarded.
 
 Run with: QT_QPA_PLATFORM=offscreen venv/bin/python -m unittest tests/test_message_retry.py
 """
@@ -185,6 +187,62 @@ class InFlightRetryTests(unittest.TestCase):
             self.assertFalse(self.handler.is_in_flight(ROW_ID))
 
         asyncio.run(body())
+
+
+ROOM = 'room@conference.example.net'
+
+
+def group_row():
+    return dict(pending_row(), counterpart_jid=ROOM, type=1)
+
+
+class GroupChatNotJoinedTests(unittest.TestCase):
+
+    def setUp(self):
+        logging.disable(logging.CRITICAL)
+        self.handler = get_retry_handler()
+        self.db = mock.Mock()
+        self.db.get_pending_messages.return_value = [group_row()]
+        self.client = mock.Mock(rooms={})
+        self.client.send_to_muc = mock.AsyncMock(return_value='temp-1')
+        mam = mock.patch.object(self.handler, '_check_message_in_mam', mock.AsyncMock(return_value=False))
+        mam.start()
+        self.addCleanup(mam.stop)
+
+    def tearDown(self):
+        logging.disable(logging.NOTSET)
+        self.handler._held.clear()
+
+    def test_bookmarked_room_not_joined_keeps_row_then_sends_on_join(self):
+        self.db.fetchone.return_value = {'1': 1}  # bookmark row
+        stats = asyncio.run(self.handler.retry_pending_messages_for_account(ACCOUNT, self.client, self.db))
+        self.client.send_to_muc.assert_not_called()
+        self.db.mark_message_discarded.assert_not_called()
+        self.db.increment_retry_count.assert_not_called()
+        self.db.initialize_retry_tracking.assert_not_called()
+        self.assertEqual(stats['resent'] + stats['discarded'], 0)
+
+        # Other room joined: nothing sent
+        self.client.rooms = {'other@conference.example.net': {}}
+        asyncio.run(self.handler.retry_held_for_room(ACCOUNT, 'other@conference.example.net',
+                                                     self.client, self.db))
+        self.client.send_to_muc.assert_not_called()
+
+        # The room is joined (other case from the server): the row is sent once
+        self.client.rooms = {ROOM: {}}
+        stats = asyncio.run(self.handler.retry_held_for_room(ACCOUNT, ROOM.upper(), self.client, self.db))
+        self.client.send_to_muc.assert_awaited_once_with(
+            ROOM, 'A', message_id='temp-1', delay=datetime(1970, 1, 1, tzinfo=timezone.utc))
+        self.assertEqual(stats['resent'], 1)
+        asyncio.run(self.handler.retry_held_for_room(ACCOUNT, ROOM, self.client, self.db))
+        self.client.send_to_muc.assert_awaited_once()
+
+    def test_room_without_bookmark_discards_row(self):
+        self.db.fetchone.return_value = None
+        stats = asyncio.run(self.handler.retry_pending_messages_for_account(ACCOUNT, self.client, self.db))
+        self.db.mark_message_discarded.assert_called_once_with(ROW_ID)
+        self.assertEqual(stats['discarded'], 1)
+        self.client.send_to_muc.assert_not_called()
 
 
 class ServerAckTests(unittest.TestCase):

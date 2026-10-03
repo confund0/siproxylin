@@ -77,7 +77,7 @@ from slixmpp_omemo import XEP_0384, TrustLevel
 # Local imports
 from .discovery import DiscoveryMixin
 from .messaging import MessagingMixin
-from .bookmarks import BookmarksMixin
+from .bookmarks import BookmarksMixin, BOOKMARKS_NODE
 from .calls import CallsMixin
 from .omemo_devices import OMEMODevicesMixin
 from .mam import MAMMixin
@@ -322,6 +322,8 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         on_server_ack_callback: Optional[Callable] = None,
         on_chat_state_callback: Optional[Callable] = None,
         on_bookmarks_received_callback: Optional[Callable] = None,
+        on_bookmark_changed_callback: Optional[Callable] = None,
+        on_bookmark_removed_callback: Optional[Callable] = None,
         on_muc_invite_callback: Optional[Callable] = None,
         on_muc_joined_callback: Optional[Callable] = None,
         on_muc_join_error_callback: Optional[Callable] = None,
@@ -369,7 +371,12 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
                       marker_type 'displayed_own' is our own displayed marker from another device (from_jid = peer)
             on_server_ack_callback: Optional callback for server ACKs (stanza) - XEP-0198
             on_chat_state_callback: Optional callback for chat state notifications (from_jid, state) - XEP-0085
-            on_bookmarks_received_callback: Optional callback for bookmarks sync (bookmarks_list) - XEP-0402
+            on_bookmarks_received_callback: Optional callback for bookmarks sync (bookmarks_list) - XEP-0402.
+                      Only at a full session start. Not called if the fetch failed.
+            on_bookmark_changed_callback: Optional callback for a bookmark push (bookmark dict, keys as in
+                      get_bookmarks) - a bookmark was added or changed on any of our devices (also our own publish)
+            on_bookmark_removed_callback: Optional callback for a bookmark retract push (room_jid) - a bookmark
+                      was removed on any of our devices (also our own remove)
             on_muc_invite_callback: Optional callback for MUC invites (room_jid, inviter_jid, reason, password) - XEP-0045
             on_muc_joined_callback: Optional callback for MUC room joined (room_jid, nick) - Fires after self-presence received (status code 110)
             on_muc_join_error_callback: Optional callback for MUC join errors (room_jid, condition, text) - Error presence from the room,
@@ -459,6 +466,11 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.on_reaction_callback = on_reaction_callback
         self.on_chat_state_callback = on_chat_state_callback
         self.on_bookmarks_received_callback = on_bookmarks_received_callback
+        self.on_bookmark_changed_callback = on_bookmark_changed_callback
+        self.on_bookmark_removed_callback = on_bookmark_removed_callback
+        # Set when the bookmark sync of the session is done (also if it failed).
+        # Callers wait for it before they join rooms from their own bookmark list.
+        self.bookmarks_synced = asyncio.Event()
         self.on_muc_invite_callback = on_muc_invite_callback
         self.on_muc_joined_callback = on_muc_joined_callback
         self.on_muc_join_error_callback = on_muc_join_error_callback
@@ -673,6 +685,9 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.add_event_handler("user_nick_publish", self._on_user_nick_publish)
         self.logger.info("Registered event handler for 'user_nick_publish'")
 
+        # XEP-0402: bookmark pushes (PEP events)
+        self._setup_bookmark_events()
+
         if self.omemo_enabled:
             self.add_event_handler("omemo_initialized", self._on_omemo_initialized)
 
@@ -687,6 +702,15 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         self.logger.info(f"Connected to XMPP server as {self.boundjid.bare}")
         self._connection_state = True  # Mark as connected
         self.reconnect_attempts = 0
+        self.bookmarks_synced.clear()
+        try:
+            await self._start_session()
+        finally:
+            # Also after an error: callers wait for it before they join rooms
+            self.bookmarks_synced.set()
+
+    async def _start_session(self):
+        """Session start steps up to the bookmark sync (see _on_session_start)."""
 
         # Advertise Jingle capabilities via XEP-0115 Entity Capabilities
         # Required for Conversations app to show call button and accept calls
@@ -714,6 +738,10 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         except Exception as e:
             self.logger.warning(f"Failed to enable Message Carbons: {e}")
 
+        # Ask for bookmark pushes (XEP-0402 +notify). Here and not in __init__:
+        # the feature is stored for the bound JID, known only after bind.
+        self.plugin['xep_0163'].add_interest(BOOKMARKS_NODE)
+
         # Update capabilities and broadcast new presence with updated caps hash
         # This ensures Jingle features are included in the caps hash
         await self.plugin['xep_0115'].update_caps()
@@ -731,9 +759,13 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         if self.on_bookmarks_received_callback:
             try:
                 bookmarks = await self.get_bookmarks()
-                await self.on_bookmarks_received_callback(bookmarks)
+                if bookmarks is None:
+                    self.logger.warning("Bookmarks not synced: the fetch failed")
+                else:
+                    await self.on_bookmarks_received_callback(bookmarks)
             except Exception as e:
                 self.logger.warning(f"Failed to fetch bookmarks: {e}")
+        self.bookmarks_synced.set()
 
         await self._join_all_rooms()
 
@@ -763,6 +795,7 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         """Handler for session end - clear state when session truly ends."""
         self.logger.warning("XMPP session ended")
         self.joined_rooms.clear()
+        self.bookmarks_synced.clear()
         # Group chat service is found again in the next session
         self._muc_service = None
         # Joins of the old session get no answer any more

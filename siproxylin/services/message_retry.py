@@ -47,6 +47,10 @@ class MessageRetryHandler(QObject):
         # Message row IDs the retry skipped because their send task still ran.
         # A failed send task retries its row once when this mark is set.
         self._skipped = set()
+        # Group chat rows kept pending because the room was not joined (autojoin off).
+        # They are sent when the room is joined, like Dino does.
+        # Format: {message row id: (account_id, room JID in lowercase)}
+        self._held = {}
         logger.info("MessageRetryHandler initialized")
 
     def start_send(self, message_id: int):
@@ -118,8 +122,20 @@ class MessageRetryHandler(QObject):
     async def _retry_row(self, msg, xmpp_client, db: 'Database', acc_logger, stats: Dict[str, int], account_id: int):
         """Retry one pending row: MAM check, then resend. Adds the result to stats."""
         self._skipped.discard(msg['id'])
+        self._held.pop(msg['id'], None)
         self.start_send(msg['id'])
         try:
+            # Group chat not joined but still bookmarked (autojoin off): keep the row
+            # pending, with no retry count, until the room is joined. With no bookmark
+            # the room is gone: _resend_message discards the row.
+            room_jid = msg['counterpart_jid']
+            if (msg['type'] == 1
+                    and not any(r.lower() == room_jid.lower() for r in xmpp_client.rooms)
+                    and self._has_bookmark(db, account_id, room_jid)):
+                self._held[msg['id']] = (account_id, room_jid.lower())
+                acc_logger.info(f"Message {msg['id']} kept pending: group chat {room_jid} is not joined")
+                return
+
             # Initialize retry tracking if first attempt
             if msg['first_retry_attempt'] is None:
                 db.initialize_retry_tracking(msg['id'])
@@ -190,6 +206,32 @@ class MessageRetryHandler(QObject):
                 acc_logger.info(f"Retry of message {message_id} completed: {stats}")
                 break
         return stats
+
+    async def retry_held_for_room(self, account_id: int, room_jid: str, xmpp_client, db: 'Database') -> Dict[str, int]:
+        """
+        Send the rows kept pending for a group chat, after the room is joined.
+        """
+        from ..utils.logger import get_account_logger
+
+        stats = {"resent": 0, "found_in_mam": 0, "failed": 0, "skipped_user_prompt": 0, "discarded": 0}
+        room_lower = room_jid.lower()
+        held = {mid for mid, (acc, room) in self._held.items() if acc == account_id and room == room_lower}
+        if not held:
+            return stats
+        acc_logger = get_account_logger(account_id)
+        for msg in db.get_pending_messages(account_id):
+            if msg['id'] in held and not self.is_in_flight(msg['id']):
+                await self._retry_row(msg, xmpp_client, db, acc_logger, stats, account_id)
+        acc_logger.info(f"Retry of held messages for {room_jid} completed: {stats}")
+        return stats
+
+    @staticmethod
+    def _has_bookmark(db: 'Database', account_id: int, room_jid: str) -> bool:
+        """True if the account has a bookmark row for the room (JID without case)."""
+        return db.fetchone("""
+            SELECT 1 FROM bookmark b JOIN jid j ON b.jid_id = j.id
+            WHERE b.account_id = ? AND lower(j.bare_jid) = lower(?)
+        """, (account_id, room_jid)) is not None
 
     def _should_prompt_user(self, msg: dict) -> bool:
         """

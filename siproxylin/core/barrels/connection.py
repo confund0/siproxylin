@@ -92,13 +92,14 @@ class ConnectionBarrel:
         if self.account_data.get('resource'):
             jid = f"{jid}/{self.account_data['resource']}"
 
-        # Load MUC rooms from bookmarks
+        # Load MUC rooms from bookmarks with autojoin on (drunk_xmpp joins all
+        # of them at session start). Rooms with autojoin off are joined by hand.
         rooms = {}
         bookmarks = self.db.fetchall("""
             SELECT j.bare_jid, b.nick, b.password
             FROM bookmark b
             JOIN jid j ON b.jid_id = j.id
-            WHERE b.account_id = ?
+            WHERE b.account_id = ? AND b.autojoin = 1
         """, (self.account_id,))
 
         for bookmark in bookmarks:
@@ -179,6 +180,8 @@ class ConnectionBarrel:
                 on_chat_state_callback=callbacks.get('on_chat_state_callback'),
                 on_presence_changed_callback=callbacks.get('on_presence_changed_callback'),
                 on_bookmarks_received_callback=callbacks.get('on_bookmarks_received_callback'),
+                on_bookmark_changed_callback=callbacks.get('on_bookmark_changed_callback'),
+                on_bookmark_removed_callback=callbacks.get('on_bookmark_removed_callback'),
                 on_muc_invite_callback=callbacks.get('on_muc_invite_callback'),
                 on_muc_joined_callback=callbacks.get('on_muc_joined_callback'),
                 on_muc_join_error_callback=callbacks.get('on_muc_join_error_callback'),

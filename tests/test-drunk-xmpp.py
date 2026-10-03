@@ -57,8 +57,12 @@ JSON mode:
         {"event": "message", "t": "...", "from": ..., "body": ..., ...}
       Events: ready, connected, disconnected, connect_failed, message,
       receipt, marker, server_ack, presence, chat_state, reaction,
-      message_error, subscription, roster, bookmarks, muc_invite,
-      muc_joined, muc_join_error, muc_created, muc_service.
+      message_error, subscription, roster, bookmarks, bookmark,
+      bookmark_retract, muc_invite, muc_joined, muc_join_error,
+      muc_created, muc_service.
+      "bookmarks" is the full list at login. "bookmark" (jid, name, nick,
+      autojoin) and "bookmark_retract" (jid) are pushes: a bookmark was
+      added, changed or removed on any device of the account.
       "muc_joined" has room, nick, created (true if this join made a new
       room). "muc_created" has room, nick, configured (false if the
       default config failed and the room is an instant room).
@@ -895,6 +899,14 @@ async def main(args):
         print("=" * 60)
         print("drunk-xmpp> ", end="", flush=True)
 
+    # Bookmark pushes (XEP-0402): changes from any device of the account
+    async def on_bookmark_changed(bookmark):
+        driver.emit('bookmark', jid=bookmark.get('jid'), name=bookmark.get('name'),
+                    nick=bookmark.get('nick'), autojoin=bookmark.get('autojoin'))
+
+    async def on_bookmark_removed(room_jid):
+        driver.emit('bookmark_retract', jid=room_jid)
+
     # MUC invite callback (XEP-0045)
     async def on_muc_invite(room_jid, inviter_jid, reason, password):
         """Handler for MUC invitations."""
@@ -1014,6 +1026,8 @@ async def main(args):
         on_server_ack_callback=on_server_ack,
         on_presence_changed_callback=on_presence_changed,
         on_bookmarks_received_callback=on_bookmarks_received,
+        on_bookmark_changed_callback=on_bookmark_changed,
+        on_bookmark_removed_callback=on_bookmark_removed,
         on_muc_invite_callback=on_muc_invite,
         on_reaction_callback=on_reaction,
         on_chat_state_callback=on_chat_state,
