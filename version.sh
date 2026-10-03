@@ -1,5 +1,5 @@
 #!/bin/bash
 # Single source of truth for Siproxylin version
 # Can use "v0.0.3" or "0.0.3" - both work, gets normalized
-SIPROXYLIN_VERSION="v0.0.31"
-SIPROXYLIN_CODENAME="On the rocks"
+SIPROXYLIN_VERSION="v0.0.32"
+SIPROXYLIN_CODENAME="Morning beer"

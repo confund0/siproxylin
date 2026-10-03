@@ -4,6 +4,22 @@ All notable changes to Siproxylin are documented in this file.
 
 ---
 
+## [0.0.32 - Morning beer] - 2026-10-03
+
+Updating from 0.0.31: a group chat that is not in your server bookmarks is no longer joined at login. To join it at every login, and to see it on your other devices, turn on Auto-join (right-click the room, or open the room details).
+
+- Group chat bookmarks sync live with your other devices: a room added, removed or changed on another device is joined or left at once.
+- Login joins only rooms with Auto-join on. The room right-click menu has an Auto-join entry.
+- Received files get a read mark.
+- A chat that is open but hidden is no longer marked read.
+- The notification closes when you read the chat.
+- Messages sent again after a reconnect (1:1 and group chats) now notify.
+- A message is no longer sent twice after a lost connection or in a busy chat.
+- Plain files you send are no longer stored twice.
+- Add Group takes a room name.
+- Fixes in the chat view read state, the roster and the archive (MAM) OMEMO handling.
+- Security and privacy fixes. Update recommended.
+
 ## [0.0.31 - On the rocks] - 2026-09-29
 
 > (648e089bc9)

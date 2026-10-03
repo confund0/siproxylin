@@ -6,6 +6,14 @@
 
 ## Breaking News!
 
+**2026-10-03 v0.0.32 "Morning beer" released: bookmark sync, read state and notification fixes**
+
+Group chat bookmarks now sync live with your other devices. A room you add, remove or change on your phone is joined or left here at once, without a restart.
+
+**Updating from v0.0.31:** a group chat that is not in your server bookmarks is no longer joined at login. To join it at every login, and to see it on your other devices, turn on Auto-join (right-click the room, or open the room details).
+
+Read state is fixed in several places: received files now get a read mark, a chat that is open but hidden is no longer marked read, and the notification closes when you read the chat. Messages that were sent again after a reconnect (1:1 and group chats) now notify. Plain files you send are no longer stored twice. The chat view, roster and archive (MAM) OMEMO handling got more fixes.
+
 **2026-09-29 v0.0.31 "On the rocks" released: notifications and read marks fixed**
 
 No more notifications with an old message after a reconnect: messages you sent from your phone while Siproxylin was offline no longer count as new. A received file now shows its name in the notification. An open chat in a window in the background shows notifications again.
