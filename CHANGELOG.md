@@ -10,13 +10,13 @@ Updating from 0.0.31: a group chat that is not in your server bookmarks is no lo
 
 - Group chat bookmarks sync live with your other devices: a room added, removed or changed on another device is joined or left at once.
 - Login joins only rooms with Auto-join on. The room right-click menu has an Auto-join entry.
-- Received files get a read mark.
+- Received files send a read mark.
 - A chat that is open but hidden is no longer marked read.
-- The notification closes when you read the chat.
+- The notification closes when you read the chat on the other device.
 - Messages sent again after a reconnect (1:1 and group chats) now notify.
 - A message is no longer sent twice after a lost connection or in a busy chat.
 - Plain files you send are no longer stored twice.
-- Add Group takes a room name.
+- Add Group only needs a room name, domain is resolved and appended automatically
 - Fixes in the chat view read state, the roster and the archive (MAM) OMEMO handling.
 - Security and privacy fixes. Update recommended.
 
