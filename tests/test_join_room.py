@@ -5,7 +5,8 @@ Offline tests for the Add Group flow.
 Covers: resolve_room_jid() (room name or full address to room JID),
 and MucBarrel user joins: the bookmark is written only after the join
 works, and join errors carry the origin of the join ('' for joins the
-user did not start, so no dialog).
+user did not start, so no dialog). A join does not BEGIN or ROLLBACK
+on the shared DB connection.
 
 Needs PySide6 (offscreen). The call service modules (grpc) are replaced by stubs.
 
@@ -16,6 +17,7 @@ import os
 import sys
 import asyncio
 import logging
+import sqlite3
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -168,6 +170,60 @@ class UserJoinTests(unittest.TestCase):
         self.run_async(self.barrel.add_and_join_room(ROOM, 'alice', origin='dialog', bookmark=self.bookmark))
         self.barrel.create_or_update_bookmark.assert_awaited_once_with(room_jid=ROOM, **self.bookmark)
         self.assertNotIn(ROOM, self.barrel._user_joins)
+
+
+class SharedDb:
+    """Real sqlite3 connection with the app's default isolation level (implicit BEGIN)."""
+
+    def __init__(self):
+        self.connection = sqlite3.connect(':memory:')
+        self.connection.row_factory = sqlite3.Row
+        self.connection.executescript("""
+            CREATE TABLE jid (id INTEGER PRIMARY KEY, bare_jid TEXT);
+            CREATE TABLE bookmark (account_id INTEGER, jid_id INTEGER, name TEXT);
+            INSERT INTO jid VALUES (1, 'other@conference.localhost');
+            INSERT INTO bookmark VALUES (1, 1, NULL);
+        """)
+
+    def execute(self, query, params=()):
+        return self.connection.execute(query, params)
+
+    def fetchone(self, query, params=()):
+        return self.execute(query, params).fetchone()
+
+    def commit(self):
+        self.connection.commit()
+
+
+class JoinTransactionTests(unittest.TestCase):
+    """The DB connection is shared: a join must not BEGIN or ROLLBACK on it."""
+
+    def setUp(self):
+        self.db = SharedDb()
+        patcher = mock.patch.object(muc_mod, 'get_db', return_value=self.db)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.client = mock.MagicMock()
+        self.client.rooms = {}
+        self.client.is_joined.return_value = False
+        self.client.join_room = mock.AsyncMock()
+        signals = {'muc_join_error': mock.Mock(), 'roster_updated': mock.Mock()}
+        self.barrel = muc_mod.MucBarrel(1, self.client, mock.Mock(), None, signals,
+                                        {'bare_jid': 'alice@localhost'})
+
+    def test_join_after_bookmark_name_update(self):
+        # Another room's join named its bookmark, then the user clicks Join here
+        asyncio.run(self.barrel._update_bookmark_name('other@conference.localhost', 'Other'))
+        self.assertFalse(self.db.connection.in_transaction)
+        asyncio.run(self.barrel.add_and_join_room(ROOM, 'alice'))
+        self.client.join_room.assert_awaited_once()
+
+    def test_failed_join_keeps_other_writes(self):
+        self.db.execute("UPDATE bookmark SET name = 'Pending'")
+        self.client.join_room.side_effect = RuntimeError('boom')
+        with self.assertRaises(RuntimeError):
+            asyncio.run(self.barrel.add_and_join_room(ROOM, 'alice'))
+        self.assertEqual(self.db.fetchone("SELECT name FROM bookmark")['name'], 'Pending')
 
 
 if __name__ == '__main__':

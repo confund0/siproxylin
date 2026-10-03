@@ -160,20 +160,13 @@ class MucBarrel:
         if not already_joined:
             self._user_joins[room_jid] = {'origin': origin, 'bookmark': bookmark}
 
-        # Start database transaction for atomicity
-        db = get_db()
+        # No DB transaction here: the join writes nothing, and the DB connection is
+        # shared, so a BEGIN or ROLLBACK across the await mixes with other writes
         try:
-            db.execute("BEGIN")
-
             # Perform the join (adds to rooms dict, sends presence, marks for MAM)
             await self._perform_room_join(room_jid, nick, password, room_name)
 
-            # Commit transaction
-            db.commit()
-
         except Exception as e:
-            # Rollback on error
-            db.execute("ROLLBACK")
             self._user_joins.pop(room_jid, None)
             if self.logger:
                 self.logger.error(f"Failed to join room {room_jid}: {e}")
@@ -185,38 +178,19 @@ class MucBarrel:
 
     async def _update_room_features_from_dict(self, room_jid: str, features: dict):
         """
-        Update conversation table with MUC features from pre-fetched features dict.
+        Log MUC features from pre-fetched features dict.
 
         Args:
             room_jid: Room JID
             features: Features dict from get_room_features()
         """
-        db = get_db()
-        jid_row = db.fetchone("SELECT id FROM jid WHERE bare_jid = ?", (room_jid,))
-        if jid_row:
-            jid_id = jid_row['id']
-            try:
-                db.execute("""
-                    UPDATE conversation
-                    SET muc_nonanonymous = ?,
-                        muc_membersonly = ?
-                    WHERE account_id = ? AND jid_id = ? AND type = 1
-                """, (
-                    1 if features.get('muc_nonanonymous') else 0,
-                    1 if features.get('muc_membersonly') else 0,
-                    self.account_id,
-                    jid_id
-                ))
-
-                if self.logger:
-                    omemo_status = "✓ supports" if features.get('supports_omemo') else "✗ does NOT support"
-                    self.logger.info(
-                        f"Room {room_jid}: nonanonymous={features.get('muc_nonanonymous')}, "
-                        f"membersonly={features.get('muc_membersonly')} - {omemo_status} OMEMO"
-                    )
-            except Exception as db_err:
-                if self.logger:
-                    self.logger.warning(f"Failed to update room features in DB (migration pending?): {db_err}")
+        # Features live in disco_cache only (v13_to_v14 dropped the DB columns)
+        if self.logger:
+            omemo_status = "✓ supports" if features.get('supports_omemo') else "✗ does NOT support"
+            self.logger.info(
+                f"Room {room_jid}: nonanonymous={features.get('muc_nonanonymous')}, "
+                f"membersonly={features.get('muc_membersonly')} - {omemo_status} OMEMO"
+            )
 
     async def _update_bookmark_name(self, room_jid: str, room_name: str):
         """
@@ -234,6 +208,7 @@ class MucBarrel:
                 SET name = ?
                 WHERE account_id = ? AND jid_id = ? AND (name IS NULL OR name = '')
             """, (room_name, self.account_id, jid_row['id']))
+            db.commit()
 
             if self.logger:
                 self.logger.info(f"Updated bookmark name for {room_jid} to '{room_name}'")
