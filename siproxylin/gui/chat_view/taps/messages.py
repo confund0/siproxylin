@@ -274,11 +274,16 @@ class MessageDisplayWidget(QObject):
         Check if the user can see the newest messages of the open chat.
 
         True only in the live view with all new items loaded, at bottom,
-        and with the main window active and not minimized.
+        on the chat page, and with the main window active and not minimized.
         """
         if self.view_mode != 'live' or self._live_stale:
             return False
         if not self.scroll_manager or not self.scroll_manager.is_at_bottom():
+            return False
+        # Home page shown: the chat stays loaded (draft), but the user does not see it.
+        # The stack hides the chat page, so the message area is not visible in the window.
+        area = self.scroll_manager.message_area
+        if not area.isVisibleTo(area.window()):
             return False
         if not self.main_window:
             return False
