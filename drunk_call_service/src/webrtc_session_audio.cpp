@@ -72,6 +72,16 @@ bool WebRTCSession::setup_answerer_audio_pipeline() {
             LOG_ERROR("[WebRTCSession] Failed to create audio elements");
             return false;
         }
+#ifdef _WIN32
+
+        // WASAPI gives only F32LE: convert it before webrtcdsp and volume
+        GstElement *src_convert = gst_element_factory_make("audioconvert", "src_convert");
+        GstElement *src_resample = gst_element_factory_make("audioresample", "src_resample");
+        if (!src_convert || !src_resample) {
+            LOG_ERROR("[WebRTCSession] Failed to create source convert elements");
+            return false;
+        }
+#endif
 
         // Configure microphone device if specified
         if (!config_.microphone_device.empty()) {
@@ -140,10 +150,26 @@ bool WebRTCSession::setup_answerer_audio_pipeline() {
         } else {
             gst_bin_add_many(GST_BIN(pipeline_), audio_src_, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
         }
+#ifdef _WIN32
+        gst_bin_add_many(GST_BIN(pipeline_), src_convert, src_resample, nullptr);
+#endif
 
         // Link audio chain FIRST (while pipeline is PAUSED, elements are NULL)
         // Note: capsfilter goes between rtpopuspay and webrtcbin
         bool link_ok;
+#ifdef _WIN32
+        if (use_dsp) {
+            link_ok = gst_element_link_many(audio_src_, src_convert, src_resample, webrtcdsp, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
+            if (link_ok) {
+                LOG_INFO("[WebRTCSession] ✓ Linked audio chain: src→src_convert→src_resample→webrtcdsp→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
+            }
+        } else {
+            link_ok = gst_element_link_many(audio_src_, src_convert, src_resample, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
+            if (link_ok) {
+                LOG_INFO("[WebRTCSession] ✓ Linked audio chain: src→src_convert→src_resample→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
+            }
+        }
+#else
         if (use_dsp) {
             // With DSP: src→webrtcdsp→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter
             link_ok = gst_element_link_many(audio_src_, webrtcdsp, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
@@ -157,6 +183,7 @@ bool WebRTCSession::setup_answerer_audio_pipeline() {
                 LOG_INFO("[WebRTCSession] ✓ Linked audio chain: src→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
             }
         }
+#endif
 
         if (!link_ok) {
             LOG_ERROR("[WebRTCSession] Failed to link audio chain");
@@ -313,6 +340,16 @@ bool WebRTCSession::setup_offerer_audio_pipeline() {
             LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create audio elements");
             return false;
         }
+#ifdef _WIN32
+
+        // WASAPI gives only F32LE: convert it before webrtcdsp and volume
+        GstElement *src_convert = gst_element_factory_make("audioconvert", "src_convert");
+        GstElement *src_resample = gst_element_factory_make("audioresample", "src_resample");
+        if (!src_convert || !src_resample) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create source convert elements");
+            return false;
+        }
+#endif
 
         // Configure microphone device if specified
         if (!config_.microphone_device.empty()) {
@@ -364,9 +401,25 @@ bool WebRTCSession::setup_offerer_audio_pipeline() {
         } else {
             gst_bin_add_many(GST_BIN(pipeline_), audio_src_, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
         }
+#ifdef _WIN32
+        gst_bin_add_many(GST_BIN(pipeline_), src_convert, src_resample, nullptr);
+#endif
 
         // Link audio chain
         bool link_ok;
+#ifdef _WIN32
+        if (use_dsp) {
+            link_ok = gst_element_link_many(audio_src_, src_convert, src_resample, webrtcdsp, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
+            if (link_ok) {
+                LOG_INFO("[WebRTCSession] [OFFERER] ✓ Linked audio chain: src→src_convert→src_resample→webrtcdsp→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
+            }
+        } else {
+            link_ok = gst_element_link_many(audio_src_, src_convert, src_resample, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
+            if (link_ok) {
+                LOG_INFO("[WebRTCSession] [OFFERER] ✓ Linked audio chain: src→src_convert→src_resample→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
+            }
+        }
+#else
         if (use_dsp) {
             // With DSP: src→webrtcdsp→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter
             link_ok = gst_element_link_many(audio_src_, webrtcdsp, volume_, queue, convert, resample, opusenc, rtpopuspay, capsfilter, nullptr);
@@ -380,6 +433,7 @@ bool WebRTCSession::setup_offerer_audio_pipeline() {
                 LOG_INFO("[WebRTCSession] [OFFERER] ✓ Linked audio chain: src→volume→queue→convert→resample→opusenc→rtpopuspay→capsfilter");
             }
         }
+#endif
 
         if (!link_ok) {
             LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link audio chain");
@@ -473,6 +527,16 @@ void WebRTCSession::handle_incoming_audio_stream(GstPad *pad) {
             LOG_ERROR("[WebRTCSession] Failed to create audio sink elements (or echoprobe missing)");
             return;
         }
+#ifdef _WIN32
+
+        // WASAPI takes only F32LE: convert the S16LE output of echoprobe_
+        GstElement *sink_convert = gst_element_factory_make("audioconvert", "sink_convert");
+        GstElement *sink_resample = gst_element_factory_make("audioresample", "sink_resample");
+        if (!sink_convert || !sink_resample) {
+            LOG_ERROR("[WebRTCSession] Failed to create sink convert elements");
+            return;
+        }
+#endif
 
         // Configure speaker device if specified
         if (!config_.speakers_device.empty()) {
@@ -487,18 +551,32 @@ void WebRTCSession::handle_incoming_audio_stream(GstPad *pad) {
 
         // Add elements to pipeline (echoprobe_ already in pipeline from initialization)
         gst_bin_add_many(GST_BIN(pipeline_), depay, decoder, queue, audio_sink_, nullptr);
+#ifdef _WIN32
+        gst_bin_add_many(GST_BIN(pipeline_), sink_convert, sink_resample, nullptr);
+
+        // Link elements: depay → decoder → queue → echoprobe_ → sink_convert → sink_resample → sink
+        if (!gst_element_link_many(depay, decoder, queue, echoprobe_, sink_convert, sink_resample, audio_sink_, nullptr)) {
+            LOG_ERROR("[WebRTCSession] Failed to link audio sink chain");
+            return;
+        }
+#else
 
         // Link elements: depay → decoder → queue → echoprobe_ → sink
         if (!gst_element_link_many(depay, decoder, queue, echoprobe_, audio_sink_, nullptr)) {
             LOG_ERROR("[WebRTCSession] Failed to link audio sink chain");
             return;
         }
+#endif
 
         // Sync state with parent
         gst_element_sync_state_with_parent(depay);
         gst_element_sync_state_with_parent(decoder);
         gst_element_sync_state_with_parent(queue);
         gst_element_sync_state_with_parent(echoprobe_);
+#ifdef _WIN32
+        gst_element_sync_state_with_parent(sink_convert);
+        gst_element_sync_state_with_parent(sink_resample);
+#endif
         gst_element_sync_state_with_parent(audio_sink_);
 
         // Link webrtcbin pad to depay
@@ -515,6 +593,12 @@ void WebRTCSession::handle_incoming_audio_stream(GstPad *pad) {
 
             // Remove elements from pipeline
             gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, queue, audio_sink_, nullptr);
+#ifdef _WIN32
+            // Also unlinks echoprobe_; the bin holds the only ref, so this frees them
+            gst_element_set_state(sink_convert, GST_STATE_NULL);
+            gst_element_set_state(sink_resample, GST_STATE_NULL);
+            gst_bin_remove_many(GST_BIN(pipeline_), sink_convert, sink_resample, nullptr);
+#endif
 
             // Set to NULL state and unref (GstBin doesn't own them anymore)
             gst_element_set_state(depay, GST_STATE_NULL);
