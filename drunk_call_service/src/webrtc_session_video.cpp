@@ -85,6 +85,23 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
             LOG_ERROR("[WebRTCSession] Failed to create video elements");
             return false;
         }
+#ifdef _WIN32
+        // Windows: fixed raw format before the encoder (I420 640x480 at 15 fps)
+        GstElement *scale = gst_element_factory_make("videoscale", "videoscale");
+        GstElement *rate = gst_element_factory_make("videorate", "videorate");
+        GstElement *raw_caps = gst_element_factory_make("capsfilter", "raw_video_caps");
+        if (!scale || !rate || !raw_caps) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to create Windows video scale/rate elements");
+            return false;
+        }
+        GstCaps *win_raw_caps = gst_caps_from_string(
+            "video/x-raw,format=I420,width=640,height=480,pixel-aspect-ratio=1/1");
+        g_object_set(raw_caps, "caps", win_raw_caps, nullptr);
+        gst_caps_unref(win_raw_caps);
+        // Only drop frames down to 15 fps; never fill the gap before the first camera frame
+        g_object_set(rate, "drop-only", TRUE, "skip-to-first", TRUE, "max-rate", 15, nullptr);
+        LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Windows raw caps: I420 640x480, max 15 fps (drop-only)");
+#endif
 
         // CRITICAL: Configure low-latency queues for real-time video (WebRTC industry standard)
         // max-size-buffers=5: Limit buffering to ~166ms at 30fps (prevents 3-5 sec delay)
@@ -94,6 +111,17 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         g_object_set(queue2, "max-size-buffers", 5, "leaky", 2, nullptr);
         LOG_INFO("[WebRTCSession] ✓ Configured low-latency queues (max-size-buffers=5, leaky=downstream)");
 
+#ifdef _WIN32
+        // Windows: lower rate for 640x480 at 15 fps, error resilient stream
+        g_object_set(encoder,
+            "deadline", G_GINT64_CONSTANT(1),        // Realtime encoding (lowest latency)
+            "cpu-used", 8,                            // Max speed (lowest latency)
+            "target-bitrate", 600000,                 // 600 kbps
+            "keyframe-max-dist", 30,                  // Keyframe every 30 frames (2 seconds at 15fps)
+            nullptr);
+        gst_util_set_object_arg(G_OBJECT(encoder), "error-resilient", "default");
+        LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Configured vp8enc for Windows (deadline=1, cpu-used=8, keyframe-max-dist=30, 600kbps, error-resilient=default)");
+#else
         // Configure encoder - realtime with reasonable keyframes for calls
         g_object_set(encoder,
             "deadline", G_GINT64_CONSTANT(1),        // Realtime encoding (lowest latency)
@@ -102,6 +130,7 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
             "keyframe-max-dist", 60,                  // Keyframe every 60 frames (2 seconds at 30fps)
             nullptr);
         LOG_INFO("[WebRTCSession] ✓ Configured vp8enc (deadline=1, keyframe-max-dist=60, 1.5Mbps)");
+#endif
 
         // CRITICAL: Configure payloader with picture-id-mode=15-bit
         // Official example comment: "This improves TWCC stats behavior and fixes stuttery video playback in Chrome"
@@ -129,7 +158,11 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         LOG_INFO("[WebRTCSession] ✓ Set RTP caps: application/x-rtp,media=video,encoding-name=VP8,payload={}", payload);
 
         // Add all elements to pipeline
+#ifdef _WIN32
+        gst_bin_add_many(GST_BIN(pipeline_), video_src_, video_tee_, tee_queue, convert, scale, rate, raw_caps, queue1, encoder, payloader, queue2, capsfilter, nullptr);
+#else
         gst_bin_add_many(GST_BIN(pipeline_), video_src_, video_tee_, tee_queue, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr);
+#endif
 
         // Link camera source to tee
         if (!gst_element_link(video_src_, video_tee_)) {
@@ -157,11 +190,19 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         gst_object_unref(tee_encode_pad);
         gst_object_unref(tee_queue_sink);
 
+#ifdef _WIN32
+        if (!gst_element_link_many(tee_queue, convert, scale, rate, raw_caps, queue1, encoder, payloader, queue2, capsfilter, nullptr)) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to link video encoder chain");
+            return false;
+        }
+        LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Linked encoder chain: tee→queue→convert→scale→rate→caps→queue→vp8enc→rtpvp8pay→queue→capsfilter");
+#else
         if (!gst_element_link_many(tee_queue, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr)) {
             LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to link video encoder chain");
             return false;
         }
         LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Linked encoder chain: tee→queue→convert→queue→vp8enc→rtpvp8pay→queue→capsfilter");
+#endif
 
         // Get webrtcbin sink pad - ANSWERER MODE
         // Reuse the pad we created during set-remote-description
@@ -191,6 +232,11 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         gst_element_sync_state_with_parent(video_tee_);
         gst_element_sync_state_with_parent(tee_queue);
         gst_element_sync_state_with_parent(convert);
+#ifdef _WIN32
+        gst_element_sync_state_with_parent(scale);
+        gst_element_sync_state_with_parent(rate);
+        gst_element_sync_state_with_parent(raw_caps);
+#endif
         gst_element_sync_state_with_parent(queue1);
         gst_element_sync_state_with_parent(encoder);
         gst_element_sync_state_with_parent(payloader);
@@ -198,6 +244,11 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         gst_element_sync_state_with_parent(capsfilter);
         LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Synced video elements (incl. tee) to PLAYING (after all linking complete)");
 
+#ifdef _WIN32
+        // Windows: no self-view and no compositor. The video sink is created
+        // when the incoming video arrives (handle_incoming_video_stream).
+        LOG_INFO("[WebRTCSession] [ANSWERER] Windows: no self-view, video sink waits for incoming video");
+#else
         // CRITICAL: Create self-view branch immediately (don't wait for incoming video)
         // This prevents race conditions and gives instant self-view feedback
         LOG_INFO("[WebRTCSession] [ANSWERER] Creating immediate self-view (before incoming video)...");
@@ -348,6 +399,7 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         gst_element_sync_state_with_parent(video_sink_);
 
         LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Self-view created immediately (fullscreen until remote video arrives)");
+#endif
 
         // Resume pipeline to PLAYING
         LOG_DEBUG("[WebRTCSession] Resuming pipeline to PLAYING...");
@@ -426,6 +478,23 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
             LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create video elements");
             return false;
         }
+#ifdef _WIN32
+        // Windows: fixed raw format before the encoder (I420 640x480 at 15 fps)
+        GstElement *scale = gst_element_factory_make("videoscale", "videoscale");
+        GstElement *rate = gst_element_factory_make("videorate", "videorate");
+        GstElement *raw_caps = gst_element_factory_make("capsfilter", "raw_video_caps");
+        if (!scale || !rate || !raw_caps) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create Windows video scale/rate elements");
+            return false;
+        }
+        GstCaps *win_raw_caps = gst_caps_from_string(
+            "video/x-raw,format=I420,width=640,height=480,pixel-aspect-ratio=1/1");
+        g_object_set(raw_caps, "caps", win_raw_caps, nullptr);
+        gst_caps_unref(win_raw_caps);
+        // Only drop frames down to 15 fps; never fill the gap before the first camera frame
+        g_object_set(rate, "drop-only", TRUE, "skip-to-first", TRUE, "max-rate", 15, nullptr);
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Windows raw caps: I420 640x480, max 15 fps (drop-only)");
+#endif
 
         // CRITICAL: Configure low-latency queues for real-time video (WebRTC industry standard)
         // max-size-buffers=5: Limit buffering to ~166ms at 30fps (prevents 3-5 sec delay)
@@ -435,6 +504,17 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         g_object_set(queue2, "max-size-buffers", 5, "leaky", 2, nullptr);
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Configured low-latency queues (max-size-buffers=5, leaky=downstream)");
 
+#ifdef _WIN32
+        // Windows: lower rate for 640x480 at 15 fps, error resilient stream
+        g_object_set(encoder,
+            "deadline", G_GINT64_CONSTANT(1),        // Realtime encoding (lowest latency)
+            "cpu-used", 8,                            // Max speed (lowest latency)
+            "target-bitrate", 600000,                 // 600 kbps
+            "keyframe-max-dist", 30,                  // Keyframe every 30 frames (2 seconds at 15fps)
+            nullptr);
+        gst_util_set_object_arg(G_OBJECT(encoder), "error-resilient", "default");
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Configured vp8enc for Windows (deadline=1, cpu-used=8, keyframe-max-dist=30, 600kbps, error-resilient=default)");
+#else
         // Configure encoder - realtime with reasonable keyframes for calls
         g_object_set(encoder,
             "deadline", G_GINT64_CONSTANT(1),        // Realtime encoding (lowest latency)
@@ -443,6 +523,7 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
             "keyframe-max-dist", 60,                  // Keyframe every 60 frames (2 seconds at 30fps)
             nullptr);
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Configured vp8enc (deadline=1, keyframe-max-dist=60, 1.5Mbps)");
+#endif
 
         // CRITICAL: Configure payloader with picture-id-mode=15-bit
         // Official example comment: "This improves TWCC stats behavior and fixes stuttery video playback in Chrome"
@@ -462,7 +543,11 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Set RTP caps: application/x-rtp,media=video,encoding-name=VP8,payload=96");
 
         // Add all elements to pipeline (they will be in PAUSED state, not PLAYING yet)
+#ifdef _WIN32
+        gst_bin_add_many(GST_BIN(pipeline_), video_src_, video_tee_, tee_queue, convert, scale, rate, raw_caps, queue1, encoder, payloader, queue2, capsfilter, nullptr);
+#else
         gst_bin_add_many(GST_BIN(pipeline_), video_src_, video_tee_, tee_queue, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr);
+#endif
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Added video elements to pipeline in PAUSED state");
 
         // Link camera source to tee
@@ -491,11 +576,19 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         gst_object_unref(tee_encode_pad);
         gst_object_unref(tee_queue_sink);
 
+#ifdef _WIN32
+        if (!gst_element_link_many(tee_queue, convert, scale, rate, raw_caps, queue1, encoder, payloader, queue2, capsfilter, nullptr)) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link video encoder chain");
+            return false;
+        }
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Linked encoder chain: tee→queue→convert→scale→rate→caps→queue→vp8enc→rtpvp8pay→queue→capsfilter");
+#else
         if (!gst_element_link_many(tee_queue, convert, queue1, encoder, payloader, queue2, capsfilter, nullptr)) {
             LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link video encoder chain");
             return false;
         }
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Linked encoder chain: tee→queue→convert→queue→vp8enc→rtpvp8pay→queue→capsfilter");
+#endif
 
         // Get webrtcbin sink pad - OFFERER MODE
         // Create new pad (will auto-create transceiver)
@@ -543,6 +636,11 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         gst_element_sync_state_with_parent(video_tee_);
         gst_element_sync_state_with_parent(tee_queue);
         gst_element_sync_state_with_parent(convert);
+#ifdef _WIN32
+        gst_element_sync_state_with_parent(scale);
+        gst_element_sync_state_with_parent(rate);
+        gst_element_sync_state_with_parent(raw_caps);
+#endif
         gst_element_sync_state_with_parent(queue1);
         gst_element_sync_state_with_parent(encoder);
         gst_element_sync_state_with_parent(payloader);
@@ -550,6 +648,11 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         gst_element_sync_state_with_parent(capsfilter);
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Synced video elements (incl. tee) to PLAYING (after all linking complete)");
 
+#ifdef _WIN32
+        // Windows: no self-view and no compositor. The video sink is created
+        // when the incoming video arrives (handle_incoming_video_stream).
+        LOG_INFO("[WebRTCSession] [OFFERER] Windows: no self-view, video sink waits for incoming video");
+#else
         // CRITICAL: Create self-view branch immediately (don't wait for incoming video)
         // This prevents race conditions and gives instant self-view feedback
         LOG_INFO("[WebRTCSession] [OFFERER] Creating immediate self-view (before incoming video)...");
@@ -700,6 +803,7 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         gst_element_sync_state_with_parent(video_sink_);
 
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Self-view created immediately (fullscreen until remote video arrives)");
+#endif
 
         LOG_INFO("[WebRTCSession] [OFFERER] Video source pipeline created and linked");
         return true;
@@ -725,6 +829,40 @@ void WebRTCSession::handle_incoming_video_stream(GstPad *pad) {
                 return;
             }
 
+#ifdef _WIN32
+            // Windows: no compositor. Decoded video goes straight to d3dvideosink.
+            video_sink_ = gst_element_factory_make("d3dvideosink", "video_sink");
+            if (!video_sink_) {
+                LOG_ERROR("[WebRTCSession] Failed to create d3dvideosink for incoming video");
+                gst_object_unref(depay);
+                gst_object_unref(decoder);
+                gst_object_unref(convert);
+                return;
+            }
+            g_object_set(video_sink_, "sync", TRUE, nullptr);
+            // D3D9 stability settings for VM/RDP compatibility
+            g_object_set(video_sink_,
+                "force-aspect-ratio", TRUE,           // Maintain aspect ratio
+                "enable-navigation-events", FALSE,    // Reduce event overhead
+                "stream-stop-on-close", FALSE,        // Don't stop stream if window closes accidentally
+                nullptr);
+
+            LOG_INFO("[WebRTCSession] Adding incoming video with direct d3dvideosink (Windows, no self-view)");
+
+            // Add receive elements and sink to pipeline
+            gst_bin_add_many(GST_BIN(pipeline_), depay, decoder, convert, video_sink_, nullptr);
+
+            // Link incoming video chain: depay → decoder → convert → sink
+            if (!gst_element_link_many(depay, decoder, convert, video_sink_, nullptr)) {
+                LOG_ERROR("[WebRTCSession] Failed to link video receive chain");
+                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, video_sink_, nullptr);
+                video_sink_ = nullptr;
+                return;
+            }
+
+            GstPadLinkReturn link_ret = GST_PAD_LINK_OK;
+            gst_element_sync_state_with_parent(video_sink_);
+#else
             // Compositor should already exist (created with self-view)
             if (!compositor_) {
                 LOG_ERROR("[WebRTCSession] Compositor does not exist! Self-view should have created it.");
@@ -795,6 +933,7 @@ void WebRTCSession::handle_incoming_video_stream(GstPad *pad) {
             }
 
             gst_object_unref(comp_sink_incoming);
+#endif
 
             // Sync state with parent
             gst_element_sync_state_with_parent(depay);
@@ -815,11 +954,20 @@ void WebRTCSession::handle_incoming_video_stream(GstPad *pad) {
 
             if (link_ret != GST_PAD_LINK_OK) {
                 LOG_ERROR("[WebRTCSession] Failed to link incoming video pad to depay: {}", static_cast<int>(link_ret));
+#ifdef _WIN32
+                gst_element_set_state(video_sink_, GST_STATE_NULL);
+                gst_bin_remove(GST_BIN(pipeline_), video_sink_);
+                video_sink_ = nullptr;
+#endif
                 gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, nullptr);
                 return;
             }
 
+#ifdef _WIN32
+            LOG_INFO("[WebRTCSession] ✓ Incoming video linked to d3dvideosink");
+#else
             LOG_INFO("[WebRTCSession] ✓ Incoming video added to compositor (fullscreen background, self-view in corner)");
+#endif
 }
 
 } // namespace drunk_call
