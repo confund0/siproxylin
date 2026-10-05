@@ -72,6 +72,10 @@ bool WebRTCSession::setup_answerer_audio_pipeline() {
             LOG_ERROR("[WebRTCSession] Failed to create audio elements");
             return false;
         }
+        // The mic starts before ICE and DTLS are up. A full queue would block
+        // the source and keep old audio: drop the oldest, keep at most 200 ms.
+        g_object_set(queue, "leaky", 2, "max-size-time", (guint64)(200 * GST_MSECOND),
+                     "max-size-buffers", 0, "max-size-bytes", 0, nullptr);
 #ifdef _WIN32
 
         // WASAPI gives only F32LE: convert it before webrtcdsp and volume
@@ -340,6 +344,10 @@ bool WebRTCSession::setup_offerer_audio_pipeline() {
             LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create audio elements");
             return false;
         }
+        // The mic starts before ICE and DTLS are up. A full queue would block
+        // the source and keep old audio: drop the oldest, keep at most 200 ms.
+        g_object_set(queue, "leaky", 2, "max-size-time", (guint64)(200 * GST_MSECOND),
+                     "max-size-buffers", 0, "max-size-bytes", 0, nullptr);
 #ifdef _WIN32
 
         // WASAPI gives only F32LE: convert it before webrtcdsp and volume
