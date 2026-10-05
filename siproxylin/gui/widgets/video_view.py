@@ -5,6 +5,7 @@ A timer polls the reader (drunk_call_hook/video_shm.py). A new frame is
 wrapped in a QImage with no copy and drawn scaled, aspect ratio kept,
 centered on black. Before the first frame of the current stream, or when
 the stream is not active, it shows the contact name and "Connecting".
+After the call ended, it shows "Call ended".
 """
 
 from typing import Optional
@@ -25,6 +26,7 @@ class VideoView(QWidget):
         self._reader = reader
         self._contact_name = contact_name
         self._stream = stream
+        self._ended = False
 
         # The QImage points into the shared memory: keep the frame (and its
         # memoryview) as long as the image is used
@@ -40,6 +42,8 @@ class VideoView(QWidget):
 
     def start(self):
         """Start polling for frames."""
+        if self._ended:
+            return
         if not self._timer.isActive():
             self._timer.start()
         self._poll()
@@ -50,6 +54,11 @@ class VideoView(QWidget):
         self._drop_frame()
         self._reader.release(self._stream)
         self.update()
+
+    def show_call_ended(self):
+        """Stop the video and show "Call ended" instead of "Connecting"."""
+        self._ended = True
+        self.stop()
 
     def has_frame(self) -> bool:
         return self._image is not None
@@ -99,8 +108,9 @@ class VideoView(QWidget):
             painter.drawImage(target, self._image)
         else:
             painter.setPen(QColor(220, 220, 220))
+            text = "Call ended" if self._ended else "Connecting"
             painter.drawText(self.rect(), Qt.AlignCenter,
-                             f"{self._contact_name}\nConnecting")
+                             f"{self._contact_name}\n{text}")
         painter.end()
 
     def showEvent(self, event):

@@ -219,7 +219,12 @@ class CallWindow(QWidget):
                 background-color: #2c3e50;
             }
         """)
-        self.expand_button.clicked.connect(self._toggle_expanded_mode)
+        if self.has_video_view:
+            # Video window: the button shows the technical details under the video
+            self.expand_button.setToolTip("Show technical details")
+            self.expand_button.clicked.connect(self._toggle_video_details)
+        else:
+            self.expand_button.clicked.connect(self._toggle_expanded_mode)
         controls_layout.addWidget(self.expand_button)
 
         # Save slim controls as container for toggling
@@ -235,10 +240,16 @@ class CallWindow(QWidget):
 
         # Set initial visibility based on call type
         if self.has_video_view:
-            # Video window: only the control bar under the video
+            # Video window: only the control bar under the video. The technical
+            # details move out of the full container, between video and controls,
+            # hidden until the button is checked. No window size change.
             self.slim_container.setVisible(True)
             self.full_container.setVisible(False)
-            self.expand_button.setVisible(False)
+            self.full_container.layout().removeWidget(self.tech_group)
+            self.tech_group.setCheckable(False)
+            self.tech_content.setVisible(True)
+            self.tech_group.setVisible(False)
+            layout.insertWidget(layout.indexOf(self.slim_container), self.tech_group)
         elif self.is_slim_mode:
             # Video calls: start slim
             self.slim_container.setVisible(True)
@@ -540,6 +551,10 @@ class CallWindow(QWidget):
             self.move(saved_pos)
             self.show()  # Required after flag change
 
+    def _toggle_video_details(self, checked: bool):
+        """Video window: show or hide the technical details panel."""
+        self.tech_group.setVisible(checked)
+
     def _on_hangup(self):
         """User clicked Hang Up button."""
         logger.info(f"User requested hangup: {self.session_id}")
@@ -692,6 +707,8 @@ class CallWindow(QWidget):
                     self.duration_timer.stop()
                 if hasattr(self, 'stats_timer'):
                     self.stats_timer.stop()
+                if self.video_view:
+                    self.video_view.show_call_ended()
                 QTimer.singleShot(2000, self.close)
 
         except RuntimeError:
@@ -726,7 +743,7 @@ class CallWindow(QWidget):
         if hasattr(self, 'stats_timer'):
             self.stats_timer.stop()
         if self.video_view:
-            self.video_view.stop()
+            self.video_view.show_call_ended()
 
         # Close window after 2 seconds
         QTimer.singleShot(2000, self.close)
