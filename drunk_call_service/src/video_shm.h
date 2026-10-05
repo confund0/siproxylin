@@ -13,12 +13,12 @@
  *     u32 slot_count 3, u32 max_width 960, u32 max_height 960,
  *     u64 slot_bytes (960*960*4), u64 data_offset
  * - Stream control blocks, 64 bytes each, right after the header
- *   (stream 0 = remote video; stream 1 is not used yet):
+ *   (stream 0 = remote video, stream 1 = self-view):
  *     u32 latest (slot of the newest ready frame, 0xFFFFFFFF = none),
  *     u32 reader (slot the app draws now, 0xFFFFFFFF = none; only the app
  *                 writes it),
- *     u32 generation (the service adds 1 when a remote video stream starts),
- *     u32 active (1 while remote video flows, 0 after stop)
+ *     u32 generation (the service adds 1 when a video stream starts),
+ *     u32 active (1 while video flows, 0 after stop)
  * - Slot headers, 64 bytes each, after the control blocks, for stream s
  *   slot i at index s*slot_count + i:
  *     u64 seq (odd while being written, even when ready), u32 width,
@@ -52,6 +52,7 @@ public:
     static constexpr uint64_t kSlotBytes = uint64_t(kMaxWidth) * kMaxHeight * 4;
     static constexpr uint32_t kNone = 0xFFFFFFFF;
     static constexpr uint32_t kStreamRemote = 0;
+    static constexpr uint32_t kStreamSelf = 1;
 
     static constexpr size_t kHeaderSize = 64;
     static constexpr size_t kControlSize = 64;
@@ -64,7 +65,7 @@ public:
     // The mapped writer, or nullptr when there is no shared memory.
     static VideoShm* instance();
 
-    // A new remote video stream starts: generation + 1, latest = none,
+    // A new video stream starts: generation + 1, latest = none,
     // active = 1. Only frames from this owner are written after this.
     void begin_stream(uint32_t stream, const void *owner);
 

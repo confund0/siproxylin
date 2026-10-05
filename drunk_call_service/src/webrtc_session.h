@@ -63,7 +63,7 @@ private:
     GstElement *echoprobe_;   // WebRTC echo probe for echo cancellation
     GstElement *video_src_;   // Video source (v4l2src/autovideosrc)
     GstElement *video_sink_;  // Video sink (created dynamically on pad-added)
-    GstElement *video_tee_;   // Camera feed splitter (encoder branch only for now)
+    GstElement *video_tee_;   // Camera feed splitter (encoder branch, self-view branch on Linux)
 
     // Configuration
     SessionConfig config_;
@@ -193,6 +193,9 @@ private:
 
     // Video pipeline helpers (implemented in webrtc_session_video.cpp)
     void handle_incoming_video_stream(GstPad *pad);
+#ifdef __linux__
+    void add_self_view_branch(const char *mode);  // Camera tee → appsink → shared memory stream 1
+#endif
 
     // Promise callback for set-remote-description before answer
     static void on_offer_set_for_answer_static(GstPromise *promise, gpointer user_data);

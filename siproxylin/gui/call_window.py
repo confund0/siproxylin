@@ -17,7 +17,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer, Signal, QSize
 from PySide6.QtGui import QFont
 
-from .widgets.video_view import VideoView
+from .widgets.video_view import VideoView, SelfView
+from ..db.database import get_db
 
 
 logger = logging.getLogger('siproxylin.call_window')
@@ -87,6 +88,7 @@ class CallWindow(QWidget):
 
         # Linux video calls: video in this window, controls docked under it
         self.video_view = None
+        self.self_view = None
         self.has_video_view = 'video' in media_types and video_reader is not None
         self._video_reader = video_reader if self.has_video_view else None
 
@@ -140,6 +142,8 @@ class CallWindow(QWidget):
         if self.has_video_view:
             self.video_view = VideoView(self._video_reader, self.peer_jid)
             layout.addWidget(self.video_view, 1)
+            # Own camera in a corner over the video
+            self.self_view = SelfView(self._video_reader, self.video_view, settings=get_db())
 
         # Main controls layout
         controls_layout = QHBoxLayout()
@@ -199,6 +203,30 @@ class CallWindow(QWidget):
         controls_layout.addWidget(self.duration_label)
 
         controls_layout.addStretch()
+
+        # Self-view show/hide button (video window only)
+        if self.self_view:
+            self.self_view_button = QPushButton("👤")
+            self.self_view_button.setCheckable(True)
+            self.self_view_button.setChecked(not self.self_view.is_user_hidden())
+            self.self_view_button.setFixedSize(QSize(50, 50))
+            self.self_view_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #34495e;
+                    color: white;
+                    font-size: 20px;
+                    border-radius: 5px;
+                }
+                QPushButton:hover {
+                    background-color: #2c3e50;
+                }
+                QPushButton:checked {
+                    background-color: #2c3e50;
+                }
+            """)
+            self._update_self_view_tooltip()
+            self.self_view_button.toggled.connect(self._toggle_self_view)
+            controls_layout.addWidget(self.self_view_button)
 
         # Expand/details toggle button
         self.expand_button = QPushButton("⤢")
@@ -555,6 +583,15 @@ class CallWindow(QWidget):
         """Video window: show or hide the technical details panel."""
         self.tech_group.setVisible(checked)
 
+    def _toggle_self_view(self, checked: bool):
+        """Video window: show or hide the self-view (choice is saved)."""
+        self.self_view.set_user_hidden(not checked)
+        self._update_self_view_tooltip()
+
+    def _update_self_view_tooltip(self):
+        hidden = self.self_view.is_user_hidden()
+        self.self_view_button.setToolTip("Show self-view" if hidden else "Hide self-view")
+
     def _on_hangup(self):
         """User clicked Hang Up button."""
         logger.info(f"User requested hangup: {self.session_id}")
@@ -709,6 +746,8 @@ class CallWindow(QWidget):
                     self.stats_timer.stop()
                 if self.video_view:
                     self.video_view.show_call_ended()
+                if self.self_view:
+                    self.self_view.stop()
                 QTimer.singleShot(2000, self.close)
 
         except RuntimeError:
@@ -744,6 +783,8 @@ class CallWindow(QWidget):
             self.stats_timer.stop()
         if self.video_view:
             self.video_view.show_call_ended()
+        if self.self_view:
+            self.self_view.stop()
 
         # Close window after 2 seconds
         QTimer.singleShot(2000, self.close)
@@ -837,6 +878,8 @@ class CallWindow(QWidget):
             self.stats_timer.stop()
         if self.video_view:
             self.video_view.stop()
+        if self.self_view:
+            self.self_view.stop()
 
         logger.info(f"Call window closed: {self.session_id}")
         event.accept()

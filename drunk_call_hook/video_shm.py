@@ -13,12 +13,12 @@ Layout (little-endian, native alignment):
     u32 slot_count 3, u32 max_width 960, u32 max_height 960,
     u64 slot_bytes (960*960*4), u64 data_offset
 - Stream control blocks, 64 bytes each, right after the header
-  (stream 0 = remote video; stream 1 is not used yet):
+  (stream 0 = remote video, stream 1 = self-view):
     u32 latest (slot of the newest ready frame, 0xFFFFFFFF = none),
     u32 reader (slot the app draws now, 0xFFFFFFFF = none; only the app
                 writes it),
-    u32 generation (the service adds 1 when a remote video stream starts),
-    u32 active (1 while remote video flows, 0 after stop)
+    u32 generation (the service adds 1 when a video stream starts),
+    u32 active (1 while video flows, 0 after stop)
 - Slot headers, 64 bytes each, after the control blocks, for stream s
   slot i at index s*slot_count + i:
     u64 seq (odd while being written, even when ready), u32 width,
@@ -48,7 +48,7 @@ SLOT_BYTES = MAX_WIDTH * MAX_HEIGHT * 4
 NONE = 0xFFFFFFFF
 
 STREAM_REMOTE = 0
-STREAM_SELF = 1  # not used yet
+STREAM_SELF = 1
 
 HEADER_SIZE = 64
 CONTROL_SIZE = 64

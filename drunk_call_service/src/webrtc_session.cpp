@@ -447,9 +447,11 @@ bool WebRTCSession::stop() {
         }
 
 #ifdef __linux__
-        // No more frames come after NULL: tell the app the remote video stopped
+        // No more frames come after NULL: tell the app the remote video and
+        // the self-view stopped
         if (VideoShm::instance()) {
             VideoShm::instance()->end_stream(VideoShm::kStreamRemote, this);
+            VideoShm::instance()->end_stream(VideoShm::kStreamSelf, this);
         }
 #endif
 

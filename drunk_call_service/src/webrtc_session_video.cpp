@@ -21,9 +21,9 @@
 namespace drunk_call {
 
 #ifdef __linux__
-// appsink new-sample callback (streaming thread): copy the decoded RGBx
-// frame into the shared memory for the app. user_data is the session.
-static GstFlowReturn on_remote_video_sample(GstAppSink *appsink, gpointer user_data) {
+// Copy one RGBx sample of the appsink into the shared memory stream for the
+// app (streaming thread). owner is the session.
+static GstFlowReturn write_sample_to_shm(GstAppSink *appsink, uint32_t stream, gpointer owner) {
     GstSample *sample = gst_app_sink_pull_sample(appsink);
     if (!sample) {
         return GST_FLOW_OK;
@@ -43,7 +43,7 @@ static GstFlowReturn on_remote_video_sample(GstAppSink *appsink, gpointer user_d
             const uint8_t *data = static_cast<const uint8_t*>(GST_VIDEO_FRAME_PLANE_DATA(&frame, 0));
             uint64_t pts = GST_BUFFER_PTS_IS_VALID(buffer) ? GST_BUFFER_PTS(buffer) : 0;
             if (width > 0 && height > 0 && stride > 0) {
-                shm->write_frame(VideoShm::kStreamRemote, user_data, data,
+                shm->write_frame(stream, owner, data,
                                  static_cast<uint32_t>(width), static_cast<uint32_t>(height),
                                  static_cast<uint32_t>(stride), pts);
             }
@@ -53,6 +53,106 @@ static GstFlowReturn on_remote_video_sample(GstAppSink *appsink, gpointer user_d
 
     gst_sample_unref(sample);
     return GST_FLOW_OK;
+}
+
+// appsink new-sample callback for the decoded remote video. user_data is the session.
+static GstFlowReturn on_remote_video_sample(GstAppSink *appsink, gpointer user_data) {
+    return write_sample_to_shm(appsink, VideoShm::kStreamRemote, user_data);
+}
+
+// appsink new-sample callback for the camera self-view. user_data is the session.
+static GstFlowReturn on_self_view_sample(GstAppSink *appsink, gpointer user_data) {
+    return write_sample_to_shm(appsink, VideoShm::kStreamSelf, user_data);
+}
+
+// Self-view branch on the camera tee:
+// tee → queue → videoconvert → videoscale → videoflip (mirror) → caps (RGBx 320x240) → appsink.
+// Call it after the encoder branch is linked and before the source is synced,
+// so no camera frame flows yet. On any failure it logs and returns: the call
+// goes on without self-view.
+void WebRTCSession::add_self_view_branch(const char *mode) {
+    VideoShm *shm = VideoShm::instance();
+    if (!shm || !video_tee_) {
+        return;
+    }
+
+    GstElement *queue = gst_element_factory_make("queue", "self_view_queue");
+    GstElement *convert = gst_element_factory_make("videoconvert", "self_view_convert");
+    GstElement *scale = gst_element_factory_make("videoscale", "self_view_scale");
+    GstElement *flip = gst_element_factory_make("videoflip", "self_view_flip");
+    GstElement *caps = gst_element_factory_make("capsfilter", "self_view_caps");
+    GstElement *sink = gst_element_factory_make("appsink", "self_view_sink");
+    if (!queue || !convert || !scale || !flip || !caps || !sink) {
+        LOG_WARN("[WebRTCSession] [{}] Failed to create self-view elements, no self-view", mode);
+        if (queue) gst_object_unref(queue);
+        if (convert) gst_object_unref(convert);
+        if (scale) gst_object_unref(scale);
+        if (flip) gst_object_unref(flip);
+        if (caps) gst_object_unref(caps);
+        if (sink) gst_object_unref(sink);
+        return;
+    }
+
+    // One frame at most: a slow self-view drops frames and never blocks the encoder branch
+    g_object_set(queue, "max-size-buffers", 1, "max-size-bytes", 0, "max-size-time", G_GUINT64_CONSTANT(0),
+                 "leaky", 2, nullptr);
+    // Mirror image, as users expect for a self-view
+    gst_util_set_object_arg(G_OBJECT(flip), "method", "horizontal-flip");
+    // Same 4:3 shape as the send branch (640x480)
+    GstCaps *self_caps = gst_caps_from_string(
+        "video/x-raw,format=RGBx,width=320,height=240,pixel-aspect-ratio=1/1");
+    g_object_set(caps, "caps", self_caps, nullptr);
+    gst_caps_unref(self_caps);
+    // async=FALSE: the sink does not hold up pipeline state changes
+    g_object_set(sink,
+        "sync", FALSE,
+        "async", FALSE,
+        "max-buffers", 1,
+        "drop", TRUE,
+        "emit-signals", FALSE,
+        nullptr);
+    GstAppSinkCallbacks callbacks = {};
+    callbacks.new_sample = on_self_view_sample;
+    gst_app_sink_set_callbacks(GST_APP_SINK(sink), &callbacks, this, nullptr);
+
+    // Elements are still in NULL state here: removing them from the bin frees them
+    gst_bin_add_many(GST_BIN(pipeline_), queue, convert, scale, flip, caps, sink, nullptr);
+    // Scale first: converting the full camera frame to RGBx would cost CPU next to vp8enc
+    if (!gst_element_link_many(queue, scale, convert, flip, caps, sink, nullptr)) {
+        LOG_WARN("[WebRTCSession] [{}] Failed to link self-view chain, no self-view", mode);
+        gst_bin_remove_many(GST_BIN(pipeline_), queue, convert, scale, flip, caps, sink, nullptr);
+        return;
+    }
+
+    GstPad *tee_pad = gst_element_request_pad_simple(video_tee_, "src_%u");
+    if (!tee_pad) {
+        LOG_WARN("[WebRTCSession] [{}] Failed to request tee pad for self-view, no self-view", mode);
+        gst_bin_remove_many(GST_BIN(pipeline_), queue, convert, scale, flip, caps, sink, nullptr);
+        return;
+    }
+    GstPad *queue_sink = gst_element_get_static_pad(queue, "sink");
+    GstPadLinkReturn link_ret = gst_pad_link(tee_pad, queue_sink);
+    gst_object_unref(queue_sink);
+    if (link_ret != GST_PAD_LINK_OK) {
+        LOG_WARN("[WebRTCSession] [{}] Failed to link tee to self-view queue: {}, no self-view",
+                 mode, static_cast<int>(link_ret));
+        gst_element_release_request_pad(video_tee_, tee_pad);
+        gst_object_unref(tee_pad);
+        gst_bin_remove_many(GST_BIN(pipeline_), queue, convert, scale, flip, caps, sink, nullptr);
+        return;
+    }
+    gst_object_unref(tee_pad);
+
+    shm->begin_stream(VideoShm::kStreamSelf, this);
+
+    // Sink first, queue last: each element is ready before data reaches it
+    gst_element_sync_state_with_parent(sink);
+    gst_element_sync_state_with_parent(caps);
+    gst_element_sync_state_with_parent(flip);
+    gst_element_sync_state_with_parent(scale);
+    gst_element_sync_state_with_parent(convert);
+    gst_element_sync_state_with_parent(queue);
+    LOG_INFO("[WebRTCSession] [{}] ✓ Self-view branch: tee→queue→convert→scale→flip→caps(RGBx 320x240)→appsink (shared memory stream 1)", mode);
 }
 #endif
 
@@ -244,6 +344,12 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
 
         gst_object_unref(caps_src);
 
+#ifdef __linux__
+        // Second tee branch: camera self-view to the app (shared memory).
+        // Before the source is synced, so no frame flows yet.
+        add_self_view_branch("ANSWERER");
+#endif
+
         // NOW sync all elements to PLAYING state - AFTER all linking is complete
         // This ensures v4l2src only starts capturing when pipeline is fully ready
         gst_element_sync_state_with_parent(video_src_);
@@ -265,9 +371,10 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         // when the incoming video arrives (handle_incoming_video_stream).
         LOG_INFO("[WebRTCSession] [ANSWERER] Windows: no self-view, video sink waits for incoming video");
 #else
-        // Other systems: no self-view and no compositor. The video sink is created
-        // when the incoming video arrives (handle_incoming_video_stream).
-        LOG_INFO("[WebRTCSession] [ANSWERER] No self-view, video sink waits for incoming video");
+        // Other systems: no compositor (Linux: self-view branch above when the
+        // shared memory exists). The video sink is created when the incoming
+        // video arrives (handle_incoming_video_stream).
+        LOG_INFO("[WebRTCSession] [ANSWERER] Video sink waits for incoming video");
 #endif
 
         // Resume pipeline to PLAYING
@@ -475,6 +582,12 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         gst_object_unref(caps_src);
         gst_object_unref(webrtc_sink);
 
+#ifdef __linux__
+        // Second tee branch: camera self-view to the app (shared memory).
+        // Before the source is synced, so no frame flows yet.
+        add_self_view_branch("OFFERER");
+#endif
+
         // NOW sync all elements to PLAYING state - AFTER all linking is complete
         // This ensures v4l2src only starts capturing when pipeline is fully ready
         gst_element_sync_state_with_parent(video_src_);
@@ -496,9 +609,10 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         // when the incoming video arrives (handle_incoming_video_stream).
         LOG_INFO("[WebRTCSession] [OFFERER] Windows: no self-view, video sink waits for incoming video");
 #else
-        // Other systems: no self-view and no compositor. The video sink is created
-        // when the incoming video arrives (handle_incoming_video_stream).
-        LOG_INFO("[WebRTCSession] [OFFERER] No self-view, video sink waits for incoming video");
+        // Other systems: no compositor (Linux: self-view branch above when the
+        // shared memory exists). The video sink is created when the incoming
+        // video arrives (handle_incoming_video_stream).
+        LOG_INFO("[WebRTCSession] [OFFERER] Video sink waits for incoming video");
 #endif
 
         LOG_INFO("[WebRTCSession] [OFFERER] Video source pipeline created and linked");

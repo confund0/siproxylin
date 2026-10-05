@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Offline test: video frames over shared memory (drunk_call_hook/video_shm.py)
-and the VideoView widget.
+Offline test: video frames over shared memory (drunk_call_hook/video_shm.py),
+the VideoView and SelfView widgets and the self-view button of the call window.
 
 The test writer below follows the protocol of the C++ writer
 (drunk_call_service/src/video_shm.cpp).
@@ -15,13 +15,15 @@ import struct
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'  # no display in tests
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from PySide6.QtWidgets import QApplication
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QColor, QMouseEvent
 
 # Load the module by path: the drunk_call_hook package imports grpc,
 # which the offline venv does not have
@@ -30,7 +32,8 @@ _spec = importlib.util.spec_from_file_location(
     'video_shm', Path(__file__).parent.parent / 'drunk_call_hook' / 'video_shm.py')
 shm = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(shm)
-from siproxylin.gui.widgets.video_view import VideoView
+from siproxylin.gui.widgets.video_view import VideoView, SelfView
+from siproxylin.gui import call_window
 
 APP = QApplication.instance() or QApplication([])
 
@@ -356,6 +359,279 @@ class VideoViewTests(unittest.TestCase):
         mark = struct.unpack_from('<I', self.mm, shm.control_offset(0) + shm.CTL_READER)[0]
         self.assertEqual(mark, shm.NONE)
         self.assertFalse(self.view.has_frame())
+
+
+class SelfStreamReaderTests(unittest.TestCase):
+    """Stream 1 (self-view) uses its own control block and slots."""
+
+    def setUp(self):
+        self.mm = make_shm()
+        self.writer = TestWriter(self.mm)
+        self.reader = shm.Reader(self.mm)
+
+    def test_self_stream_read(self):
+        self.assertEqual(shm.STREAM_SELF, 1)
+        self.writer.begin_stream(stream=shm.STREAM_SELF)
+        self.assertTrue(self.reader.active(shm.STREAM_SELF))
+        self.assertFalse(self.reader.active(shm.STREAM_REMOTE))
+        self.writer.write_frame(8, 6, GREEN, stream=shm.STREAM_SELF)
+        self.assertIsNone(self.reader.latest_frame(shm.STREAM_REMOTE))
+        f = self.reader.latest_frame(shm.STREAM_SELF)
+        self.assertIsNotNone(f)
+        self.assertEqual((f.width, f.height, f.generation), (8, 6, 1))
+        self.assertEqual(bytes(f.data[0:4]), bytes(GREEN))
+        # The mark is in the stream 1 control block only
+        mark0 = struct.unpack_from('<I', self.mm, shm.control_offset(0) + shm.CTL_READER)[0]
+        mark1 = struct.unpack_from('<I', self.mm, shm.control_offset(1) + shm.CTL_READER)[0]
+        self.assertEqual(mark0, shm.NONE)
+        self.assertEqual(mark1, f.slot)
+
+    def test_both_streams(self):
+        self.writer.begin_stream(stream=shm.STREAM_REMOTE)
+        self.writer.begin_stream(stream=shm.STREAM_SELF)
+        self.writer.write_frame(4, 2, RED, stream=shm.STREAM_REMOTE)
+        self.writer.write_frame(4, 2, BLUE, stream=shm.STREAM_SELF)
+        remote = self.reader.latest_frame(shm.STREAM_REMOTE)
+        own = self.reader.latest_frame(shm.STREAM_SELF)
+        self.assertEqual(bytes(remote.data[0:4]), bytes(RED))
+        self.assertEqual(bytes(own.data[0:4]), bytes(BLUE))
+        self.reader.release(shm.STREAM_SELF)
+        mark0 = struct.unpack_from('<I', self.mm, shm.control_offset(0) + shm.CTL_READER)[0]
+        self.assertEqual(mark0, remote.slot)
+
+
+class FakeSettings:
+    """Stands in for the app database (get_setting / set_setting)."""
+
+    def __init__(self, values=None):
+        self.values = dict(values or {})
+
+    def get_setting(self, key, default=None):
+        return self.values.get(key, default)
+
+    def set_setting(self, key, value):
+        self.values[key] = str(value)
+
+
+def send_mouse(widget, kind, pos):
+    """Send a left button mouse event at pos (widget coordinates)."""
+    local = QPointF(pos)
+    glob = QPointF(widget.mapToGlobal(pos))
+    buttons = Qt.NoButton if kind == QEvent.MouseButtonRelease else Qt.LeftButton
+    event = QMouseEvent(kind, local, glob, Qt.LeftButton, buttons, Qt.NoModifier)
+    QApplication.sendEvent(widget, event)
+
+
+class SelfViewTests(unittest.TestCase):
+
+    def setUp(self):
+        self.mm = make_shm()
+        self.writer = TestWriter(self.mm)
+        self.reader = shm.Reader(self.mm)
+        self.settings = FakeSettings()
+        self.view = VideoView(self.reader, 'alice@localhost')
+        self.view.resize(500, 400)
+        self.self_view = None
+
+    def tearDown(self):
+        self.view.close()
+        self.view.deleteLater()
+        APP.processEvents()
+
+    def make_self_view(self):
+        self.self_view = SelfView(self.reader, self.view, settings=self.settings)
+        self.view.show()
+        APP.processEvents()
+        return self.self_view
+
+    def camera_frame(self, width=320, height=240, color=GREEN):
+        self.writer.begin_stream(stream=shm.STREAM_SELF)
+        self.writer.write_frame(width, height, color, stream=shm.STREAM_SELF)
+        self.self_view._poll()
+        APP.processEvents()
+
+    def test_default_corner_bottom_right(self):
+        sv = self.make_self_view()
+        self.assertEqual(sv.corner, 'bottom_right')
+        # 20% of 500 = 100 wide, 4:3 = 75 high, 16 px margin
+        self.assertEqual(sv.geometry().getRect(), (500 - 16 - 100, 400 - 16 - 75, 100, 75))
+
+    def test_position_per_corner(self):
+        sv = self.make_self_view()
+        expected = {
+            'top_left': (16, 16),
+            'top_right': (500 - 16 - 100, 16),
+            'bottom_left': (16, 400 - 16 - 75),
+            'bottom_right': (500 - 16 - 100, 400 - 16 - 75),
+        }
+        for corner, (x, y) in expected.items():
+            with self.subTest(corner=corner):
+                r = sv.corner_rect(corner)
+                self.assertEqual((r.x(), r.y(), r.width(), r.height()), (x, y, 100, 75))
+
+    def test_saved_corner_used(self):
+        self.settings.values['call_self_view_corner'] = 'top_left'
+        sv = self.make_self_view()
+        self.assertEqual(sv.geometry().topLeft(), QPoint(16, 16))
+
+    def test_bad_saved_corner_gives_default(self):
+        self.settings.values['call_self_view_corner'] = 'middle'
+        sv = self.make_self_view()
+        self.assertEqual(sv.corner, 'bottom_right')
+
+    def test_follows_parent_resize_and_frame_shape(self):
+        sv = self.make_self_view()
+        self.view.resize(1000, 600)
+        APP.processEvents()
+        self.assertEqual(sv.geometry().getRect(), (1000 - 16 - 200, 600 - 16 - 150, 200, 150))
+        # Portrait camera frame: same width, taller
+        self.camera_frame(240, 320)
+        self.assertEqual(sv.geometry().getRect(), (1000 - 16 - 200, 600 - 16 - 266, 200, 266))
+
+    def test_transparent_before_frame_then_drawn(self):
+        sv = self.make_self_view()
+        self.view._poll()
+        self.assertFalse(sv.has_frame())
+        img = self.view.grab().toImage()
+        c = sv.geometry().center()
+        self.assertEqual(QColor(img.pixel(c.x(), c.y())), QColor(0, 0, 0))
+        self.camera_frame(color=BLUE)
+        self.assertTrue(sv.has_frame())
+        img = self.view.grab().toImage()
+        self.assertEqual(QColor(img.pixel(c.x(), c.y())), QColor(0, 0, 255))
+
+    def test_drag_snaps_to_nearest_corner(self):
+        sv = self.make_self_view()
+        self.camera_frame()
+        # Grab in the middle, drop near the top left area (not exactly in the corner)
+        send_mouse(sv, QEvent.MouseButtonPress, QPoint(50, 37))
+        send_mouse(sv, QEvent.MouseMove, sv.mapFromParent(QPoint(150, 120)))
+        # While dragging the widget follows the mouse
+        self.assertEqual(sv.geometry().topLeft(), QPoint(150 - 50, 120 - 37))
+        send_mouse(sv, QEvent.MouseButtonRelease, sv.mapFromParent(QPoint(150, 120)))
+        self.assertEqual(sv.corner, 'top_left')
+        self.assertEqual(sv.geometry().topLeft(), QPoint(16, 16))
+        self.assertEqual(self.settings.values['call_self_view_corner'], 'top_left')
+
+        # Drag to the right half, lower half: bottom right
+        send_mouse(sv, QEvent.MouseButtonPress, QPoint(10, 10))
+        send_mouse(sv, QEvent.MouseMove, sv.mapFromParent(QPoint(300, 260)))
+        send_mouse(sv, QEvent.MouseButtonRelease, sv.mapFromParent(QPoint(300, 260)))
+        self.assertEqual(sv.corner, 'bottom_right')
+        self.assertEqual(sv.geometry().topLeft(), QPoint(500 - 16 - 100, 400 - 16 - 75))
+        self.assertEqual(self.settings.values['call_self_view_corner'], 'bottom_right')
+
+        # Top right
+        send_mouse(sv, QEvent.MouseButtonPress, QPoint(10, 10))
+        send_mouse(sv, QEvent.MouseMove, sv.mapFromParent(QPoint(400, 20)))
+        send_mouse(sv, QEvent.MouseButtonRelease, sv.mapFromParent(QPoint(400, 20)))
+        self.assertEqual(sv.corner, 'top_right')
+
+    def test_drag_kept_in_video_area(self):
+        sv = self.make_self_view()
+        self.camera_frame()
+        send_mouse(sv, QEvent.MouseButtonPress, QPoint(10, 10))
+        send_mouse(sv, QEvent.MouseMove, sv.mapFromParent(QPoint(-300, -300)))
+        self.assertEqual(sv.geometry().topLeft(), QPoint(0, 0))
+        send_mouse(sv, QEvent.MouseButtonRelease, sv.mapFromParent(QPoint(-300, -300)))
+        self.assertEqual(sv.corner, 'top_left')
+
+    def test_no_drag_before_frame(self):
+        sv = self.make_self_view()
+        before = sv.geometry()
+        send_mouse(sv, QEvent.MouseButtonPress, QPoint(10, 10))
+        send_mouse(sv, QEvent.MouseMove, sv.mapFromParent(QPoint(30, 30)))
+        send_mouse(sv, QEvent.MouseButtonRelease, sv.mapFromParent(QPoint(30, 30)))
+        self.assertEqual(sv.geometry(), before)
+        self.assertNotIn('call_self_view_corner', self.settings.values)
+
+    def test_hidden_saved_and_restored(self):
+        sv = self.make_self_view()
+        self.assertTrue(sv.isVisible())
+        sv.set_user_hidden(True)
+        self.assertFalse(sv.isVisible())
+        self.assertEqual(self.settings.values['call_self_view_hidden'], 'true')
+
+        # Next call: a new self-view starts hidden
+        sv2 = SelfView(self.reader, self.view, settings=self.settings)
+        APP.processEvents()
+        self.assertTrue(sv2.is_user_hidden())
+        self.assertFalse(sv2.isVisible())
+        sv2.set_user_hidden(False)
+        self.assertTrue(sv2.isVisible())
+        self.assertEqual(self.settings.values['call_self_view_hidden'], 'false')
+
+    def test_hide_releases_mark(self):
+        sv = self.make_self_view()
+        self.camera_frame()
+        sv.set_user_hidden(True)
+        mark = struct.unpack_from('<I', self.mm, shm.control_offset(1) + shm.CTL_READER)[0]
+        self.assertEqual(mark, shm.NONE)
+
+    def test_remote_view_not_changed_by_self_stream(self):
+        self.make_self_view()
+        self.camera_frame()
+        self.view._poll()
+        self.assertFalse(self.view.has_frame())
+
+
+class CallWindowSelfViewTests(unittest.TestCase):
+
+    def make_window(self, settings, media=('audio', 'video'), reader=True):
+        mm = make_shm()
+        with patch.object(call_window, 'get_db', return_value=settings):
+            w = call_window.CallWindow(None, 1, 'sid1', 'bob@localhost', list(media), 'outgoing',
+                                       video_reader=shm.Reader(mm) if reader else None)
+        w._mm = mm  # keep the memory alive
+        return w
+
+    def close(self, w):
+        w.close()
+        w.deleteLater()
+        APP.processEvents()
+
+    def test_button_toggles_and_saves(self):
+        settings = FakeSettings()
+        w = self.make_window(settings)
+        try:
+            w.show()
+            APP.processEvents()
+            self.assertTrue(w.self_view_button.isChecked())
+            self.assertEqual(w.self_view_button.toolTip(), 'Hide self-view')
+            self.assertTrue(w.self_view.isVisible())
+            w.self_view_button.click()
+            self.assertFalse(w.self_view.isVisible())
+            self.assertEqual(w.self_view_button.toolTip(), 'Show self-view')
+            self.assertEqual(settings.values['call_self_view_hidden'], 'true')
+        finally:
+            self.close(w)
+
+        # Next call window starts with the self-view hidden
+        w = self.make_window(settings)
+        try:
+            w.show()
+            APP.processEvents()
+            self.assertFalse(w.self_view_button.isChecked())
+            self.assertEqual(w.self_view_button.toolTip(), 'Show self-view')
+            self.assertFalse(w.self_view.isVisible())
+        finally:
+            self.close(w)
+
+    def test_audio_call_has_no_self_view(self):
+        w = self.make_window(FakeSettings(), media=('audio',))
+        try:
+            self.assertIsNone(w.self_view)
+            self.assertFalse(hasattr(w, 'self_view_button'))
+        finally:
+            self.close(w)
+
+    def test_no_reader_has_no_self_view(self):
+        w = self.make_window(FakeSettings(), reader=False)
+        try:
+            self.assertIsNone(w.self_view)
+            self.assertFalse(hasattr(w, 'self_view_button'))
+        finally:
+            self.close(w)
 
 
 if __name__ == '__main__':
