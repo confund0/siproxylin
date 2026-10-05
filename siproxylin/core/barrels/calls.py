@@ -674,8 +674,21 @@ class CallBarrel:
                     # Send Jingle session-accept via JingleAdapter
                     await self.jingle_adapter.send_answer(session_id, sdp_answer)
 
-                    # Process buffered transport-info candidates, then state Active (normal trickle ICE mode)
-                    await self._flush_buffered_candidates(session_id)
+                    # Process buffered transport-info candidates (received while session was being created)
+                    # IMPORTANT: Retrieve buffer AFTER send_answer() to catch any candidates that arrived during answer creation
+                    buffered_candidates = self.jingle_adapter.trickle_ice.get_buffered_candidates(session_id)
+                    if buffered_candidates:
+                        if self.logger:
+                            self.logger.info(f"[BUFFER] Processing {len(buffered_candidates)} buffered candidates for {session_id}")
+                        for candidate in buffered_candidates:
+                            try:
+                                await self.call_bridge.add_ice_candidate(session_id, candidate)
+                            except Exception as e:
+                                if self.logger:
+                                    self.logger.warning(f"Failed to add buffered candidate: {e}")
+
+                    # State transition: Active (normal trickle ICE mode)
+                    self.jingle_adapter.trickle_ice.set_incoming_state(session_id, IncomingCallState.ACTIVE)
 
                     if self.logger:
                         self.logger.debug(f"Sent Jingle session-accept for {session_id}")
@@ -847,37 +860,6 @@ class CallBarrel:
                 self.logger.error(traceback.format_exc())
             return False
 
-    async def _flush_buffered_candidates(self, session_id: str):
-        """
-        Pass buffered transport-info candidates to the call service, then set state Active.
-
-        Call this after the remote SDP is set (create_answer) and the session-accept is sent.
-        A candidate can arrive while we wait for add_ice_candidate. It goes to the buffer,
-        so read the buffer again until it is empty. There is no await between the last
-        empty read and the Active state, so no candidate stays in the buffer.
-
-        Args:
-            session_id: Session ID
-        """
-        trickle_ice = self.jingle_adapter.trickle_ice
-        while True:
-            buffered_candidates = trickle_ice.get_buffered_candidates(session_id)
-            if not buffered_candidates:
-                break
-            if self.logger:
-                self.logger.info(f"[BUFFER] Processing {len(buffered_candidates)} buffered candidates for {session_id}")
-            for candidate in buffered_candidates:
-                try:
-                    await self.call_bridge.add_ice_candidate(session_id, candidate)
-                except Exception as e:
-                    if self.logger:
-                        self.logger.warning(f"Failed to add buffered candidate: {e}")
-
-        # State transition: Active (normal trickle ICE mode)
-        # Skip it when the call ended meanwhile (cleanup removed the state)
-        if trickle_ice.get_incoming_state(session_id) is not None:
-            trickle_ice.set_incoming_state(session_id, IncomingCallState.ACTIVE)
-
     async def _on_candidates_ready(self, session_id: str):
         """
         Handle candidates arriving for trickle-only offers.
@@ -926,8 +908,21 @@ class CallBarrel:
             # Send Jingle session-accept via JingleAdapter
             await self.jingle_adapter.send_answer(session_id, sdp_answer)
 
-            # Process buffered transport-info candidates, then state Active (normal trickle ICE mode)
-            await self._flush_buffered_candidates(session_id)
+            # Process buffered transport-info candidates (received while session was being created)
+            # IMPORTANT: Retrieve buffer AFTER send_answer() to catch any candidates that arrived during answer creation
+            buffered_candidates = self.jingle_adapter.trickle_ice.get_buffered_candidates(session_id)
+            if buffered_candidates:
+                if self.logger:
+                    self.logger.info(f"[BUFFER] Processing {len(buffered_candidates)} buffered candidates for {session_id}")
+                for candidate in buffered_candidates:
+                    try:
+                        await self.call_bridge.add_ice_candidate(session_id, candidate)
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.warning(f"Failed to add buffered candidate: {e}")
+
+            # State transition: Active (normal trickle ICE mode)
+            self.jingle_adapter.trickle_ice.set_incoming_state(session_id, IncomingCallState.ACTIVE)
 
             if self.logger:
                 self.logger.debug(f"Sent Jingle session-accept for {session_id} (deferred)")
@@ -1380,10 +1375,6 @@ class CallBarrel:
         if self.logger:
             self.logger.info(f"SDP offer already available, creating C++ session for {session_id}")
 
-        # The answer is made here: stop the trickle-only deferral, or its timer
-        # (or the first transport-info) would send a second session-accept
-        self.jingle_adapter.trickle_ice.cancel_deferred(session_id)
-
         session_created = await self._create_incoming_session(session_id)
         if not session_created:
             if self.logger:
@@ -1404,16 +1395,8 @@ class CallBarrel:
             # Create SDP answer via CallBridge (also sets remote SDP)
             sdp_answer = await self.call_bridge.create_answer(session_id, sdp_offer)
 
-            # State transition: Remote SDP set + Answer created
-            self.jingle_adapter.trickle_ice.set_incoming_state(session_id, IncomingCallState.REMOTE_SET)
-            self.jingle_adapter.trickle_ice.set_incoming_state(session_id, IncomingCallState.ANSWER_READY)
-
             # Send Jingle session-accept via JingleAdapter
             await self.jingle_adapter.send_answer(session_id, sdp_answer)
-
-            # Process buffered transport-info candidates, then state Active (normal trickle ICE mode)
-            await self._flush_buffered_candidates(session_id)
-            self.accepted_calls.discard(session_id)
 
             if self.logger:
                 self.logger.info(f"Sent Jingle session-accept for {session_id}")

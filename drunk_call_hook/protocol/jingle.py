@@ -275,9 +275,7 @@ class JingleAdapter:
             await self.on_incoming_call(sid, peer_jid, sdp_offer, media_types)
 
         # Check if this is a trickle-only offer (0 candidates)
-        # Skip it when the answer is already sent (user accepted before the session-initiate)
-        answer_sent = self.trickle_ice.get_incoming_state(sid) == IncomingCallState.ACTIVE
-        if not answer_sent and self.trickle_ice.should_defer_answer(sdp_offer):
+        if self.trickle_ice.should_defer_answer(sdp_offer):
             # Defer answer creation until candidates arrive via transport-info
             async def on_timeout(session_id: str):
                 # Timeout expired - proceed with answer creation anyway
