@@ -22,6 +22,7 @@ from typing import Optional, Dict, Any, Callable
 import grpc
 from .proto import call_pb2, call_pb2_grpc
 from .video_manager import VideoStreamManager
+from . import video_shm
 
 # Import paths utility for proper log directory handling (dev + XDG modes)
 import sys
@@ -50,6 +51,12 @@ class GoCallService:
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_stop_event = threading.Event()
         self._grpc_channel: Optional[grpc.Channel] = None  # Synchronous channel for heartbeat thread
+        self._video_shm: Optional[video_shm.VideoShm] = None  # Linux: remote video frames from the service
+
+    @property
+    def video_reader(self) -> Optional[video_shm.Reader]:
+        """Reader for video frames from the service, or None (not Linux, no service)."""
+        return self._video_shm.reader if self._video_shm else None
 
     async def start(self) -> bool:
         """
@@ -176,12 +183,30 @@ class GoCallService:
 
             stdout_file = open(go_stdout_file, 'w')
 
-            self._process = subprocess.Popen(
-                [binary_path, "--log-level", log_level, "--log-path", str(go_log_file)],
-                stdout=stdout_file,  # Capture libnice debug output!
-                stderr=stderr_file,
-                env=env,
-            )
+            # Linux: shared memory for remote video frames (new one per service start)
+            self._video_shm = None
+            try:
+                self._video_shm = video_shm.create()
+            except Exception as e:
+                self.logger.warning(f"Failed to create video shared memory: {e}")
+            pass_fds = ()
+            if self._video_shm:
+                env[video_shm.ENV_FD] = str(self._video_shm.fd)
+                pass_fds = (self._video_shm.fd,)
+                self.logger.info(f"Video shared memory: fd {self._video_shm.fd}, {video_shm.TOTAL_SIZE} bytes")
+
+            try:
+                self._process = subprocess.Popen(
+                    [binary_path, "--log-level", log_level, "--log-path", str(go_log_file)],
+                    stdout=stdout_file,  # Capture libnice debug output!
+                    stderr=stderr_file,
+                    env=env,
+                    pass_fds=pass_fds,
+                )
+            finally:
+                # The child has its own copy of the fd; our mapping stays
+                if self._video_shm:
+                    self._video_shm.close_fd()
 
             # Wait for service to be ready (health check)
             await self._wait_for_ready(timeout=5.0)

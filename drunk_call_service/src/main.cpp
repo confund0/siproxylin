@@ -71,6 +71,10 @@
     #include <climits>  // PATH_MAX
 #endif
 
+#ifdef __linux__
+    #include "video_shm.h"
+#endif
+
 // Global shutdown flag (set by signal handler)
 std::atomic<bool> g_shutdown_requested(false);
 
@@ -386,6 +390,11 @@ int main(int argc, char* argv[]) {
     gst_version(&gst_major, &gst_minor, &gst_micro, &gst_nano);
     LOG_INFO("GStreamer version: {}.{}.{}.{}", gst_major, gst_minor, gst_micro, gst_nano);
     log_dtls_plugin(gst_major, gst_minor);
+
+#ifdef __linux__
+    // Shared memory for remote video frames to the app (fd from the app)
+    drunk_call::VideoShm::init_from_env();
+#endif
 
     // ========================================================================
     // Phase 4: Start GLib main loop thread (CRITICAL - MUST start before sessions)

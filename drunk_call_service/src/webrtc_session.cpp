@@ -18,6 +18,10 @@
 #include <windows.h>  // For FindWindowExW, ShowWindow, SetForegroundWindow
 #endif
 
+#ifdef __linux__
+#include "video_shm.h"
+#endif
+
 namespace drunk_call {
 
 // ============================================================================
@@ -271,7 +275,6 @@ WebRTCSession::WebRTCSession()
     , video_src_(nullptr)
     , video_sink_(nullptr)
     , video_tee_(nullptr)
-    , compositor_(nullptr)
     , is_muted_(false)
     , is_outgoing_(false)
     , negotiated_pad_(nullptr)
@@ -394,6 +397,9 @@ bool WebRTCSession::start() {
 }
 
 bool WebRTCSession::stop() {
+    // A second caller waits here, then sees pipeline_ == nullptr
+    std::lock_guard<std::mutex> stop_lock(stop_mutex_);
+
     try {
         if (!pipeline_) {
             return true;  // Already stopped
@@ -430,12 +436,22 @@ bool WebRTCSession::stop() {
             LOG_DEBUG("[WebRTCSession] Pipeline state changed to NULL successfully");
         }
 
+#ifdef __linux__
+        // No more frames come after NULL: tell the app the remote video stopped
+        if (VideoShm::instance()) {
+            VideoShm::instance()->end_stream(VideoShm::kStreamRemote, this);
+        }
+#endif
+
         gst_object_unref(pipeline_);
 
         pipeline_ = nullptr;
         webrtc_ = nullptr;
         audio_src_ = nullptr;
         audio_sink_ = nullptr;
+        video_src_ = nullptr;
+        video_sink_ = nullptr;
+        video_tee_ = nullptr;
 
         LOG_INFO("[WebRTCSession] Pipeline stopped and cleaned up");
         return true;

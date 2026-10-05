@@ -84,6 +84,11 @@ else()
         gstreamer-video-1.0
     )
 
+    # Linux: appsink for remote video frames to the app (shared memory)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        pkg_check_modules(GSTAPP REQUIRED gstreamer-app-1.0)
+    endif()
+
     # gRPC and Protobuf
     find_package(Protobuf REQUIRED)
     find_package(gRPC CONFIG REQUIRED)
@@ -158,16 +163,22 @@ add_executable(${BINARY_NAME}
     ${GRPC_SRCS}
 )
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(${BINARY_NAME} PRIVATE src/video_shm.cpp)
+endif()
+
 target_include_directories(${BINARY_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${GENERATED_DIR}
     ${GST_INCLUDE_DIRS}
+    ${GSTAPP_INCLUDE_DIRS}
     ${GLIB_INCLUDE_DIRS}
     ${SPDLOG_INCLUDE_DIRS}
 )
 
 target_link_libraries(${BINARY_NAME} PRIVATE
     ${GST_LIBRARIES}
+    ${GSTAPP_LIBRARIES}
     ${GLIB_LIBRARIES}
     ${SPDLOG_LIBRARIES}
     gRPC::grpc++

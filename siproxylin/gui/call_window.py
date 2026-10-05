@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer, Signal, QSize
 from PySide6.QtGui import QFont
 
+from .widgets.video_view import VideoView
+
 
 logger = logging.getLogger('siproxylin.call_window')
 
@@ -38,7 +40,8 @@ class CallWindow(QWidget):
     hangup_requested = Signal()
 
     def __init__(self, parent, account_id: int, session_id: str,
-                 peer_jid: str, media_types: list, direction: str, account=None):
+                 peer_jid: str, media_types: list, direction: str, account=None,
+                 video_reader=None):
         """
         Initialize call window.
 
@@ -50,13 +53,20 @@ class CallWindow(QWidget):
             media_types: List of media types (['audio'] or ['audio', 'video'])
             direction: 'outgoing' or 'incoming'
             account: Account instance (for accessing video port)
+            video_reader: Shared memory frame reader of the call service
+                (Linux only, else None)
         """
         # Platform-specific parent handling:
         # - Windows: No parent (prevents hiding when main window minimizes)
         # - Linux/macOS: Use parent (ensures floating in Sway/i3 tiling WMs)
+        # - Video window: No parent (a parent makes it transient, so Sway
+        #   floats it; without one a tiling WM tiles it)
         if platform.system() == 'Windows':
             super().__init__(None)
             logger.debug("CallWindow: No parent (Windows - independent window)")
+        elif 'video' in media_types and video_reader is not None:
+            super().__init__(None)
+            logger.debug("CallWindow: No parent (video window - top-level window)")
         else:
             super().__init__(parent)
             logger.debug("CallWindow: Using parent (Linux/macOS - floating window)")
@@ -75,15 +85,25 @@ class CallWindow(QWidget):
         self.call_start_time: Optional[float] = None
         self.call_connected = False
 
+        # Linux video calls: video in this window, controls docked under it
+        self.video_view = None
+        self.has_video_view = 'video' in media_types and video_reader is not None
+        self._video_reader = video_reader if self.has_video_view else None
+
         # Slim mode for video calls (compact control bar)
-        self.is_slim_mode = 'video' in media_types
+        self.is_slim_mode = 'video' in media_types and not self.has_video_view
         self._expanded_size = None
         self._is_expanded = False
 
         # Setup window
         self.setWindowTitle(f"Call - {peer_jid}")
 
-        if self.is_slim_mode:
+        if self.has_video_view:
+            # Video window: normal decorated window, not on top
+            self.setWindowFlags(Qt.Window)
+            self.setMinimumSize(320, 300)
+            self.resize(800, 600)
+        elif self.is_slim_mode:
             # Slim mode: Compact horizontal bar, always-on-top
             self.setWindowFlags(
                 Qt.Window |              # Independent window
@@ -115,6 +135,11 @@ class CallWindow(QWidget):
         layout = QVBoxLayout()
         layout.setSpacing(5)
         layout.setContentsMargins(10, 10, 10, 10)
+
+        # Video on top, fills the free space
+        if self.has_video_view:
+            self.video_view = VideoView(self._video_reader, self.peer_jid)
+            layout.addWidget(self.video_view, 1)
 
         # Main controls layout
         controls_layout = QHBoxLayout()
@@ -209,7 +234,12 @@ class CallWindow(QWidget):
         layout.addWidget(self.full_container)
 
         # Set initial visibility based on call type
-        if self.is_slim_mode:
+        if self.has_video_view:
+            # Video window: only the control bar under the video
+            self.slim_container.setVisible(True)
+            self.full_container.setVisible(False)
+            self.expand_button.setVisible(False)
+        elif self.is_slim_mode:
             # Video calls: start slim
             self.slim_container.setVisible(True)
             self.full_container.setVisible(False)
@@ -695,6 +725,8 @@ class CallWindow(QWidget):
             self.duration_timer.stop()
         if hasattr(self, 'stats_timer'):
             self.stats_timer.stop()
+        if self.video_view:
+            self.video_view.stop()
 
         # Close window after 2 seconds
         QTimer.singleShot(2000, self.close)
@@ -786,6 +818,8 @@ class CallWindow(QWidget):
             self.duration_timer.stop()
         if hasattr(self, 'stats_timer'):
             self.stats_timer.stop()
+        if self.video_view:
+            self.video_view.stop()
 
         logger.info(f"Call window closed: {self.session_id}")
         event.accept()

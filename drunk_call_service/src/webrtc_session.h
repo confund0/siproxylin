@@ -63,8 +63,7 @@ private:
     GstElement *echoprobe_;   // WebRTC echo probe for echo cancellation
     GstElement *video_src_;   // Video source (v4l2src/autovideosrc)
     GstElement *video_sink_;  // Video sink (created dynamically on pad-added)
-    GstElement *video_tee_;   // Camera feed splitter for PiP self-view
-    GstElement *compositor_;  // Video compositor for PiP overlay
+    GstElement *video_tee_;   // Camera feed splitter (encoder branch only for now)
 
     // Configuration
     SessionConfig config_;
@@ -103,6 +102,10 @@ private:
     std::condition_variable sdp_ready_;
     SDPMessage local_sdp_;
     bool sdp_done_;
+
+    // Held for the whole stop(): two EndSession calls must not free the
+    // pipeline twice
+    std::mutex stop_mutex_;
 
     // Stats monitoring
     guint stats_timer_id_;  // GLib timer source ID

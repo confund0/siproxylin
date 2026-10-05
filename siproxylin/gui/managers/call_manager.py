@@ -100,6 +100,14 @@ class CallManager:
         Args:
             signal_shutdown: True if shutdown triggered by signal (Ctrl+C)
         """
+        # A video call window has no parent: close it, or the app does not quit.
+        # Closing a call window does not hang up (no call to the service).
+        for call_window in list(self.call_windows.values()):
+            try:
+                call_window.close()
+            except RuntimeError:
+                pass  # Qt object already deleted
+
         if not self.go_call_service:
             return
 
@@ -324,8 +332,12 @@ class CallManager:
         # Get account
         account = self.account_manager.get_account(account_id)
 
+        # Video frame reader of the call service (Linux only, else None)
+        video_reader = self.go_call_service.video_reader if self.go_call_service else None
+
         # Create call window
-        call_window = CallWindow(self.main_window, account_id, session_id, peer_jid, media, direction, account=account)
+        call_window = CallWindow(self.main_window, account_id, session_id, peer_jid, media, direction,
+                                 account=account, video_reader=video_reader)
 
         # Connect signals
         if account:
@@ -353,8 +365,11 @@ class CallManager:
         # Track window
         self.call_windows[session_id] = call_window
 
-        # Show window
-        call_window.show()
+        # Show window (video window opens maximized)
+        if call_window.has_video_view:
+            call_window.showMaximized()
+        else:
+            call_window.show()
 
     def on_call_state_changed(self, account_id: int, session_id: str, state: str):
         """
