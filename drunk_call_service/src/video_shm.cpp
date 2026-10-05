@@ -214,6 +214,10 @@ bool VideoShm::write_frame(uint32_t stream, const void *owner, const uint8_t *da
 
     __atomic_store_n(seq_ptr, seq + 2, __ATOMIC_RELEASE);
     __atomic_store_n(control_field(stream, kCtlLatest), slot, __ATOMIC_RELEASE);
+    if (latest == kNone) {
+        // begin_stream() sets latest to none: this is the first frame of the stream
+        LOG_INFO("[VideoShm] Stream {} first frame: {}x{}", stream, width, height);
+    }
     return true;
 }
 
