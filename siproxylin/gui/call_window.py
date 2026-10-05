@@ -12,16 +12,86 @@ from typing import Optional
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QGroupBox, QFormLayout, QSizePolicy
+    QGroupBox, QFormLayout, QSizePolicy, QGridLayout
 )
 from PySide6.QtCore import Qt, QTimer, Signal, QSize
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QColor, QPalette
 
 from .widgets.video_view import VideoView, SelfView
 from ..db.database import get_db
 
 
 logger = logging.getLogger('siproxylin.call_window')
+
+# Mute button of the audio window: colors come from the app theme (generic
+# QPushButton rule), checked state from the palette, never red.
+TOGGLE_STYLE = """
+    QPushButton {
+        font-size: 20px;
+        padding: %s;
+        border-radius: %dpx;
+    }
+    QPushButton:checked {
+        background-color: palette(highlight);
+        color: palette(highlighted-text);
+    }
+"""
+
+# Round buttons of the control bar. Colors come from the bar background:
+# darker than the bar, brighter on hover. Checked state from the palette.
+BAR_BUTTON_STYLE = """
+    QPushButton {
+        background-color: %(normal)s;
+        %(color)s
+        font-size: %(font)dpx;
+        padding: 0px;
+        border: 1px solid %(normal)s;
+        border-radius: %(radius)dpx;
+    }
+    QPushButton:hover {
+        background-color: %(hover)s;
+    }
+    QPushButton:pressed {
+        background-color: %(pressed)s;
+    }
+    QPushButton:checked {
+        background-color: palette(highlight);
+        color: palette(highlighted-text);
+    }
+    QPushButton:disabled {
+        background-color: %(bar)s;
+    }
+"""
+
+# Change of the HSV value against the bar background
+BAR_BUTTON_DARKER = 35
+BAR_BUTTON_BRIGHTER = 40
+
+# Hang up: gray button with a red cross
+HANGUP_STYLE = """
+    QPushButton {
+        background-color: #c8c8c8;
+        color: #d32f2f;
+        font-size: %dpx;
+        font-weight: bold;
+        padding: %s;
+        border: none;
+        border-radius: %dpx;
+    }
+    QPushButton:hover {
+        background-color: #b0b0b0;
+    }
+    QPushButton:pressed {
+        background-color: #9e9e9e;
+    }
+    QPushButton:disabled {
+        background-color: #e0e0e0;
+        color: #9e9e9e;
+    }
+"""
+
+TOGGLE_SIZE = 52
+HANGUP_SIZE = 64
 
 
 class CallWindow(QWidget):
@@ -122,6 +192,14 @@ class CallWindow(QWidget):
             self.resize(550, 350)
 
         self._setup_ui()
+        # Tooltips in the font size of the window (the theme sets a smaller
+        # fixed size for all tooltips)
+        tooltip_size = self.font().pointSizeF()
+        if tooltip_size > 0:
+            self.setStyleSheet(f"QToolTip {{ font-size: {tooltip_size:g}pt; }}")
+        if self.has_video_view:
+            # Not narrower than the control bar, so its center stays centered
+            self.setMinimumWidth(max(self.minimumWidth(), self.layout().minimumSize().width()))
         self._start_timers()
 
         logger.info(f"Call window opened: {peer_jid} ({direction}, {media_types})")
@@ -145,115 +223,111 @@ class CallWindow(QWidget):
             # Own camera in a corner over the video
             self.self_view = SelfView(self._video_reader, self.video_view, settings=get_db())
 
-        # Main controls layout
-        controls_layout = QHBoxLayout()
-        controls_layout.setSpacing(10)
+        # Window background of the theme, for the bar button colors
+        self.ensurePolished()
+        self._bar_background = self.palette().color(QPalette.Window)
+
+        # Control bar: status and time left, Mute | Hang up | Camera in the
+        # center, self-view and details right. The two side columns have the
+        # same stretch, so the center stays in the middle of the bar.
+        controls_layout = QGridLayout()
+        controls_layout.setHorizontalSpacing(10)
         controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setColumnStretch(0, 1)
+        controls_layout.setColumnStretch(2, 1)
+
+        left_layout = QHBoxLayout()
+        left_layout.setSpacing(10)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout = QHBoxLayout()
+        center_layout.setSpacing(16)
+        right_layout = QHBoxLayout()
+        right_layout.setSpacing(10)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Status label (status text with a status emoji). It can shrink, so a
+        # long text does not push the center buttons.
+        self.status_label = QLabel("Connecting...")
+        self.status_label.setStyleSheet("color: gray;")
+        self.status_label.setMinimumWidth(1)
+        left_layout.addWidget(self.status_label)
+
+        # Duration label
+        self.duration_label = QLabel("--:--")
+        self.duration_label.setStyleSheet("font-weight: bold; font-size: 18px;")
+        left_layout.addWidget(self.duration_label)
+        left_layout.addStretch()
 
         # Mute button
         self.mute_button = QPushButton("🎤")
         self.mute_button.setCheckable(True)
         self.mute_button.setToolTip("Mute/unmute microphone")
-        self.mute_button.setFixedSize(QSize(50, 50))
-        self.mute_button.setStyleSheet("""
-            QPushButton {
-                background-color: #c0392b;
-                color: white;
-                font-size: 20px;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #e74c3c;
-            }
-            QPushButton:checked {
-                background-color: #7f8c8d;
-            }
-        """)
+        self.mute_button.setFixedSize(QSize(TOGGLE_SIZE, TOGGLE_SIZE))
+        self.mute_button.setStyleSheet(self._bar_button_style(TOGGLE_SIZE, 22))
         self.mute_button.clicked.connect(self._on_mute_toggled)
-        controls_layout.addWidget(self.mute_button)
+        center_layout.addWidget(self.mute_button)
 
         # Hangup button
-        self.hangup_button = QPushButton("📞")
+        self.hangup_button = QPushButton("✕")
         self.hangup_button.setToolTip("Hang up")
-        self.hangup_button.setFixedSize(QSize(50, 50))
-        self.hangup_button.setStyleSheet("""
-            QPushButton {
-                background-color: #e74c3c;
-                color: white;
-                font-size: 20px;
-                font-weight: bold;
-                border-radius: 5px;
-                text-decoration: line-through;
-            }
-            QPushButton:hover {
-                background-color: #c0392b;
-            }
-        """)
+        self.hangup_button.setFixedSize(QSize(HANGUP_SIZE, HANGUP_SIZE))
+        self.hangup_button.setStyleSheet(
+            self._bar_button_style(HANGUP_SIZE, 30, "color: #d32f2f; font-weight: bold;"))
         self.hangup_button.clicked.connect(self._on_hangup)
-        controls_layout.addWidget(self.hangup_button)
+        center_layout.addWidget(self.hangup_button)
 
-        # Status label
-        self.status_label = QLabel("Connecting...")
-        self.status_label.setStyleSheet("color: gray; font-size: 11px;")
-        controls_layout.addWidget(self.status_label)
+        # Camera on/off button (not implemented yet)
+        self.camera_button = QPushButton("📷")
+        self.camera_button.setCheckable(True)
+        self.camera_button.setEnabled(False)
+        self.camera_button.setToolTip("Camera on/off (not available yet)")
+        self.camera_button.setFixedSize(QSize(TOGGLE_SIZE, TOGGLE_SIZE))
+        self.camera_button.setStyleSheet(self._bar_button_style(TOGGLE_SIZE, 22))
+        center_layout.addWidget(self.camera_button)
 
-        # Duration label
-        self.duration_label = QLabel("--:--")
-        self.duration_label.setStyleSheet("font-weight: bold; font-size: 12px;")
-        controls_layout.addWidget(self.duration_label)
-
-        controls_layout.addStretch()
+        right_layout.addStretch()
 
         # Self-view show/hide button (video window only)
         if self.self_view:
-            self.self_view_button = QPushButton("👤")
+            self.self_view_button = QPushButton("🪞")
             self.self_view_button.setCheckable(True)
             self.self_view_button.setChecked(not self.self_view.is_user_hidden())
-            self.self_view_button.setFixedSize(QSize(50, 50))
-            self.self_view_button.setStyleSheet("""
-                QPushButton {
-                    background-color: #34495e;
-                    color: white;
-                    font-size: 20px;
-                    border-radius: 5px;
-                }
-                QPushButton:hover {
-                    background-color: #2c3e50;
-                }
-                QPushButton:checked {
-                    background-color: #2c3e50;
-                }
-            """)
+            self.self_view_button.setFixedSize(QSize(TOGGLE_SIZE, TOGGLE_SIZE))
+            self.self_view_button.setStyleSheet(self._bar_button_style(TOGGLE_SIZE, 22))
             self._update_self_view_tooltip()
             self.self_view_button.toggled.connect(self._toggle_self_view)
-            controls_layout.addWidget(self.self_view_button)
+            right_layout.addWidget(self.self_view_button)
 
         # Expand/details toggle button
         self.expand_button = QPushButton("⤢")
         self.expand_button.setCheckable(True)
         self.expand_button.setToolTip("Show full window")
-        self.expand_button.setFixedSize(QSize(50, 50))
-        self.expand_button.setStyleSheet("""
-            QPushButton {
-                background-color: #34495e;
-                color: white;
-                font-size: 20px;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #2c3e50;
-            }
-            QPushButton:checked {
-                background-color: #2c3e50;
-            }
-        """)
+        self.expand_button.setFixedSize(QSize(TOGGLE_SIZE, TOGGLE_SIZE))
+        self.expand_button.setStyleSheet(self._bar_button_style(TOGGLE_SIZE, 22))
         if self.has_video_view:
             # Video window: the button shows the technical details under the video
+            self.expand_button.setText("{}")
             self.expand_button.setToolTip("Show technical details")
             self.expand_button.clicked.connect(self._toggle_video_details)
         else:
             self.expand_button.clicked.connect(self._toggle_expanded_mode)
-        controls_layout.addWidget(self.expand_button)
+        right_layout.addWidget(self.expand_button)
+
+        # The side widgets ignore their size hints and get the same minimum
+        # width, so both side columns are always the same width.
+        left_widget = QWidget()
+        left_widget.setLayout(left_layout)
+        right_widget = QWidget()
+        right_widget.setLayout(right_layout)
+        self.duration_label.ensurePolished()  # font size of the stylesheet
+        side_width = max(left_layout.minimumSize().width(),
+                         right_layout.minimumSize().width())
+        for side in (left_widget, right_widget):
+            side.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            side.setMinimumWidth(side_width)
+        controls_layout.addWidget(left_widget, 0, 0)
+        controls_layout.addLayout(center_layout, 0, 1)
+        controls_layout.addWidget(right_widget, 0, 2)
 
         # Save slim controls as container for toggling
         slim_controls_widget = QWidget()
@@ -288,6 +362,24 @@ class CallWindow(QWidget):
             self.full_container.setVisible(True)
 
         self.setLayout(layout)
+
+    def _bar_button_style(self, size: int, font_px: int, color: str = '') -> str:
+        """Style of a round control bar button, colors from the bar background."""
+        bg = self._bar_background
+        hue, sat, value = bg.hsvHue(), bg.hsvSaturation(), bg.value()
+        # A bar that is almost black gets lighter buttons, else they cannot be seen.
+        # On a white bar hover cannot be brighter: it is then only brighter than the button.
+        if value >= BAR_BUTTON_DARKER:
+            normal_value = value - BAR_BUTTON_DARKER
+        else:
+            normal_value = value + BAR_BUTTON_DARKER
+        normal = QColor.fromHsv(hue, sat, normal_value)
+        hover = QColor.fromHsv(hue, sat, min(255, max(value, normal_value) + BAR_BUTTON_BRIGHTER))
+        return BAR_BUTTON_STYLE % {
+            'bar': bg.name(), 'normal': normal.name(), 'hover': hover.name(),
+            'pressed': normal.darker(120).name(), 'color': color,
+            'font': font_px, 'radius': size // 2,
+        }
 
     def _create_full_ui_in_container(self, container):
         """Create full normal UI inside a container widget (for Details expansion)."""
@@ -341,39 +433,16 @@ class CallWindow(QWidget):
         controls_layout_full.setSpacing(15)
 
         # Hang Up button
-        hangup_full = QPushButton("📞 Hang Up")
-        hangup_full.setStyleSheet("""
-            QPushButton {
-                background-color: #e74c3c;
-                color: white;
-                font-size: 16px;
-                font-weight: bold;
-                padding: 15px 30px;
-                border-radius: 8px;
-                text-decoration: line-through;
-            }
-            QPushButton:hover {
-                background-color: #c0392b;
-            }
-        """)
+        hangup_full = QPushButton("✕ Hang Up")
+        hangup_full.setStyleSheet(HANGUP_STYLE % (22, '15px 30px', 8))
         hangup_full.clicked.connect(self._on_hangup)
         controls_layout_full.addWidget(hangup_full)
 
         # Mute button
-        mute_full = QPushButton("🎤")
+        mute_full = QPushButton("🎤 Mute")
         mute_full.setCheckable(True)
         mute_full.setToolTip("Mute/unmute microphone")
-        mute_full.setStyleSheet("""
-            QPushButton {
-                background-color: #c0392b;
-                color: white;
-                font-size: 20px;
-                padding: 8px;
-            }
-            QPushButton:hover {
-                background-color: #e74c3c;
-            }
-        """)
+        mute_full.setStyleSheet(TOGGLE_STYLE % ('8px', 8))
         mute_full.clicked.connect(self._on_mute_toggled)
         controls_layout_full.addWidget(mute_full)
         self.mute_button_full = mute_full  # Save reference
@@ -425,10 +494,12 @@ class CallWindow(QWidget):
 
         full_layout.addWidget(self.tech_group)
 
-        # Collapse button
-        collapse_btn = QPushButton("↓ Slim Mode")
-        collapse_btn.clicked.connect(self._toggle_expanded_mode)
-        full_layout.addWidget(collapse_btn)
+        # Collapse button (video calls without a video view only; audio calls
+        # always use the full window)
+        if self.is_slim_mode:
+            collapse_btn = QPushButton("↓ Slim Mode")
+            collapse_btn.clicked.connect(self._toggle_expanded_mode)
+            full_layout.addWidget(collapse_btn)
 
         container.setLayout(full_layout)
 
@@ -609,62 +680,7 @@ class CallWindow(QWidget):
             self.mute_button.setChecked(is_muted)
         if hasattr(self, 'mute_button_full') and self.mute_button_full:
             self.mute_button_full.setChecked(is_muted)
-
-        # Update button styles based on state (slim mode uses border-radius)
-        muted_style_slim = """
-            QPushButton {
-                background-color: #7f8c8d;
-                color: white;
-                font-size: 20px;
-                border-radius: 5px;
-                text-decoration: line-through;
-            }
-            QPushButton:hover {
-                background-color: #95a5a6;
-            }
-        """
-        unmuted_style_slim = """
-            QPushButton {
-                background-color: #c0392b;
-                color: white;
-                font-size: 20px;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #e74c3c;
-            }
-        """
-        muted_style_full = """
-            QPushButton {
-                background-color: #7f8c8d;
-                color: white;
-                font-size: 20px;
-                padding: 8px;
-                text-decoration: line-through;
-            }
-            QPushButton:hover {
-                background-color: #95a5a6;
-            }
-        """
-        unmuted_style_full = """
-            QPushButton {
-                background-color: #c0392b;
-                color: white;
-                font-size: 20px;
-                padding: 8px;
-            }
-            QPushButton:hover {
-                background-color: #e74c3c;
-            }
-        """
-
-        # Apply appropriate style to each button
-        if hasattr(self, 'mute_button') and self.mute_button:
-            style_slim = muted_style_slim if is_muted else unmuted_style_slim
-            self.mute_button.setStyleSheet(style_slim)
-        if hasattr(self, 'mute_button_full') and self.mute_button_full:
-            style_full = muted_style_full if is_muted else unmuted_style_full
-            self.mute_button_full.setStyleSheet(style_full)
+            self.mute_button_full.setText("🎤 Unmute" if is_muted else "🎤 Mute")
 
         # Request mute state change via parent (MainWindow will call account.set_mute)
         if self._parent_window and hasattr(self._parent_window, 'request_call_mute'):

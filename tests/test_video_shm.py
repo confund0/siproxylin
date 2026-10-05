@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Offline test: video frames over shared memory (drunk_call_hook/video_shm.py),
-the VideoView and SelfView widgets and the self-view button of the call window.
+the VideoView and SelfView widgets and the control bar of the call window.
 
 The test writer below follows the protocol of the C++ writer
 (drunk_call_service/src/video_shm.cpp).
@@ -11,6 +11,7 @@ Run with: QT_QPA_PLATFORM=offscreen <venv>/bin/python -m unittest tests/test_vid
 
 import mmap
 import os
+import re
 import struct
 import sys
 import unittest
@@ -21,7 +22,7 @@ os.environ['QT_QPA_PLATFORM'] = 'offscreen'  # no display in tests
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton, QToolTip
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QColor, QMouseEvent
 
@@ -630,6 +631,197 @@ class CallWindowSelfViewTests(unittest.TestCase):
         try:
             self.assertIsNone(w.self_view)
             self.assertFalse(hasattr(w, 'self_view_button'))
+        finally:
+            self.close(w)
+
+
+class CallWindowControlBarTests(unittest.TestCase):
+
+    def make_window(self, reader=True):
+        mm = make_shm()
+        with patch.object(call_window, 'get_db', return_value=FakeSettings()):
+            w = call_window.CallWindow(None, 1, 'sid1', 'bob@localhost', ['audio', 'video'],
+                                       'outgoing', video_reader=shm.Reader(mm) if reader else None)
+        w._mm = mm  # keep the memory alive
+        return w
+
+    def close(self, w):
+        w.close()
+        w.deleteLater()
+        APP.processEvents()
+
+    def center_x(self, w, button):
+        bar = w.slim_container
+        return button.mapTo(bar, button.rect().center()).x(), bar.width() / 2
+
+    def test_hangup_centered_mute_left_camera_right(self):
+        w = self.make_window()
+        try:
+            w.show()
+            for width in (800, 600):
+                w.resize(width, 600)
+                APP.processEvents()
+                hangup_x, bar_center = self.center_x(w, w.hangup_button)
+                self.assertLessEqual(abs(hangup_x - bar_center), 1, width)
+                mute_x, _ = self.center_x(w, w.mute_button)
+                camera_x, _ = self.center_x(w, w.camera_button)
+                self.assertLess(mute_x, hangup_x)
+                self.assertGreater(camera_x, hangup_x)
+                self.assertGreater(w.hangup_button.width(), w.mute_button.width())
+        finally:
+            self.close(w)
+
+    def test_hangup_centered_with_long_status(self):
+        # reader=False: slim mode (video call without the video view)
+        for reader in (True, False):
+            w = self.make_window(reader=reader)
+            try:
+                w.show()
+                for text in ("Status: Call Ended (connectivity-error)", "Connecting..."):
+                    w.status_label.setText(text)
+                    for width in (600, 400):
+                        w.resize(width, w.height())
+                        APP.processEvents()
+                        hangup_x, bar_center = self.center_x(w, w.hangup_button)
+                        self.assertLessEqual(abs(hangup_x - bar_center), 1,
+                                             (reader, text, width))
+            finally:
+                self.close(w)
+
+    def bar_buttons(self, w):
+        return [w.mute_button, w.camera_button, w.self_view_button, w.expand_button]
+
+    def test_bar_buttons_round_same_size_hangup_largest(self):
+        w = self.make_window()
+        try:
+            for button in self.bar_buttons(w):
+                self.assertEqual(button.size(), w.mute_button.size())
+                self.assertIn(f'border-radius: {button.width() // 2}px', button.styleSheet())
+                self.assertIn('palette(highlight)', button.styleSheet())
+            self.assertGreater(w.hangup_button.width(), w.mute_button.width())
+            self.assertIn(f'border-radius: {w.hangup_button.width() // 2}px',
+                          w.hangup_button.styleSheet())
+            self.assertIn('#d32f2f', w.hangup_button.styleSheet())
+        finally:
+            self.close(w)
+
+    def test_bar_button_colors_follow_theme(self):
+        # Buttons darker than the bar, brighter on hover, in a dark and a light theme
+        try:
+            for bar_color in ('#2b2b2b', '#d0d0d0'):
+                APP.setStyleSheet(f"QWidget {{ background-color: {bar_color}; }}")
+                w = self.make_window()
+                try:
+                    bar = QColor(bar_color).value()
+                    for button in self.bar_buttons(w) + [w.hangup_button]:
+                        style = button.styleSheet()
+                        normal = re.search(r'QPushButton \{\s*background-color: (#\w+)', style)
+                        hover = re.search(r':hover \{\s*background-color: (#\w+)', style)
+                        self.assertLess(QColor(normal.group(1)).value(), bar, bar_color)
+                        self.assertGreater(QColor(hover.group(1)).value(), bar, bar_color)
+                finally:
+                    self.close(w)
+        finally:
+            APP.setStyleSheet('')
+
+    def test_status_font_same_before_and_after_state(self):
+        w = self.make_window()
+        try:
+            w.show()
+            APP.processEvents()
+            size = w.status_label.font().pointSizeF()
+            for state in ('connecting', 'connected'):
+                w.on_call_state_changed(state)
+                APP.processEvents()
+                self.assertEqual(w.status_label.font().pointSizeF(), size, state)
+        finally:
+            self.close(w)
+
+    def test_tooltip_in_window_font_size(self):
+        # Theme like: small fixed tooltip size, larger widget font
+        APP.setStyleSheet("QWidget { font-size: 15pt; } QToolTip { font-size: 7pt; }")
+        w = self.make_window()
+        try:
+            w.show()
+            APP.processEvents()
+            QToolTip.showText(QPoint(10, 10), w.mute_button.toolTip(), w.mute_button)
+            APP.processEvents()
+            tips = [t for t in APP.topLevelWidgets()
+                    if t.metaObject().className() == 'QTipLabel' and t.isVisible()]
+            self.assertTrue(tips)
+            self.assertEqual(tips[0].font().pointSizeF(), 15)
+        finally:
+            QToolTip.hideText()
+            self.close(w)
+            APP.setStyleSheet('')
+
+    def test_camera_disabled(self):
+        w = self.make_window()
+        try:
+            self.assertFalse(w.camera_button.isEnabled())
+            self.assertEqual(w.camera_button.toolTip(), 'Camera on/off (not available yet)')
+        finally:
+            self.close(w)
+
+    def test_buttons_wired(self):
+        w = self.make_window()
+        try:
+            w.show()
+            APP.processEvents()
+            hangups = []
+            w.hangup_requested.connect(lambda: hangups.append(True))
+            w.hangup_button.click()
+            self.assertEqual(hangups, [True])
+            w.mute_button.click()
+            self.assertTrue(w.mute_button.isChecked())
+            self.assertTrue(w.mute_button_full.isChecked())
+            w.mute_button.click()
+            self.assertFalse(w.mute_button.isChecked())
+            self.assertFalse(w.mute_button_full.isChecked())
+        finally:
+            self.close(w)
+
+
+
+class CallWindowAudioTests(unittest.TestCase):
+
+    def close(self, w):
+        w.close()
+        w.deleteLater()
+        APP.processEvents()
+
+    def button_texts(self, w):
+        return [b.text() for b in w.findChildren(QPushButton)]
+
+    def test_audio_window_has_no_slim_mode_button(self):
+        w = call_window.CallWindow(None, 1, 'sid1', 'bob@localhost', ['audio'], 'outgoing')
+        try:
+            self.assertNotIn("↓ Slim Mode", self.button_texts(w))
+            self.assertTrue(w.full_container.isVisibleTo(w))
+            self.assertFalse(w.slim_container.isVisibleTo(w))
+        finally:
+            self.close(w)
+
+    def test_slim_video_call_keeps_slim_mode_button(self):
+        w = call_window.CallWindow(None, 1, 'sid1', 'bob@localhost', ['audio', 'video'],
+                                   'outgoing')
+        try:
+            self.assertIn("↓ Slim Mode", self.button_texts(w))
+        finally:
+            self.close(w)
+
+    def test_audio_mute_button_text(self):
+        w = call_window.CallWindow(None, 1, 'sid1', 'bob@localhost', ['audio'], 'outgoing')
+        try:
+            w.show()
+            APP.processEvents()
+            self.assertEqual(w.mute_button_full.text(), "🎤 Mute")
+            w.mute_button_full.click()
+            self.assertTrue(w.mute_button_full.isChecked())
+            self.assertTrue(w.mute_button.isChecked())
+            self.assertEqual(w.mute_button_full.text(), "🎤 Unmute")
+            w.mute_button_full.click()
+            self.assertEqual(w.mute_button_full.text(), "🎤 Mute")
         finally:
             self.close(w)
 
