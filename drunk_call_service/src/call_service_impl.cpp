@@ -237,8 +237,12 @@ grpc::Status CallServiceImpl::EndSession(
         std::chrono::steady_clock::now() - session->created_at
     ).count();
 
-    // Mark session as inactive (stops StreamEvents loop)
-    session->active = false;
+    // Mark session as inactive (stops StreamEvents loop).
+    // Only the first EndSession for a session goes on.
+    if (!session->active.exchange(false)) {
+        LOG_WARN("EndSession: Session already ending: {}", session_id);
+        return grpc::Status::OK;
+    }
 
     // Shutdown event queue (wakes any blocked StreamEvents threads)
     session->event_queue->shutdown();

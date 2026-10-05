@@ -143,6 +143,11 @@ class CallBarrel:
         self.call_start_times: Dict[str, int] = {}  # session_id → start timestamp
         self.call_peer_jids: Dict[str, str] = {}  # session_id → peer_jid (for logging)
 
+        # Calls of this account. The call service knows sessions by id only,
+        # and another account can see the same id (same JID as the phone).
+        self._incoming_calls: set = set()  # session_id of incoming proposes, before the DB entry
+        self._bridge_sessions: set = set()  # session_id of call service sessions this account created
+
     # =========================================================================
     # Call Logging (Phase 4)
     # =========================================================================
@@ -456,6 +461,9 @@ class CallBarrel:
             # Don't show dialog, don't start timer, just return
             return
 
+        # Known before the DB entry: end_call needs it if the DB fails
+        self._incoming_calls.add(session_id)
+
         # Log incoming call to database (Phase 4)
         self._log_call_to_db(session_id, peer_jid, CallDirection.INCOMING.value, CallState.RINGING.value)
 
@@ -528,6 +536,7 @@ class CallBarrel:
             mic_device, mic_display, speakers_device, speakers_display, camera_device, camera_display, audio_proc = self._load_audio_settings()
 
             # Create CallBridge session (WebRTC peer connection)
+            self._bridge_sessions.add(session_id)
             result = await self.call_bridge.create_session(
                 peer_jid, session_id, mic_device, speakers_device, camera_device,
                 microphone_display_name=mic_display,
@@ -794,6 +803,7 @@ class CallBarrel:
 
             # Create CallBridge session (incoming call)
             # GStreamer webrtcbin will queue any ICE candidates that arrive before set-remote-description
+            self._bridge_sessions.add(session_id)
             result = await self.call_bridge.create_session(
                 self.jingle_adapter.sessions[session_id]['peer_jid'],
                 session_id,
@@ -989,6 +999,7 @@ class CallBarrel:
         mic_device, mic_display, speakers_device, speakers_display, camera_device, camera_display, audio_proc = self._load_audio_settings()
 
         # Create WebRTC session
+        self._bridge_sessions.add(session_id)
         result = await self.call_bridge.create_session(
             peer_jid, session_id, mic_device, speakers_device, camera_device,
             microphone_display_name=mic_display,
@@ -1492,6 +1503,24 @@ class CallBarrel:
                 self.logger.error(traceback.format_exc())
             raise
 
+    def _knows_call(self, session_id: str) -> bool:
+        """Return True if this account has any state for the call."""
+        if (session_id in self.call_peer_jids
+                or session_id in self._incoming_calls
+                or session_id in self._bridge_sessions
+                or session_id in self.call_db_ids
+                or session_id in self.pending_call_offers
+                or session_id in self.pending_call_media
+                or session_id in self.accepted_calls
+                or session_id in self.incoming_call_timers
+                or session_id in self.outgoing_call_timers):
+            return True
+        if self.jingle_adapter and session_id in getattr(self.jingle_adapter, 'sessions', {}):
+            return True
+        if session_id in getattr(self.client, 'call_sessions', {}):
+            return True
+        return False
+
     async def end_call(self, session_id: str, reason: str = 'success', send_terminate: bool = True):
         """
         Unified call termination and cleanup.
@@ -1515,6 +1544,15 @@ class CallBarrel:
         if session_id in self._ended_calls:
             if self.logger:
                 self.logger.debug(f"Call {session_id} already ended, skipping cleanup")
+            return
+
+        # A call of another account can reach this account too (for example a
+        # <finish> carbon when this account has the same JID as the phone).
+        # The call service and the GUI know calls by session id only: ending
+        # it here would end the call of the other account.
+        if not self._knows_call(session_id):
+            if self.logger:
+                self.logger.debug(f"Call {session_id} is not a call of this account, skipping cleanup")
             return
 
         self._ended_calls.add(session_id)
@@ -1563,7 +1601,9 @@ class CallBarrel:
                 self.logger.debug(f"Could not get peer_jid for {session_id}: {e}")
 
         # Layer 1: CallBridge cleanup (Go service)
-        if self.call_bridge:
+        # Only a session this account created: the same id can be the
+        # session of another account
+        if self.call_bridge and session_id in self._bridge_sessions:
             try:
                 await self.call_bridge.end_session(session_id)
                 if self.logger:
@@ -1602,6 +1642,8 @@ class CallBarrel:
         self.pending_call_offers.pop(session_id, None)
         self.pending_call_media.pop(session_id, None)
         self.accepted_calls.discard(session_id)
+        self._incoming_calls.discard(session_id)
+        self._bridge_sessions.discard(session_id)
 
         # Phase 4: Call logging state cleanup
         self.call_db_ids.pop(session_id, None)
