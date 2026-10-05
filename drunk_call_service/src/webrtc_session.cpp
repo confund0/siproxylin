@@ -287,6 +287,8 @@ WebRTCSession::WebRTCSession()
     , negotiated_payload_(-1)
     , negotiated_channels_(1)  // Default to mono (will be overridden by SDP negotiation)
     , negotiated_video_payload_(-1)  // Will be parsed from video offer SDP
+    , audio_ssrc_(0)
+    , video_ssrc_(0)
     , sdp_done_(false)
     , stats_timer_id_(0)
 #ifdef _WIN32
@@ -296,6 +298,14 @@ WebRTCSession::WebRTCSession()
     , last_bytes_sent_(0)
     , last_bytes_received_(0)
 {
+    // Random SSRCs, different for audio and video. Not 0, and not G_MAXUINT:
+    // the payloader takes that as "pick a random one"
+    while (audio_ssrc_ == 0 || audio_ssrc_ == G_MAXUINT) {
+        audio_ssrc_ = g_random_int();
+    }
+    while (video_ssrc_ == 0 || video_ssrc_ == G_MAXUINT || video_ssrc_ == audio_ssrc_) {
+        video_ssrc_ = g_random_int();
+    }
 }
 
 WebRTCSession::~WebRTCSession() {

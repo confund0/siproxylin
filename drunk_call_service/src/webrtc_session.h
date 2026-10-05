@@ -86,6 +86,10 @@ private:
     int negotiated_channels_;  // Audio channels from answer (e.g., 2 for stereo)
     int negotiated_video_payload_;  // Video RTP payload type from offer (e.g., 96 or 98)
 
+    // Our send SSRCs for audio and video (same values in the SDP and on the payloaders)
+    guint audio_ssrc_;
+    guint video_ssrc_;
+
     // Media mid mapping: mline index → mid value (from SDP a=mid:)
     // Extracted from our offer SDP to populate sdpMid in ICE candidates
     // Example: {0: "audio0"} or {0: "0", 1: "video0"}

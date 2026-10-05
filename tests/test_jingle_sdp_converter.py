@@ -681,7 +681,7 @@ def test_sdp_to_jingle_multiple_codecs(converter):
 
 
 def test_sdp_to_jingle_with_ssrc_offer(converter):
-    """Test that SSRC is included in offers with all params."""
+    """Test that SSRC is included in offers with cname only."""
     sdp_with_ssrc = """v=0
 o=- 123456 0 IN IP4 0.0.0.0
 s=-
@@ -710,15 +710,10 @@ a=ssrc:2485877649 label:track1
     assert source is not None, "Should have SSRC source element in offer"
     assert source.get('ssrc') == '2485877649'
 
-    # Verify all SSRC parameters are included in offer
+    # Offers carry cname only (no msid: Conversations stops sending video with it)
     params = source.findall('{urn:xmpp:jingle:apps:rtp:ssma:0}parameter')
-    assert len(params) == 4, "Should have all 4 SSRC params in offer"
-
     param_names = [p.get('name') for p in params]
-    assert 'cname' in param_names
-    assert 'msid' in param_names
-    assert 'mslabel' in param_names
-    assert 'label' in param_names
+    assert param_names == ['cname'], "Should have only cname in offer"
 
 
 def test_sdp_to_jingle_with_ssrc_answer_filtered(converter):
@@ -760,13 +755,13 @@ a=ssrc:9876543210 label:track2
     assert source is not None, "Should have SSRC source element in answer"
     assert source.get('ssrc') == '9876543210'
 
-    # Verify only allowed SSRC parameters are included (filtered)
+    # Verify only allowed SSRC parameters are included (filtered, never msid)
     params = source.findall('{urn:xmpp:jingle:apps:rtp:ssma:0}parameter')
-    assert len(params) == 2, "Should have only 2 SSRC params (filtered to match offer)"
+    assert len(params) == 1, "Should have only cname (filtered to match offer, no msid)"
 
     param_names = [p.get('name') for p in params]
     assert 'cname' in param_names, "Should include cname (in offer)"
-    assert 'msid' in param_names, "Should include msid (in offer)"
+    assert 'msid' not in param_names, "Should NOT include msid (never sent)"
     assert 'mslabel' not in param_names, "Should NOT include mslabel (not in offer)"
     assert 'label' not in param_names, "Should NOT include label (not in offer)"
 

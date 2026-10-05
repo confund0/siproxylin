@@ -230,22 +230,22 @@ class JingleSDPConverter:
             # IMPORTANT: Add SSRC *before* rtcp-mux to match Conversations' element ordering
             ssrc_info = SSRCHandler.parse_ssrc_from_sdp(media_lines)
 
-            # Add SSRC elements with filtering based on role and offer_context
-            # For offers: include all SSRC params
-            # For answers: only include params that were in the offer (echo pattern)
+            # Add SSRC elements with filtering based on role and offer_context.
+            # Our <source> elements never carry msid: Conversations stops sending
+            # video when it gets our msid (tested 2026-10-05).
+            # For offers: cname only
+            # For answers: only params that were in the offer (echo pattern), no msid
             if ssrc_info:
-                should_add_ssrc = False
                 allowed_params = []
 
                 if role == 'offer':
-                    # For offers, include all SSRC params
-                    should_add_ssrc = True
+                    allowed_params = ['cname']
                 elif role == 'answer' and offer_context:
                     # For answers, only if offer had SSRC
-                    should_add_ssrc = len(offer_context.get('ssrc_params', [])) > 0
-                    allowed_params = offer_context.get('ssrc_params', [])
+                    allowed_params = [name for name in offer_context.get('ssrc_params', [])
+                                      if name != 'msid']
 
-                if should_add_ssrc:
+                if allowed_params:
                     # Build Jingle <source> elements with SSRCHandler
                     count = SSRCHandler.build_jingle_ssrc_elements(
                         ssrc_info, description, role, allowed_params

@@ -135,6 +135,9 @@ bool WebRTCSession::setup_answerer_audio_pipeline() {
             LOG_INFO("[WebRTCSession] ✓ Configured opusenc for MONO (channels=1, bitrate=32kbps)");
         }
 
+        // Same SSRC as in our SDP
+        g_object_set(rtpopuspay, "ssrc", audio_ssrc_, nullptr);
+
         // CRITICAL: Use negotiated payload type from answer SDP
         // If negotiated_payload_ is -1, we're in offerer mode, use 111 (OPUS standard)
         int payload = (negotiated_payload_ > 0) ? negotiated_payload_ : 111;
@@ -392,6 +395,9 @@ bool WebRTCSession::setup_offerer_audio_pipeline() {
             "audio-type", 2049,        // Generic audio (not voice-only)
             nullptr);
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Configured opusenc for STEREO (channels=2, bitrate=64kbps)");
+
+        // Same SSRC as in our SDP
+        g_object_set(rtpopuspay, "ssrc", audio_ssrc_, nullptr);
 
         // Use payload=111 (matches codec-preferences we'll set)
         GstCaps *rtp_caps = gst_caps_new_simple("application/x-rtp",

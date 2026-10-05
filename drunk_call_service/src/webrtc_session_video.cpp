@@ -165,6 +165,7 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         // Official example comment: "This improves TWCC stats behavior and fixes stuttery video playback in Chrome"
         g_object_set(payloader,
             "picture-id-mode", 2,  // 2 = 15-bit mode (enum value from gst-inspect-1.0 rtpvp8pay)
+            "ssrc", video_ssrc_,   // Same SSRC as in our SDP
             nullptr);
         LOG_INFO("[WebRTCSession] ✓ Configured rtpvp8pay with picture-id-mode=15-bit (fixes stuttering!)");
 
@@ -384,6 +385,7 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         // Official example comment: "This improves TWCC stats behavior and fixes stuttery video playback in Chrome"
         g_object_set(payloader,
             "picture-id-mode", 2,  // 2 = 15-bit mode (enum value from gst-inspect-1.0 rtpvp8pay)
+            "ssrc", video_ssrc_,   // Same SSRC as in our SDP
             nullptr);
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Configured rtpvp8pay with picture-id-mode=15-bit (fixes stuttering!)");
 

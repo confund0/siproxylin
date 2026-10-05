@@ -276,6 +276,7 @@ void WebRTCSession::create_offer(SDPCallback callback) {
                     "encoding-name", G_TYPE_STRING, "OPUS",
                     "clock-rate", G_TYPE_INT, 48000,
                     "payload", G_TYPE_INT, 111,
+                    "ssrc", G_TYPE_UINT, audio_ssrc_,  // webrtcbin writes a=ssrc lines from it
                     nullptr);
 
                 // Add encoding-params for stereo
@@ -331,6 +332,7 @@ void WebRTCSession::create_offer(SDPCallback callback) {
                         "rtcp-fb-nack-pli", G_TYPE_BOOLEAN, TRUE,      // Picture Loss Indication
                         "rtcp-fb-ccm-fir", G_TYPE_BOOLEAN, TRUE,       // Full Intra Request
                         "rtcp-fb-transport-cc", G_TYPE_BOOLEAN, TRUE,  // Transport-wide CC
+                        "ssrc", G_TYPE_UINT, video_ssrc_,              // webrtcbin writes a=ssrc lines from it
                         nullptr);
 
                     g_object_set(trans, "codec-preferences", codec_prefs, nullptr);
@@ -998,6 +1000,12 @@ void WebRTCSession::on_offer_set_for_answer() {
             return;
         }
 
+        // Our send SSRC in the codec-preferences: webrtcbin writes a=ssrc lines from it.
+        // These caps are our own copy, parsed from the offer.
+        if (offer_codec_caps_) {
+            offer_codec_caps_ = gst_caps_make_writable(offer_codec_caps_);
+            gst_caps_set_simple(offer_codec_caps_, "ssrc", G_TYPE_UINT, audio_ssrc_, nullptr);
+        }
         GstPad *audio_pad = request_answerer_sink_pad(static_cast<guint>(offer_audio_mline_),
                                                       offer_codec_caps_, "AUDIO");
         if (!audio_pad) {
@@ -1012,6 +1020,8 @@ void WebRTCSession::on_offer_set_for_answer() {
 
         // VIDEO pad (only if the offer has video)
         if (offer_video_codec_caps_ && offer_video_mline_ >= 0) {
+            offer_video_codec_caps_ = gst_caps_make_writable(offer_video_codec_caps_);
+            gst_caps_set_simple(offer_video_codec_caps_, "ssrc", G_TYPE_UINT, video_ssrc_, nullptr);
             GstPad *video_pad = request_answerer_sink_pad(static_cast<guint>(offer_video_mline_),
                                                           offer_video_codec_caps_, "VIDEO");
             if (!video_pad) {

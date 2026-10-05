@@ -10,10 +10,12 @@ Key Concepts:
 - Namespace: urn:xmpp:jingle:apps:rtp:ssma:0 (SSMA = Source-Specific Media Attributes)
 
 Filtering Rule (WebRTC Echo Pattern):
-- Offers: Include ALL SSRC parameters from SDP
+- Offers: Include the SSRC parameters the caller allows (all if no list)
 - Answers: ONLY echo parameter names that were in the offer
 - Example: Conversations sends {cname, msid}, Pion generates {cname, msid, mslabel, label}
           → Filter answer to {cname, msid} to match offer
+- The converter (jingle_sdp_converter.py) also removes msid from our offers and
+  answers: Conversations stops sending video when it gets our msid
 
 References:
 - XEP-0294: Jingle RTP Source Description
@@ -110,7 +112,8 @@ class SSRCHandler:
             ssrc_info: Dict from parse_ssrc_from_sdp() {ssrc: {param_name: param_value}}
             parent_element: Parent XML element (usually <description>)
             role: 'offer' or 'answer' - determines filtering behavior
-            allowed_params: For answers, list of parameter names from offer (None for offers)
+            allowed_params: Parameter names to keep. For answers: names from the offer.
+                For offers: None keeps all parameters.
 
         Returns:
             Number of <source> elements created
@@ -123,9 +126,12 @@ class SSRCHandler:
             source_el.set('ssrc', ssrc)
 
             # Filter attributes based on role
-            if role == 'offer':
-                # Offers: include all parameters
+            if role == 'offer' and allowed_params is None:
+                # Offers without a list: include all parameters
                 filtered_attrs = attrs
+            elif role == 'offer':
+                # Offers with a list: only these parameters
+                filtered_attrs = SSRCHandler.filter_ssrc_params(attrs, allowed_params)
             else:  # role == 'answer'
                 # Answers: only include parameters that were in the offer
                 filtered_attrs = SSRCHandler.filter_ssrc_params(attrs, allowed_params or [])
