@@ -53,6 +53,14 @@ logging.disable(logging.NOTSET)
 
 from tests.test_carbon_markers import FakeDB, ACCOUNT, PEER
 
+
+def delete_now(widget):
+    """Delete a widget now, so no signal or timer of it runs in a later test."""
+    widget.hide()
+    widget.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
 APP = QApplication.instance() or QApplication([])
 
 
@@ -241,7 +249,6 @@ class ChatViewCase(unittest.TestCase):
         account_manager = mock.Mock(**{'get_account.return_value': mock.Mock(client=self.client)})
         self.host = QWidget()
         self.host.resize(500, 700)
-        self.addCleanup(self.host.deleteLater)
         layout = QVBoxLayout(self.host)
         self.w = MessageDisplayWidget(self.db, account_manager, self.host)
         layout.addWidget(self.w.message_area)
@@ -256,6 +263,8 @@ class ChatViewCase(unittest.TestCase):
         timer = patcher.start()
         self.addCleanup(patcher.stop)
         timer.singleShot.side_effect = lambda msec, fn: self.deferred.append(fn)
+        # Runs before patcher.stop: no real timer is left for a later test file
+        self.addCleanup(delete_now, self.host)
 
         self.w.load_messages(ACCOUNT, PEER, False, self.conv)
         APP.processEvents()

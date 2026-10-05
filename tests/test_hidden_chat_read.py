@@ -49,6 +49,13 @@ from tests.test_carbon_markers import ACCOUNT, PEER
 APP = QApplication.instance() or QApplication([])
 
 
+def delete_now(widget):
+    """Delete a widget now, so no signal or timer of it runs in a later test."""
+    widget.hide()
+    widget.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
 class HiddenChatTests(unittest.TestCase):
 
     def setUp(self):
@@ -80,7 +87,7 @@ class HiddenChatTests(unittest.TestCase):
         # Plain QMainWindow setup only (MainWindow.__init__ starts the whole app)
         self.win = MainWindow.__new__(MainWindow)
         super(MainWindow, self.win).__init__()
-        self.addCleanup(self.win.deleteLater)
+        self.addCleanup(delete_now, self.win)
         self.win.isActiveWindow = lambda: True
         self.win.isMinimized = lambda: False
         self.win.contact_list = mock.Mock()
