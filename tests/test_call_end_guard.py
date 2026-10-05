@@ -35,7 +35,7 @@ _stubs = {name: mock.MagicMock() for name in (
     'grpc', 'drunk_call_hook', 'drunk_call_hook.protocol', 'drunk_call_hook.protocol.jingle',
     'drunk_call_hook.protocol.features', 'drunk_call_hook.protocol.features.trickle_ice')}
 # PySide6 first: patch.dict refills sys.modules on exit, which breaks PySide6 lazy loading
-from PySide6.QtCore import QCoreApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
 logging.disable(logging.CRITICAL)
 with mock.patch.dict(sys.modules, _stubs):
     from siproxylin.core.barrels.calls import CallBarrel
@@ -43,7 +43,7 @@ logging.disable(logging.NOTSET)
 
 SID = 'A14qA4pgzl7k_I56b2PklQ'
 
-APP = QCoreApplication.instance() or QCoreApplication([])
+APP = QApplication.instance() or QApplication([])
 
 
 class FakeClient:
