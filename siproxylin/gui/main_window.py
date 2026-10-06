@@ -60,6 +60,9 @@ class MainWindow(QMainWindow):
         # Shutdown flag (set by signal handler to skip gRPC shutdown)
         self._signal_shutdown = False
 
+        # Quit hang-up state: None, 'running' or 'done' (see closeEvent)
+        self._quit_hangup = None
+
         # Track app start time for uptime
         import time
         self.app_start_time = time.time()
@@ -1556,6 +1559,15 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Handle window close event - cleanup all services."""
+        # Active calls: hang them up first, so the peer gets a session-terminate.
+        # The close runs again when the hang-up is done.
+        if self._quit_hangup != 'done' and self.call_manager.call_session_map:
+            event.ignore()
+            if self._quit_hangup is None:
+                self._quit_hangup = 'running'
+                asyncio.ensure_future(self._hangup_calls_and_close())
+            return
+
         logger.debug("Main window closing...")
 
         # Stop status bar timer
@@ -1577,3 +1589,28 @@ class MainWindow(QMainWindow):
 
         # Accept close event
         event.accept()
+
+    async def _hangup_calls_and_close(self):
+        """Hang up all active calls (at most 2 s), then close the window again."""
+        try:
+            hangups = []
+            for session_id, (account_id, _jid) in list(self.call_manager.call_session_map.items()):
+                account = self.account_manager.get_account(account_id)
+                if account:
+                    logger.info(f"Quit: hanging up call {session_id}")
+                    hangups.append(account.hangup_call(session_id))
+            if hangups:
+                results = await asyncio.wait_for(
+                    asyncio.gather(*hangups, return_exceptions=True), timeout=2.0)
+                for result in results:
+                    if isinstance(result, Exception):
+                        logger.error(f"Quit: error hanging up call: {result}")
+        except asyncio.TimeoutError:
+            logger.warning("Quit: call hang-up timed out")
+        except Exception as e:
+            logger.error(f"Quit: error hanging up calls: {e}")
+        finally:
+            self._quit_hangup = 'done'
+            # Close outside this task: the close runs a nested event loop
+            # and other tasks, which fail inside a running task.
+            QTimer.singleShot(0, self.close)
