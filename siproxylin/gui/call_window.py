@@ -155,6 +155,8 @@ class CallWindow(QWidget):
         # Call timing
         self.call_start_time: Optional[float] = None
         self.call_connected = False
+        # True when the call has ended (closing the window then does not hang up)
+        self._call_ended = False
 
         # Video calls with a reader: video in this window, controls docked under it
         self.video_view = None
@@ -756,6 +758,7 @@ class CallWindow(QWidget):
 
             # Handle closed state
             if state == 'closed':
+                self._call_ended = True
                 if hasattr(self, 'duration_timer'):
                     self.duration_timer.stop()
                 if hasattr(self, 'stats_timer'):
@@ -778,6 +781,7 @@ class CallWindow(QWidget):
             reason: Termination reason ('success', 'decline', 'busy', 'timeout', etc.)
         """
         logger.info(f"Call terminated: {reason}")
+        self._call_ended = True
 
         # Safety: Check if widgets still exist
         try:
@@ -887,6 +891,12 @@ class CallWindow(QWidget):
 
     def closeEvent(self, event):
         """Handle window close event."""
+        # Closing the window during a call hangs up the call
+        if not self._call_ended:
+            self._call_ended = True
+            logger.info(f"Call window closed during call, hanging up: {self.session_id}")
+            self.hangup_requested.emit()
+
         # Stop timers when closing
         if hasattr(self, 'duration_timer'):
             self.duration_timer.stop()

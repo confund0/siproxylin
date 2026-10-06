@@ -101,9 +101,10 @@ class CallManager:
             signal_shutdown: True if shutdown triggered by signal (Ctrl+C)
         """
         # A video call window has no parent: close it, or the app does not quit.
-        # Closing a call window does not hang up (no call to the service).
+        # At quit, closing a call window does not hang up: _call_ended is set first.
         for call_window in list(self.call_windows.values()):
             try:
+                call_window._call_ended = True
                 call_window.close()
             except RuntimeError:
                 pass  # Qt object already deleted
