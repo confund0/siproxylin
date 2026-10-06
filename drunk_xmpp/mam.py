@@ -185,7 +185,12 @@ class MAMMixin:
                                 self.logger.debug(f"MAM sender {from_jid} not in the room, decrypting with real JID {decrypt_stanza['from']}")
                         try:
                             # Decrypt the message
-                            decrypted_msg, device_info = await xep_0384.decrypt_message(decrypt_stanza)
+                            decrypted = await self._decrypt_omemo_copy(
+                                decrypt_stanza, sender_bare, (archive_id, origin_id, message_id))
+                            if decrypted is None:
+                                self.logger.debug(f"Ignoring failed copy of a decrypted MAM OMEMO message from {from_jid} [archive_id={archive_id}, origin_id={origin_id}, message_id={message_id}]")
+                                continue
+                            decrypted_msg, device_info = decrypted
                             body = decrypted_msg['body']
                             self.logger.debug(f"Decrypted MAM message from {from_jid} (device {device_info.device_id})")
                         except Exception as e:

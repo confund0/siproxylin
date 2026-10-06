@@ -518,6 +518,12 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
         # Key: room_jid (bare), Value: occupant_id string
         self.own_occupant_ids = {}
 
+        # OMEMO keys work only once: a second copy of a message (for example the
+        # offline copy and the MAM copy) fails to decrypt. See _decrypt_omemo_copy().
+        # Key: (bare JID of the peer or room, message ID)
+        self._omemo_decrypted: Dict[tuple, None] = {}  # last decrypted IDs, oldest first
+        self._omemo_decrypting: Dict[tuple, int] = {}  # IDs with a running decryption
+
         # Track our own affiliation and role per room (XEP-0045)
         # Key: room_jid (bare), Value: affiliation string (owner, admin, member, none, outcast)
         # Value: role string (moderator, participant, visitor, none)
@@ -1586,6 +1592,47 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
             self.logger.info(f"Room configuration/privacy changed for {room} (status codes: {matched_codes})")
             await self._handle_room_config_changed(room)
 
+    async def _decrypt_omemo_copy(self, stanza, scope: str, ids) -> Optional[tuple]:
+        """
+        Decrypt an OMEMO stanza with xep_0384 and remember its IDs.
+
+        scope: bare JID of the 1:1 peer or of the room.
+        ids: stanza-id (or MAM archive ID), origin-id and message ID; empty ones are not used.
+
+        Returns (decrypted_msg, device_info). Returns None if the decryption fails
+        and another copy with one of these IDs was decrypted or is being decrypted:
+        XEP-0384 (Business Rules) says to ignore this failure and show nothing.
+        Other failures raise as before.
+        """
+        keys = [(scope, i) for i in ids if i]
+
+        def end_decrypting():
+            for key in keys:
+                left = self._omemo_decrypting.get(key, 1) - 1
+                if left > 0:
+                    self._omemo_decrypting[key] = left
+                else:
+                    self._omemo_decrypting.pop(key, None)
+
+        for key in keys:
+            self._omemo_decrypting[key] = self._omemo_decrypting.get(key, 0) + 1
+        try:
+            result = await self.plugin['xep_0384'].decrypt_message(stanza)
+        except BaseException as e:
+            # BaseException: a cancelled decryption must not stay in _omemo_decrypting
+            end_decrypting()
+            if isinstance(e, Exception) and any(
+                    key in self._omemo_decrypted or key in self._omemo_decrypting for key in keys):
+                return None
+            raise
+        end_decrypting()
+        for key in keys:
+            self._omemo_decrypted.pop(key, None)
+            self._omemo_decrypted[key] = None
+        while len(self._omemo_decrypted) > 1000:
+            del self._omemo_decrypted[next(iter(self._omemo_decrypted))]
+        return result
+
     async def _on_groupchat_message(self, msg):
         """
         Handler for groupchat messages.
@@ -1693,7 +1740,12 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
 
                 try:
                     # Attempt decryption
-                    decrypted_msg, device_info = await xep_0384.decrypt_message(msg)
+                    decrypted = await self._decrypt_omemo_copy(
+                        msg, room, (metadata.stanza_id, metadata.origin_id, metadata.message_id))
+                    if decrypted is None:
+                        self.logger.debug(f"Ignoring failed copy of a decrypted OMEMO message from {nick} in {room}")
+                        return
+                    decrypted_msg, device_info = decrypted
                     body = decrypted_msg['body']
                     metadata.decrypt_success = True
                     metadata.sender_device_id = device_info.device_id
@@ -1848,7 +1900,12 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
 
                     try:
                         # Attempt decryption
-                        decrypted_msg, device_info = await xep_0384.decrypt_message(msg)
+                        decrypted = await self._decrypt_omemo_copy(
+                            msg, from_jid, (metadata.stanza_id, metadata.origin_id, metadata.message_id))
+                        if decrypted is None:
+                            self.logger.debug(f"Ignoring failed copy of a decrypted OMEMO message from {from_jid}")
+                            return
+                        decrypted_msg, device_info = decrypted
                         body = decrypted_msg['body']
                         metadata.decrypt_success = True
                         metadata.sender_device_id = device_info.device_id
@@ -2202,7 +2259,12 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
 
                 try:
                     # Decrypt the message
-                    decrypted_msg, device_info = await xep_0384.decrypt_message(actual_msg)
+                    decrypted = await self._decrypt_omemo_copy(
+                        actual_msg, from_jid, (metadata.stanza_id, metadata.origin_id, metadata.message_id))
+                    if decrypted is None:
+                        self.logger.debug("Ignoring failed copy of a decrypted OMEMO carbon_received")
+                        return
+                    decrypted_msg, device_info = decrypted
                     body = decrypted_msg['body']
                     actual_msg['body'] = body  # Update for downstream
                     metadata.decrypt_success = True
@@ -2395,7 +2457,12 @@ class DrunkXMPP(ClientXMPP, DiscoveryMixin, MessagingMixin, BookmarksMixin, OMEM
 
                 try:
                     # Decrypt the message
-                    decrypted_msg, device_info = await xep_0384.decrypt_message(actual_msg)
+                    decrypted = await self._decrypt_omemo_copy(
+                        actual_msg, self.boundjid.bare, (metadata.stanza_id, metadata.origin_id, metadata.message_id))
+                    if decrypted is None:
+                        self.logger.debug("Ignoring failed copy of a decrypted OMEMO carbon_sent")
+                        return
+                    decrypted_msg, device_info = decrypted
                     body = decrypted_msg['body']
                     actual_msg['body'] = body  # Update for downstream
                     metadata.decrypt_success = True

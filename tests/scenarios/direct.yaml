@@ -79,6 +79,15 @@ steps:
   - alice: wait message
     match: {source: mam, id: "${p1.msg_id}"}
     expect: {archive_id: "*"}
+  # bob decrypted e1 live: its MAM copy fails to decrypt (key used once).
+  # XEP-0384: ignore that failure, so no MAM event for e1.
+  - bob: history ${jid.alice} 1000 --since-run --no-skip
+  - bob: wait message
+    match: {source: mam, id: "${p1.msg_id}"}
+  - bob: wait message
+    match: {source: mam, id: "${e1.msg_id}"}
+    timeout: 3
+    expect_fail: true
   - alice: mam-check ${jid.alice}
   - alice: carbons
 
