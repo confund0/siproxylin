@@ -180,11 +180,11 @@ When starting the call service, automatically adds bundled libraries to PATH:
 - gRPC, protobuf, spdlog, abseil, cares, re2
 
 **GStreamer runtime** (~30 MB installed):
-- Core libraries: gstreamer, gstbase, gstwebrtc, gstrtp, gstaudio, gstvideo
-- Plugins: webrtcbin, dtls, srtp, nice, opus, wasapi, autodetect, **compositor**, videoconvert, videoscale, vp8enc, vp8dec, d3dvideosink
+- Core libraries: gstreamer, gstbase, gstwebrtc, gstrtp, gstaudio, gstvideo, gstapp
+- Plugins: webrtc, dtls, srtp, nice, opus, wasapi, autodetect, mediafoundation, app, videofilter, videoconvertscale, videorate, vpx
 - Supporting: GLib, libcrypto, libssl, libnice
 
-**CRITICAL**: The `compositor` plugin (gst-plugins-base) is required for video calls. Without it, video pipeline creation fails with "Failed to create compositor for self-view".
+**CRITICAL**: Call video goes to the app window through `appsink`. It needs the library `gstapp-1.0-0.dll` and the plugin `gstapp.dll`. The self-view needs `videoflip` (plugin `gstvideofilter.dll`), and `videoconvert` and `videoscale` are in the plugin `gstvideoconvertscale.dll`. Without them, video pipeline creation fails.
 
 **Python packages** (~760 MB downloaded during install):
 - PySide6 (Qt6 GUI)
@@ -220,9 +220,15 @@ When starting the call service, automatically adds bundled libraries to PATH:
 - Check logs: `%LOCALAPPDATA%\Siproxylin\Logs\`
 - Verify launcher uses `python main.py --dot-data-dir`
 
+### Call Issues
+
 **Call service won't start**:
 - Check: `%LOCALAPPDATA%\Siproxylin\Logs\drunk-call-service.err`
 - Verify bundled GStreamer DLLs are present
+
+**Call window shows a microphone error**:
+- Windows Settings → Privacy → Microphone: turn on "Let desktop apps access your microphone". Windows does not ask; without it the microphone fails with "access denied".
+- On Windows Server, start the Windows Audio service (Audiosrv) and set it to start automatically.
 
 ---
 

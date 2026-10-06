@@ -1,6 +1,6 @@
 # Video Calls Implementation
 
-**Last Updated**: 2026-03-29
+**Last Updated**: 2026-10-06
 **Status**: Working with Conversations and Dino
 
 ---
@@ -11,9 +11,9 @@
 
 | Direction | Peer | Result |
 |-----------|------|--------|
-| SP → Conversations | Mobile | ✅ Works perfectly both ways |
-| SP → Dino | Desktop | ✅ Works both ways (slow window start ~15s) |
-| Dino → SP | Desktop | ✅ Works both ways (slow window start ~15s) |
+| SP → Conversations | Mobile | ✅ Works both ways |
+| SP → Dino | Desktop | ✅ Works both ways |
+| Dino → SP | Desktop | ✅ Works both ways |
 | Conversations → SP | Mobile | ✅ Works both ways (not tested again) |
 
 **Configuration**:
@@ -39,14 +39,13 @@
 - Proper bandwidth adaptation via Transport-Wide Congestion Control
 - Fast recovery from network issues
 
-### Known Issues (Minor)
+### Call Window
 
-**1. Dino: Incoming Video Window Delay** ⏱️
-- **Symptom**: GStreamer autovideosink window takes 15-18 seconds to appear (Wayland/Sway)
-- **Impact**: Video works fine once window appears
-- **Cause**: GStreamer PAUSED→PLAYING state transition slow on compositor
-- **Workaround**: None - wait for window
-- **Priority**: Low (cosmetic, does not affect functionality)
+- Remote video fills the video area of the call window. The aspect ratio is kept.
+- Before the first frame, the window shows the contact name and "Connecting". After hang-up it shows "Call ended".
+- Self-view: own camera in a corner of the video area, mirrored. Drag it to another corner, or hide it. Both choices are saved.
+- Control bar at the bottom: status, call time, mute, hang up, self-view and technical details toggles.
+- Closing the call window ends the call. Quitting the app ends all active calls.
 
 ---
 
@@ -54,7 +53,7 @@
 
 ### Overview
 
-Video calls use **GStreamer native video display** (autovideosink), not VLC.
+The call service (C++) decodes the video. On Linux and Windows it writes the frames into shared memory, and the app draws them in the call window. On macOS the remote video still goes to a separate GStreamer window (autovideosink).
 
 ```
 Python (Signaling + GUI)         C++ (Media + WebRTC)
@@ -62,21 +61,32 @@ Python (Signaling + GUI)         C++ (Media + WebRTC)
 │  CallBarrel          │        │  WebRTCSession             │
 │  (Jingle ↔ GUI)      │◄─gRPC─►│  (GStreamer webrtcbin)     │
 │                      │        │                            │
-│  JingleAdapter       │        │  Send: v4l2src → vp8enc    │
-│  (SDP ↔ Jingle)      │        │  Receive: vp8dec → sink    │
+│  JingleAdapter       │        │  Send: camera → vp8enc     │
+│  (SDP ↔ Jingle)      │        │  Receive: vp8dec → appsink │
+│                      │        │                            │
+│  CallWindow          │◄─shm───│  remote video, self-view   │
 └──────────────────────┘        └────────────────────────────┘
 ```
 
-**Display**: GStreamer `autovideosink` creates native OS window (X11/Wayland/Windows/macOS)
+### Shared Memory
 
-### Why GStreamer Native (Not VLC)
+- The app creates one shared memory area before it starts the call service. It has no name in the file system. The call service gets it as an inherited file descriptor (Linux) or handle (Windows).
+  - Linux: memfd. The fd number is in the environment variable `SIPROXYLIN_VIDEO_SHM_FD`.
+  - Windows: unnamed file mapping. The inherited handle is in the environment variable `SIPROXYLIN_VIDEO_SHM_HANDLE`.
+- Two streams: stream 0 is the remote video, stream 1 is the self-view.
+- Each stream has 3 slots (triple buffering). The app marks the slot it draws; the service writes into another slot. The app draws the frame from the mapped memory with no copy.
+- Frame format: RGBx. Remote video fits into 960x960, self-view is 320x240.
+- The app reads the newest frame on a Qt timer.
+- If the shared memory is not there, the call service falls back to autovideosink.
+
+### Why Not VLC
 
 **Removed**: Commit 1175758 (2026-03-28)
 
 The old VLC/WebM path (local UDP stream to VLC) froze after the first frame.
 
-**Why GStreamer Native Won**:
-- Direct connection: webrtcbin → vp8dec → autovideosink
+**Why the GStreamer path won**:
+- Direct connection from the decoder to the display
 - Better A/V sync (no UDP hop)
 - Lower latency (~200ms vs 1-2 seconds)
 - Simpler architecture (fewer moving parts)
@@ -348,21 +358,9 @@ The `mid` property of a transceiver is **read-only**. Setting it fails silently.
 Added RTCP feedback capabilities to video codec-preferences in 3 locations:
 1. `parse_video_codec_from_offer()` (answerer mode)
 2. `create_offer()` offerer codec-preferences
-3. Both now include:
-   ```cpp
-   "rtcp-fb-nack-pli", G_TYPE_BOOLEAN, TRUE,      // Picture Loss Indication
-   "rtcp-fb-ccm-fir", G_TYPE_BOOLEAN, TRUE,       // Full Intra Request
-   "rtcp-fb-transport-cc", G_TYPE_BOOLEAN, TRUE,  // Transport-wide CC
-   ```
+3. Both now set the caps fields `rtcp-fb-nack-pli` (Picture Loss Indication), `rtcp-fb-ccm-fir` (Full Intra Request) and `rtcp-fb-transport-cc` (Transport-wide CC) to true.
 
-**Result**: SDP answer now advertises:
-```xml
-<payload-type id="96" name="VP8" clockrate="90000">
-    <rtcp-fb type="nack" subtype="pli" />
-    <rtcp-fb type="ccm" subtype="fir" />
-    <rtcp-fb type="transport-cc" />
-</payload-type>
-```
+**Result**: The Jingle answer now lists the rtcp-fb elements nack/pli, ccm/fir and transport-cc in the VP8 payload type.
 
 **Benefits**:
 - **NACK-PLI**: Phone requests keyframes when packets lost → Fast recovery from pixelation
@@ -408,18 +406,30 @@ webrtcbin → rtpopusdepay → opusdec → queue → autoaudiosink
 
 **Send**:
 ```
-v4l2src → videoconvert → queue → vp8enc → rtpvp8pay → queue → capsfilter → webrtcbin
+camera → capsfilter → tee → queue → videoconvert → videoscale → videorate → capsfilter
+       → queue → vp8enc → rtpvp8pay → queue → capsfilter → webrtcbin
+```
+
+**Self-view** (second tee branch, Linux and Windows):
+```
+tee → queue → videoscale → videoconvert → videoflip → capsfilter → appsink
 ```
 
 **Key Settings**:
-- **v4l2src**:
+- **Camera**: v4l2src on Linux, autovideosrc on Windows (mfvideosrc) and macOS
   - `do-timestamp=TRUE` (CRITICAL for timestamps)
+  - Linux asks the camera for 640x480 first, any size as fallback. Windows limits the camera to 640x480 at most.
+
+- **Send format**: I420 640x480, at most 15 fps (videorate drops frames only)
 
 - **vp8enc**:
   - `deadline=1` (realtime encoding, lowest latency)
   - `cpu-used=8` (max speed preset, lowest latency)
-  - `target-bitrate=1500000` (1.5Mbps)
-  - `keyframe-max-dist=60` (keyframe every 60 frames, ~2 seconds at 30fps)
+  - `target-bitrate=600000` (600 kbps)
+  - `keyframe-max-dist=30` (keyframe every 30 frames, 2 seconds at 15 fps)
+  - `error-resilient=default`
+
+- **Queues**: leaky, at most 5 buffers (1 buffer in the self-view branch). A slow self-view never blocks the send branch.
 
 - **rtpvp8pay**:
   - `picture-id-mode=2` (15-bit)
@@ -428,19 +438,23 @@ v4l2src → videoconvert → queue → vp8enc → rtpvp8pay → queue → capsfi
 
 **File**: `drunk_call_service/src/webrtc_session.cpp` (setup_answerer_video_pipeline, setup_offerer_video_pipeline)
 
-**Receive**:
+**Receive** (Linux and Windows):
+```
+webrtcbin → rtpvp8depay → vp8dec → videoconvert → videoscale → capsfilter → appsink
+```
+
+**Receive** (macOS, or no shared memory):
 ```
 webrtcbin → rtpvp8depay → vp8dec → videoconvert → autovideosink
 ```
 
 **Detection**:
 - Inspect pad caps for `media=video` vs `media=audio`
-- **File**: `drunk_call_service/src/webrtc_session.cpp` (on_incoming_stream)
+- **File**: `drunk_call_service/src/webrtc_session_video.cpp`
 
 **Display**:
-- `autovideosink` selects best sink for platform (waylandsink, ximagesink, etc.)
-- Creates native OS window automatically
-- No Qt integration (separate window)
+- appsink: the call service copies each frame into shared memory (see Shared Memory)
+- The app draws it in the call window
 
 ### Critical Pattern: Offerer vs Answerer
 
@@ -477,15 +491,20 @@ webrtcbin → rtpvp8depay → vp8dec → videoconvert → autovideosink
 
 ### C++ (drunk_call_service/src/)
 
-**webrtc_session.cpp** - Main WebRTC pipeline implementation
-- Audio send (offerer): `setup_offerer_audio_pipeline()`
-- Audio send (answerer): `setup_answerer_audio_pipeline()`
-- Video send (offerer): `setup_offerer_video_pipeline()`
-- Video send (answerer): `setup_answerer_video_pipeline()`
-- Audio/video receive: `on_incoming_stream()`
+**webrtc_session.cpp** - Session setup, bus messages, incoming pads (`on_incoming_stream()`)
+
+**webrtc_session_audio.cpp** - Audio send and receive
+- `setup_offerer_audio_pipeline()`, `setup_answerer_audio_pipeline()`, `handle_incoming_audio_stream()`
+
+**webrtc_session_video.cpp** - Video send, self-view and receive
+- `setup_offerer_video_pipeline()`, `setup_answerer_video_pipeline()`
+- `add_self_view_branch()`, `handle_incoming_video_stream()`
+
+**webrtc_session_sdp.cpp** - Offer and answer
+- Bundle-policy: `create_offer()`, `create_answer()`
 - Parse video codec: `parse_video_codec_from_offer()`
-- Bundle-policy (offerer): `create_offer()`
-- Bundle-policy (answerer): `create_answer()`
+
+**video_shm.cpp** - Shared memory writer (Linux memfd, Windows file mapping)
 
 **webrtc_session.h** - Video member variables
 - `video_src_`, `video_sink_`
@@ -495,9 +514,13 @@ webrtcbin → rtpvp8depay → vp8dec → videoconvert → autovideosink
 ### Python (drunk_call_hook/)
 
 **bridge.py** - gRPC client to C++ service
-- VideoStreamManager usage (kept for future, currently unused)
 - `create_session()` method
 - Video enable_video parameter
+- Starts the call service with the shared memory
+
+**video_shm.py** - Shared memory create and read (Linux), frame layout
+
+**video_shm_win.py** - Shared memory create and map (Windows)
 
 **video_manager.py** - UDP port allocation
 - **Status**: Exists but UNUSED in current GStreamer-native implementation
@@ -520,9 +543,12 @@ webrtcbin → rtpvp8depay → vp8dec → videoconvert → autovideosink
 - Jingle session handling
 
 **gui/call_window.py** - Call UI window
-- Video display note (handled by GStreamer)
-- No video widget (autovideosink creates own window)
+- Video area, control bar
 - Media type handling
+
+**gui/widgets/video_view.py** - Remote video and self-view
+- Draws the frames from shared memory
+- Placeholder before the first frame and after hang-up
 
 **gui/chat_view/chat_view.py** - Chat interface
 - Video call button
@@ -552,5 +578,5 @@ webrtcbin → rtpvp8depay → vp8dec → videoconvert → autovideosink
 
 ---
 
-**Last Updated**: 2026-03-29
+**Last Updated**: 2026-10-06
 **Document Status**: Current Implementation Reference
