@@ -16,6 +16,15 @@
 
 namespace drunk_call {
 
+// Camera caps before the tee. Linux (v4l2src) takes the first structure:
+// 640x480 first, any raw size as fallback. Windows (mfvideosrc) keeps its
+// own mode order and fixates to the largest size, so only a limit works there.
+#ifdef _WIN32
+static const char *kCameraCaps = "video/x-raw,width=[1,640],height=[1,480]";
+#else
+static const char *kCameraCaps = "video/x-raw,width=640,height=480; video/x-raw";
+#endif
+
 #if defined(__linux__) || defined(_WIN32)
 // Copy one RGBx sample of the appsink into the shared memory stream for the
 // app (streaming thread). owner is the session.
@@ -210,6 +219,18 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         g_object_set(video_tee_, "allow-not-linked", TRUE, nullptr);
         LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Created tee for camera feed splitting (PiP self-view, allow-not-linked=TRUE)");
 
+        // Camera size before the tee (kCameraCaps). Without it the self-view
+        // caps (320x240) win on Linux and the camera opens small.
+        GstElement *camera_caps = gst_element_factory_make("capsfilter", "camera_caps");
+        if (!camera_caps) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to create camera capsfilter");
+            return false;
+        }
+        GstCaps *camera_pref_caps = gst_caps_from_string(kCameraCaps);
+        g_object_set(camera_caps, "caps", camera_pref_caps, nullptr);
+        gst_caps_unref(camera_pref_caps);
+        LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Camera caps: {}", kCameraCaps);
+
         // Create rest of pipeline elements
         GstElement *tee_queue = gst_element_factory_make("queue", "tee_queue_encode");
         GstElement *convert = gst_element_factory_make("videoconvert", "videoconvert");
@@ -284,11 +305,11 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         LOG_INFO("[WebRTCSession] ✓ Set RTP caps: application/x-rtp,media=video,encoding-name=VP8,payload={}", payload);
 
         // Add all elements to pipeline
-        gst_bin_add_many(GST_BIN(pipeline_), video_src_, video_tee_, tee_queue, convert, scale, rate, raw_caps, queue1, encoder, payloader, queue2, capsfilter, nullptr);
+        gst_bin_add_many(GST_BIN(pipeline_), video_src_, camera_caps, video_tee_, tee_queue, convert, scale, rate, raw_caps, queue1, encoder, payloader, queue2, capsfilter, nullptr);
 
         // Link camera source to tee
-        if (!gst_element_link(video_src_, video_tee_)) {
-            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to link video_src → tee");
+        if (!gst_element_link_many(video_src_, camera_caps, video_tee_, nullptr)) {
+            LOG_ERROR("[WebRTCSession] [ANSWERER] Failed to link video_src → camera caps → tee");
             return false;
         }
         LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Linked camera source to tee");
@@ -348,6 +369,7 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
 
         // NOW sync all elements to PLAYING state - AFTER all linking is complete
         // This ensures v4l2src only starts capturing when pipeline is fully ready
+        gst_element_sync_state_with_parent(camera_caps);
         gst_element_sync_state_with_parent(video_src_);
         gst_element_sync_state_with_parent(video_tee_);
         gst_element_sync_state_with_parent(tee_queue);
@@ -431,6 +453,18 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         g_object_set(video_tee_, "allow-not-linked", TRUE, nullptr);
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Created tee for camera feed splitting (PiP self-view, allow-not-linked=TRUE)");
 
+        // Camera size before the tee (kCameraCaps). Without it the self-view
+        // caps (320x240) win on Linux and the camera opens small.
+        GstElement *camera_caps = gst_element_factory_make("capsfilter", "camera_caps");
+        if (!camera_caps) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to create camera capsfilter");
+            return false;
+        }
+        GstCaps *camera_pref_caps = gst_caps_from_string(kCameraCaps);
+        g_object_set(camera_caps, "caps", camera_pref_caps, nullptr);
+        gst_caps_unref(camera_pref_caps);
+        LOG_INFO("[WebRTCSession] [OFFERER] ✓ Camera caps: {}", kCameraCaps);
+
         // Create rest of pipeline elements
         GstElement *tee_queue = gst_element_factory_make("queue", "tee_queue_encode");
         GstElement *convert = gst_element_factory_make("videoconvert", "videoconvert");
@@ -497,12 +531,12 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Set RTP caps: application/x-rtp,media=video,encoding-name=VP8,payload=96");
 
         // Add all elements to pipeline (they will be in PAUSED state, not PLAYING yet)
-        gst_bin_add_many(GST_BIN(pipeline_), video_src_, video_tee_, tee_queue, convert, scale, rate, raw_caps, queue1, encoder, payloader, queue2, capsfilter, nullptr);
+        gst_bin_add_many(GST_BIN(pipeline_), video_src_, camera_caps, video_tee_, tee_queue, convert, scale, rate, raw_caps, queue1, encoder, payloader, queue2, capsfilter, nullptr);
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Added video elements to pipeline in PAUSED state");
 
         // Link camera source to tee
-        if (!gst_element_link(video_src_, video_tee_)) {
-            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link video_src → tee");
+        if (!gst_element_link_many(video_src_, camera_caps, video_tee_, nullptr)) {
+            LOG_ERROR("[WebRTCSession] [OFFERER] Failed to link video_src → camera caps → tee");
             return false;
         }
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Linked camera source to tee");
@@ -580,6 +614,7 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
 
         // NOW sync all elements to PLAYING state - AFTER all linking is complete
         // This ensures v4l2src only starts capturing when pipeline is fully ready
+        gst_element_sync_state_with_parent(camera_caps);
         gst_element_sync_state_with_parent(video_src_);
         gst_element_sync_state_with_parent(video_tee_);
         gst_element_sync_state_with_parent(tee_queue);
