@@ -9,6 +9,7 @@ The test writer below follows the protocol of the C++ writer
 Run with: QT_QPA_PLATFORM=offscreen <venv>/bin/python -m unittest tests/test_video_shm.py
 """
 
+import ctypes
 import mmap
 import os
 import re
@@ -33,6 +34,16 @@ _spec = importlib.util.spec_from_file_location(
     'video_shm', Path(__file__).parent.parent / 'drunk_call_hook' / 'video_shm.py')
 shm = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(shm)
+# Windows part: its relative import needs a package; a stub package is
+# enough (the real one imports grpc)
+import types
+_pkg = types.ModuleType('drunk_call_hook')
+_pkg.__path__ = [str(Path(__file__).parent.parent / 'drunk_call_hook')]
+_win_spec = importlib.util.spec_from_file_location(
+    'drunk_call_hook.video_shm_win', Path(__file__).parent.parent / 'drunk_call_hook' / 'video_shm_win.py')
+shm_win = importlib.util.module_from_spec(_win_spec)
+with patch.dict(sys.modules, {'drunk_call_hook': _pkg, 'drunk_call_hook.video_shm': shm}):
+    _win_spec.loader.exec_module(shm_win)
 from siproxylin.gui.widgets.video_view import VideoView, SelfView
 from siproxylin.gui import call_window
 
@@ -148,6 +159,149 @@ class LayoutTests(unittest.TestCase):
             v.close_fd()
         self.assertEqual(v.fd, -1)
 
+class FakeKernel32:
+    """kernel32 calls of the Windows path. The view is a ctypes buffer."""
+
+    HANDLE = 0x1A4
+
+    def __init__(self, fail_create=False, fail_map=False):
+        self.fail_create = fail_create
+        self.fail_map = fail_map
+        self.calls = []
+        self.buffer = None
+
+    def CreateFileMappingW(self, file_handle, attrs, protect, size_hi, size_lo, name):
+        sa = attrs._obj
+        self.calls.append(('CreateFileMappingW', file_handle, sa.nLength, sa.lpSecurityDescriptor,
+                           sa.bInheritHandle, protect, size_hi, size_lo, name))
+        return None if self.fail_create else self.HANDLE
+
+    def MapViewOfFile(self, handle, access, offset_hi, offset_lo, size):
+        self.calls.append(('MapViewOfFile', handle, access, offset_hi, offset_lo, size))
+        if self.fail_map:
+            return None
+        self.buffer = ctypes.create_string_buffer(size)
+        return ctypes.addressof(self.buffer)
+
+    def UnmapViewOfFile(self, address):
+        self.calls.append(('UnmapViewOfFile', address))
+        return 1
+
+    def CloseHandle(self, handle):
+        self.calls.append(('CloseHandle', handle))
+        return 1
+
+    def names(self):
+        return [c[0] for c in self.calls]
+
+
+class WindowsCreateTests(unittest.TestCase):
+    """The Windows path with kernel32 replaced by FakeKernel32."""
+
+    def test_create_unnamed_inheritable_mapping(self):
+        k = FakeKernel32()
+        v = shm_win.create(k)
+        create = k.calls[0]
+        self.assertEqual(create[0], 'CreateFileMappingW')
+        self.assertEqual(create[1], ctypes.c_void_p(-1).value)  # INVALID_HANDLE_VALUE: paging file
+        self.assertEqual(create[2], ctypes.sizeof(shm_win.SecurityAttributes))
+        self.assertIsNone(create[3])
+        self.assertEqual(create[4], 1)  # bInheritHandle
+        self.assertEqual(create[5], 0x04)  # PAGE_READWRITE
+        self.assertEqual((create[6] << 32) | create[7], shm.TOTAL_SIZE)
+        self.assertIsNone(create[8])  # no name
+        self.assertEqual(k.calls[1], ('MapViewOfFile', k.HANDLE, 0x000F001F, 0, 0, shm.TOTAL_SIZE))
+        self.assertEqual(v.handle, k.HANDLE)
+        # Header written into the view
+        self.assertEqual(k.buffer.raw[0:4], b'SPVF')
+        self.assertEqual(struct.unpack_from('<IIIIIIQQ', k.buffer, 0),
+                         (0x46565053, 1, 2, 3, 960, 960, 960 * 960 * 4, shm.DATA_OFFSET))
+        self.assertFalse(v.reader.active())
+        v.close()
+
+    def test_reader_over_view(self):
+        k = FakeKernel32()
+        v = shm_win.create(k)
+        writer = TestWriter(v.mm)
+        writer.begin_stream()
+        writer.write_frame(4, 2, RED)
+        f = v.reader.latest_frame()
+        self.assertIsNotNone(f)
+        self.assertEqual((f.width, f.height, f.stride), (4, 2, 16))
+        self.assertEqual(bytes(f.data), bytes(RED) * 8)
+        # The writer of the service sees the memory of the view
+        mark = struct.unpack_from('<I', k.buffer, shm.control_offset(0) + shm.CTL_READER)[0]
+        self.assertEqual(mark, f.slot)
+        del f
+        v.close()
+
+    def test_video_view_over_view(self):
+        k = FakeKernel32()
+        v = shm_win.create(k)
+        writer = TestWriter(v.mm)
+        view = VideoView(v.reader, 'alice@localhost')
+        try:
+            view.resize(200, 100)
+            view.show()
+            APP.processEvents()
+            writer.begin_stream()
+            writer.write_frame(4, 4, GREEN)
+            view._poll()
+            APP.processEvents()
+            self.assertTrue(view.has_frame())
+            img = view.grab().toImage()
+            self.assertEqual(QColor(img.pixel(100, 50)), QColor(0, 255, 0))
+        finally:
+            view.close()
+            view.deleteLater()
+            APP.processEvents()
+        v.close()
+
+    def test_spawn_args_inherit_only_the_handle(self):
+        k = FakeKernel32()
+        v = shm_win.create(k)
+
+        class StartupInfo:
+            lpAttributeList = None
+
+        with patch.object(shm_win.subprocess, 'STARTUPINFO', StartupInfo, create=True):
+            env = {}
+            args = v.spawn_args(env)
+        self.assertEqual(env, {shm_win.ENV_HANDLE: str(k.HANDLE)})
+        self.assertEqual(list(args), ['startupinfo'])
+        self.assertEqual(args['startupinfo'].lpAttributeList, {'handle_list': [k.HANDLE]})
+        # The handle stays open after the spawn
+        v.close_fd()
+        self.assertNotIn('CloseHandle', k.names())
+        v.close()
+
+    def test_close_unmaps_and_closes_once(self):
+        k = FakeKernel32()
+        v = shm_win.create(k)
+        address = ctypes.addressof(k.buffer)
+        v.close()
+        v.close()
+        self.assertEqual(k.calls[2:], [('UnmapViewOfFile', address), ('CloseHandle', k.HANDLE)])
+
+    def test_create_fails(self):
+        k = FakeKernel32(fail_create=True)
+        with self.assertRaises(OSError):
+            shm_win.create(k)
+        self.assertEqual(k.names(), ['CreateFileMappingW'])
+
+    def test_map_fails_closes_handle(self):
+        k = FakeKernel32(fail_map=True)
+        with self.assertRaises(OSError):
+            shm_win.create(k)
+        self.assertEqual(k.names(), ['CreateFileMappingW', 'MapViewOfFile', 'CloseHandle'])
+
+    def test_create_uses_kernel32(self):
+        k = FakeKernel32()
+        with patch.object(shm_win, '_kernel32', return_value=k):
+            v = shm_win.create()
+        self.assertIsInstance(v, shm_win.WindowsVideoShm)
+        self.assertIs(v.reader.__class__, shm.Reader)
+        v.close()
 
 class ReaderTests(unittest.TestCase):
 

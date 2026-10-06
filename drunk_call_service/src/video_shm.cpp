@@ -1,5 +1,5 @@
 /**
- * Video frames to the app over shared memory (Linux only)
+ * Video frames to the app over shared memory (Linux and Windows)
  *
  * Layout and protocol: see video_shm.h.
  */
@@ -9,9 +9,21 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <atomic>
+#include <type_traits>
+#else
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 namespace drunk_call {
 
@@ -45,8 +57,102 @@ uint64_t read_u64(const uint8_t *p) {
     return v;
 }
 
+#ifdef _WIN32
+// MSVC has no __atomic builtins. These give the same calls with the same
+// memory orders over std::atomic_ref (C++20), so the code below is the same
+// for GCC and MSVC. All fields are aligned to their size.
+constexpr std::memory_order __ATOMIC_RELAXED = std::memory_order_relaxed;
+constexpr std::memory_order __ATOMIC_ACQUIRE = std::memory_order_acquire;
+constexpr std::memory_order __ATOMIC_RELEASE = std::memory_order_release;
+constexpr std::memory_order __ATOMIC_SEQ_CST = std::memory_order_seq_cst;
+
+template <typename T>
+T __atomic_load_n(T *p, std::memory_order order) {
+    return std::atomic_ref<T>(*p).load(order);
+}
+
+template <typename T>
+void __atomic_store_n(T *p, std::type_identity_t<T> value, std::memory_order order) {
+    std::atomic_ref<T>(*p).store(value, order);
+}
+#endif
+
 } // namespace
 
+#ifdef _WIN32
+bool VideoShm::init_from_env() {
+    const char *env = std::getenv("SIPROXYLIN_VIDEO_SHM_HANDLE");
+    if (!env || !*env) {
+        LOG_INFO("[VideoShm] SIPROXYLIN_VIDEO_SHM_HANDLE not set: remote video goes to autovideosink");
+        return false;
+    }
+
+    char *end = nullptr;
+    errno = 0;
+    unsigned long long value = std::strtoull(env, &end, 10);
+    if (errno != 0 || end == env || *end != '\0' || value == 0) {
+        LOG_WARN("[VideoShm] Bad SIPROXYLIN_VIDEO_SHM_HANDLE value: '{}'", env);
+        return false;
+    }
+    HANDLE handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(value));
+
+    // Size 0: map the whole file mapping (inherited from the app)
+    void *mem = MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+    DWORD map_error = mem ? 0 : GetLastError();
+    // The view stays valid after close
+    CloseHandle(handle);
+    if (!mem) {
+        LOG_WARN("[VideoShm] MapViewOfFile on handle {} failed: error {}", value, map_error);
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mem_info;
+    if (VirtualQuery(mem, &mem_info, sizeof(mem_info)) == 0) {
+        LOG_WARN("[VideoShm] VirtualQuery failed: error {}", GetLastError());
+        UnmapViewOfFile(mem);
+        return false;
+    }
+    size_t size = static_cast<size_t>(mem_info.RegionSize);
+
+    const size_t meta_size = kHeaderSize + kStreamCount * kControlSize
+                             + kStreamCount * kSlotCount * kSlotHeaderSize;
+    if (size < meta_size) {
+        LOG_WARN("[VideoShm] Shared memory too small: {} bytes", size);
+        UnmapViewOfFile(mem);
+        return false;
+    }
+    uint8_t *base = static_cast<uint8_t*>(mem);
+
+    uint32_t magic = read_u32(base + 0);
+    uint32_t version = read_u32(base + 4);
+    uint32_t stream_count = read_u32(base + 8);
+    uint32_t slot_count = read_u32(base + 12);
+    uint32_t max_width = read_u32(base + 16);
+    uint32_t max_height = read_u32(base + 20);
+    uint64_t slot_bytes = read_u64(base + 24);
+    uint64_t data_offset = read_u64(base + 32);
+
+    bool ok = magic == kMagic && version == kVersion
+              && stream_count == kStreamCount && slot_count == kSlotCount
+              && max_width == kMaxWidth && max_height == kMaxHeight
+              && slot_bytes == kSlotBytes
+              && data_offset % 4096 == 0 && data_offset >= meta_size
+              && data_offset + uint64_t(kStreamCount) * kSlotCount * kSlotBytes <= size;
+    if (!ok) {
+        LOG_WARN("[VideoShm] Shared memory header does not match (magic={:#x}, version={}, "
+                 "streams={}, slots={}, max={}x{}, slot_bytes={}, data_offset={}, size={})",
+                 magic, version, stream_count, slot_count, max_width, max_height,
+                 slot_bytes, data_offset, size);
+        UnmapViewOfFile(mem);
+        return false;
+    }
+
+    g_video_shm = new VideoShm(base, data_offset);
+    LOG_INFO("[VideoShm] Mapped shared memory for video: {} bytes, {} slots of {}x{} RGBx",
+             size, kSlotCount, kMaxWidth, kMaxHeight);
+    return true;
+}
+#else
 bool VideoShm::init_from_env() {
     const char *env = std::getenv("SIPROXYLIN_VIDEO_SHM_FD");
     if (!env || !*env) {
@@ -115,6 +221,7 @@ bool VideoShm::init_from_env() {
              size, kSlotCount, kMaxWidth, kMaxHeight);
     return true;
 }
+#endif
 
 VideoShm* VideoShm::instance() {
     return g_video_shm;

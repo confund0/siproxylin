@@ -195,6 +195,22 @@ class GoCallService:
                 pass_fds = (self._video_shm.fd,)
                 self.logger.info(f"Video shared memory: fd {self._video_shm.fd}, {video_shm.TOTAL_SIZE} bytes")
 
+            # Windows: unnamed file mapping instead (video_shm.create() is
+            # Linux only); the child inherits only its handle (handle_list)
+            win_args = {}
+            if platform.system() == "Windows":
+                try:
+                    from . import video_shm_win
+                    self._video_shm = video_shm_win.create()
+                    win_args = self._video_shm.spawn_args(env)
+                    self.logger.info(f"Video shared memory: handle {self._video_shm.handle}, {video_shm.TOTAL_SIZE} bytes")
+                except Exception as e:
+                    self.logger.warning(f"Failed to create video shared memory: {e}")
+                    if self._video_shm:
+                        self._video_shm.close()
+                    self._video_shm = None
+                    win_args = {}
+
             try:
                 self._process = subprocess.Popen(
                     [binary_path, "--log-level", log_level, "--log-path", str(go_log_file)],
@@ -202,6 +218,7 @@ class GoCallService:
                     stderr=stderr_file,
                     env=env,
                     pass_fds=pass_fds,
+                    **win_args,
                 )
             finally:
                 # The child has its own copy of the fd; our mapping stays
@@ -265,6 +282,13 @@ class GoCallService:
                     self.logger.warning("Go service didn't stop gracefully, killing")
                     self._process.kill()
             self._process = None
+
+        # Windows: unmap the video shared memory and close its handle (Linux:
+        # the mapping goes with the last reference). Call windows are closed
+        # before this.
+        if platform.system() == "Windows" and self._video_shm:
+            self._video_shm.close()
+            self._video_shm = None
 
         self._running = False
         self.logger.info("Go service stopped")

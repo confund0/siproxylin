@@ -8,11 +8,7 @@
 #include "logger.h"
 #include <gst/webrtc/webrtc.h>
 
-#ifdef _WIN32
-#include <windows.h>  // For FindWindowExW, ShowWindow, SetForegroundWindow
-#endif
-
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
 #include "video_shm.h"
 #include <gst/app/gstappsink.h>
 #include <gst/video/video.h>
@@ -20,7 +16,7 @@
 
 namespace drunk_call {
 
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
 // Copy one RGBx sample of the appsink into the shared memory stream for the
 // app (streaming thread). owner is the session.
 static GstFlowReturn write_sample_to_shm(GstAppSink *appsink, uint32_t stream, gpointer owner) {
@@ -344,7 +340,7 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
 
         gst_object_unref(caps_src);
 
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
         // Second tee branch: camera self-view to the app (shared memory).
         // Before the source is synced, so no frame flows yet.
         add_self_view_branch("ANSWERER");
@@ -366,16 +362,10 @@ bool WebRTCSession::setup_answerer_video_pipeline() {
         gst_element_sync_state_with_parent(capsfilter);
         LOG_INFO("[WebRTCSession] [ANSWERER] ✓ Synced video elements (incl. tee) to PLAYING (after all linking complete)");
 
-#ifdef _WIN32
-        // Windows: no self-view and no compositor. The video sink is created
-        // when the incoming video arrives (handle_incoming_video_stream).
-        LOG_INFO("[WebRTCSession] [ANSWERER] Windows: no self-view, video sink waits for incoming video");
-#else
         // Other systems: no compositor (Linux: self-view branch above when the
         // shared memory exists). The video sink is created when the incoming
         // video arrives (handle_incoming_video_stream).
         LOG_INFO("[WebRTCSession] [ANSWERER] Video sink waits for incoming video");
-#endif
 
         // Resume pipeline to PLAYING
         LOG_DEBUG("[WebRTCSession] Resuming pipeline to PLAYING...");
@@ -582,7 +572,7 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         gst_object_unref(caps_src);
         gst_object_unref(webrtc_sink);
 
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
         // Second tee branch: camera self-view to the app (shared memory).
         // Before the source is synced, so no frame flows yet.
         add_self_view_branch("OFFERER");
@@ -604,16 +594,10 @@ bool WebRTCSession::setup_offerer_video_pipeline() {
         gst_element_sync_state_with_parent(capsfilter);
         LOG_INFO("[WebRTCSession] [OFFERER] ✓ Synced video elements (incl. tee) to PLAYING (after all linking complete)");
 
-#ifdef _WIN32
-        // Windows: no self-view and no compositor. The video sink is created
-        // when the incoming video arrives (handle_incoming_video_stream).
-        LOG_INFO("[WebRTCSession] [OFFERER] Windows: no self-view, video sink waits for incoming video");
-#else
         // Other systems: no compositor (Linux: self-view branch above when the
         // shared memory exists). The video sink is created when the incoming
         // video arrives (handle_incoming_video_stream).
         LOG_INFO("[WebRTCSession] [OFFERER] Video sink waits for incoming video");
-#endif
 
         LOG_INFO("[WebRTCSession] [OFFERER] Video source pipeline created and linked");
         return true;
@@ -638,46 +622,12 @@ void WebRTCSession::handle_incoming_video_stream(GstPad *pad) {
                 return;
             }
 
-#ifdef _WIN32
-            // Windows: no compositor. Decoded video goes straight to d3dvideosink.
-            video_sink_ = gst_element_factory_make("d3dvideosink", "video_sink");
-            if (!video_sink_) {
-                LOG_ERROR("[WebRTCSession] Failed to create d3dvideosink for incoming video");
-                gst_object_unref(depay);
-                gst_object_unref(decoder);
-                gst_object_unref(convert);
-                return;
-            }
-            g_object_set(video_sink_, "sync", TRUE, nullptr);
-            // D3D9 stability settings for VM/RDP compatibility
-            g_object_set(video_sink_,
-                "force-aspect-ratio", TRUE,           // Maintain aspect ratio
-                "enable-navigation-events", FALSE,    // Reduce event overhead
-                "stream-stop-on-close", FALSE,        // Don't stop stream if window closes accidentally
-                nullptr);
-
-            LOG_INFO("[WebRTCSession] Adding incoming video with direct d3dvideosink (Windows, no self-view)");
-
-            // Add receive elements and sink to pipeline
-            gst_bin_add_many(GST_BIN(pipeline_), depay, decoder, convert, video_sink_, nullptr);
-
-            // Link incoming video chain: depay → decoder → convert → sink
-            if (!gst_element_link_many(depay, decoder, convert, video_sink_, nullptr)) {
-                LOG_ERROR("[WebRTCSession] Failed to link video receive chain");
-                gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, video_sink_, nullptr);
-                video_sink_ = nullptr;
-                return;
-            }
-
-            GstPadLinkReturn link_ret = GST_PAD_LINK_OK;
-            gst_element_sync_state_with_parent(video_sink_);
-#else
             // Linux with shared memory: frames go to the app window (appsink).
             // Otherwise: straight to autovideosink. No compositor, no self-view.
             GstElement *scale = nullptr;
             GstElement *raw_caps = nullptr;
             bool to_app = false;
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
             to_app = VideoShm::instance() != nullptr;
             if (to_app) {
                 scale = gst_element_factory_make("videoscale", "video_scale_recv");
@@ -751,24 +701,16 @@ void WebRTCSession::handle_incoming_video_stream(GstPad *pad) {
             GstPadLinkReturn link_ret = GST_PAD_LINK_OK;
             gst_element_sync_state_with_parent(video_sink_);
 
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
             if (to_app) {
                 VideoShm::instance()->begin_stream(VideoShm::kStreamRemote, this);
             }
-#endif
 #endif
 
             // Sync state with parent
             gst_element_sync_state_with_parent(depay);
             gst_element_sync_state_with_parent(decoder);
             gst_element_sync_state_with_parent(convert);
-
-#ifdef _WIN32
-            // Re-trigger window maximize after incoming video linked (fixes outgoing calls)
-            // When remote video arrives on outgoing calls, pipeline state changes can
-            // reset window z-order. Re-applying positioning ensures window stays in front.
-            maximize_d3dvideosink_window();
-#endif
 
             // Link webrtcbin pad to depay
             GstPad *sink_pad = gst_element_get_static_pad(depay, "sink");
@@ -777,11 +719,6 @@ void WebRTCSession::handle_incoming_video_stream(GstPad *pad) {
 
             if (link_ret != GST_PAD_LINK_OK) {
                 LOG_ERROR("[WebRTCSession] Failed to link incoming video pad to depay: {}", static_cast<int>(link_ret));
-#ifdef _WIN32
-                gst_element_set_state(video_sink_, GST_STATE_NULL);
-                gst_bin_remove(GST_BIN(pipeline_), video_sink_);
-                video_sink_ = nullptr;
-#else
                 gst_element_set_state(video_sink_, GST_STATE_NULL);
                 gst_bin_remove(GST_BIN(pipeline_), video_sink_);
                 video_sink_ = nullptr;
@@ -793,21 +730,16 @@ void WebRTCSession::handle_incoming_video_stream(GstPad *pad) {
                     gst_element_set_state(raw_caps, GST_STATE_NULL);
                     gst_bin_remove(GST_BIN(pipeline_), raw_caps);
                 }
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
                 if (to_app) {
                     VideoShm::instance()->end_stream(VideoShm::kStreamRemote, this);
                 }
-#endif
 #endif
                 gst_bin_remove_many(GST_BIN(pipeline_), depay, decoder, convert, nullptr);
                 return;
             }
 
-#ifdef _WIN32
-            LOG_INFO("[WebRTCSession] ✓ Incoming video linked to d3dvideosink");
-#else
             LOG_INFO("[WebRTCSession] ✓ Incoming video linked to {}", to_app ? "appsink (shared memory)" : "autovideosink");
-#endif
 }
 
 } // namespace drunk_call

@@ -1,9 +1,11 @@
 /**
- * Video frames to the app over shared memory (Linux only)
+ * Video frames to the app over shared memory (Linux and Windows)
  *
  * The app makes a memfd, sets up the header and passes the fd number in
  * the env variable SIPROXYLIN_VIDEO_SHM_FD. The service maps it and writes
  * decoded frames into it. The app reads them on a Qt timer.
+ * Windows: an unnamed file mapping instead of the memfd; the inherited
+ * handle value is in SIPROXYLIN_VIDEO_SHM_HANDLE.
  * Python side: drunk_call_hook/video_shm.py (the layout and the constants
  * must match).
  *
@@ -58,8 +60,9 @@ public:
     static constexpr size_t kControlSize = 64;
     static constexpr size_t kSlotHeaderSize = 64;
 
-    // Map the memfd from SIPROXYLIN_VIDEO_SHM_FD. Logs and returns false
-    // when it is missing or not valid; the service then runs without it.
+    // Map the memfd from SIPROXYLIN_VIDEO_SHM_FD (Windows: the file mapping
+    // from SIPROXYLIN_VIDEO_SHM_HANDLE). Logs and returns false when it is
+    // missing or not valid; the service then runs without it.
     static bool init_from_env();
 
     // The mapped writer, or nullptr when there is no shared memory.

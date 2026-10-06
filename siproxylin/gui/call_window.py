@@ -125,7 +125,7 @@ class CallWindow(QWidget):
             direction: 'outgoing' or 'incoming'
             account: Account instance (for accessing video port)
             video_reader: Shared memory frame reader of the call service
-                (Linux only, else None)
+                (Linux and Windows, else None)
         """
         # Platform-specific parent handling:
         # - Windows: No parent (prevents hiding when main window minimizes)
@@ -156,7 +156,7 @@ class CallWindow(QWidget):
         self.call_start_time: Optional[float] = None
         self.call_connected = False
 
-        # Linux video calls: video in this window, controls docked under it
+        # Video calls with a reader: video in this window, controls docked under it
         self.video_view = None
         self.self_view = None
         self.has_video_view = 'video' in media_types and video_reader is not None

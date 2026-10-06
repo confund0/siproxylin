@@ -332,7 +332,7 @@ class CallManager:
         # Get account
         account = self.account_manager.get_account(account_id)
 
-        # Video frame reader of the call service (Linux only, else None)
+        # Video frame reader of the call service (Linux and Windows, else None)
         video_reader = self.go_call_service.video_reader if self.go_call_service else None
 
         # Create call window

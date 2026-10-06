@@ -71,7 +71,7 @@
     #include <climits>  // PATH_MAX
 #endif
 
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
     #include "video_shm.h"
 #endif
 
@@ -391,7 +391,7 @@ int main(int argc, char* argv[]) {
     LOG_INFO("GStreamer version: {}.{}.{}.{}", gst_major, gst_minor, gst_micro, gst_nano);
     log_dtls_plugin(gst_major, gst_minor);
 
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
     // Shared memory for remote video frames to the app (fd from the app)
     drunk_call::VideoShm::init_from_env();
 #endif

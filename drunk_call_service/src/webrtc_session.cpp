@@ -14,11 +14,7 @@
 #include <cstring>
 #include <sstream>
 
-#ifdef _WIN32
-#include <windows.h>  // For FindWindowExW, ShowWindow, SetForegroundWindow
-#endif
-
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
 #include "video_shm.h"
 #endif
 
@@ -291,10 +287,6 @@ WebRTCSession::WebRTCSession()
     , video_ssrc_(0)
     , sdp_done_(false)
     , stats_timer_id_(0)
-#ifdef _WIN32
-    , window_maximize_timer_id_(0)
-    , window_maximize_attempts_(0)
-#endif
     , last_bytes_sent_(0)
     , last_bytes_received_(0)
 {
@@ -328,14 +320,6 @@ WebRTCSession::~WebRTCSession() {
             gst_caps_unref(offer_codec_caps_);
             offer_codec_caps_ = nullptr;
         }
-
-#ifdef _WIN32
-        // Cancel window maximize timer if running
-        if (window_maximize_timer_id_ > 0) {
-            g_source_remove(window_maximize_timer_id_);
-            window_maximize_timer_id_ = 0;
-        }
-#endif
 
         stop();
     } catch (...) {
@@ -417,15 +401,6 @@ bool WebRTCSession::stop() {
 
         LOG_INFO("[WebRTCSession] Stopping pipeline...");
 
-#ifdef _WIN32
-        // Cancel window maximize timer if running
-        if (window_maximize_timer_id_ > 0) {
-            g_source_remove(window_maximize_timer_id_);
-            window_maximize_timer_id_ = 0;
-            LOG_DEBUG("[WebRTCSession] Cancelled window maximize timer");
-        }
-#endif
-
         // ========================================================================
         // ISSUE #8 FIX: Graceful pipeline shutdown with timeout
         // Official Pattern: https://gstreamer.freedesktop.org/documentation/application-development/basics/states.html
@@ -446,7 +421,7 @@ bool WebRTCSession::stop() {
             LOG_DEBUG("[WebRTCSession] Pipeline state changed to NULL successfully");
         }
 
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
         // No more frames come after NULL: tell the app the remote video and
         // the self-view stopped
         if (VideoShm::instance()) {
@@ -847,35 +822,6 @@ void WebRTCSession::on_offer_set_for_answer_static(GstPromise *promise, gpointer
 }
 
 // ============================================================================
-// Windows-specific Helper Functions
-// ============================================================================
-
-#ifdef _WIN32
-void WebRTCSession::maximize_d3dvideosink_window() {
-    // Start non-blocking timer to retry finding d3dvideosink window
-    // (window is created asynchronously after prepare-window-handle message)
-
-    // Cancel any existing timer first
-    if (window_maximize_timer_id_ > 0) {
-        g_source_remove(window_maximize_timer_id_);
-        window_maximize_timer_id_ = 0;
-    }
-
-    // Reset attempt counter
-    window_maximize_attempts_ = 0;
-
-    // Start timer: retry every 50ms (non-blocking)
-    window_maximize_timer_id_ = g_timeout_add(50, window_maximize_timer_callback_static, this);
-    LOG_DEBUG("[WebRTCSession] Started window maximize timer");
-}
-
-gboolean WebRTCSession::window_maximize_timer_callback_static(gpointer user_data) {
-    WebRTCSession *self = static_cast<WebRTCSession*>(user_data);
-    return self->window_maximize_timer_callback();
-}
-#endif
-
-// ============================================================================
 // Instance Bus Message Handler
 // ============================================================================
 
@@ -936,30 +882,10 @@ gboolean WebRTCSession::bus_message_handler(GstBus *bus, GstMessage *msg) {
                     LOG_DEBUG("[WebRTCSession] Pipeline state changed: {} → {}",
                              old_str, new_str);
                 }
-
-#ifdef _WIN32
-                // Fallback: Try to maximize window when d3dvideosink reaches PLAYING
-                const gchar *src_name = GST_MESSAGE_SRC_NAME(msg);
-                if (src_name && strcmp(src_name, "d3dvideosink0") == 0) {
-                    GstState old_state, new_state, pending_state;
-                    gst_message_parse_state_changed(msg, &old_state, &new_state, &pending_state);
-                    if (new_state == GST_STATE_PLAYING) {
-                        LOG_DEBUG("[WebRTCSession] d3dvideosink reached PLAYING, attempting maximize");
-                        maximize_d3dvideosink_window();
-                    }
-                }
-#endif
                 break;
             }
 
             case GST_MESSAGE_ELEMENT: {
-#ifdef _WIN32
-                // Check if this is prepare-window-handle from video sink
-                if (gst_is_video_overlay_prepare_window_handle_message(msg)) {
-                    LOG_DEBUG("[WebRTCSession] Video overlay window ready, maximizing...");
-                    maximize_d3dvideosink_window();
-                }
-#endif
                 break;
             }
 
@@ -974,50 +900,6 @@ gboolean WebRTCSession::bus_message_handler(GstBus *bus, GstMessage *msg) {
 
     return TRUE;  // Continue receiving messages
 }
-
-#ifdef _WIN32
-// ============================================================================
-// Windows-specific Instance Methods
-// ============================================================================
-
-gboolean WebRTCSession::window_maximize_timer_callback() {
-    const int max_retries = 10;
-
-    window_maximize_attempts_++;
-
-    // Try to find and maximize the d3dvideosink window
-    HWND hwnd = FindWindowExW(nullptr, nullptr, L"GstD3DVideoSinkInternalWindow", nullptr);
-    if (hwnd) {
-        ShowWindow(hwnd, SW_MAXIMIZE);
-        SetForegroundWindow(hwnd);
-
-        // Bring window to front but below topmost windows (call_window controls)
-        // Two-step technique: TOPMOST → NOTOPMOST brings window above normal windows
-        // but below always-on-top windows (call_window with Qt.WindowStaysOnTopHint)
-        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-        SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-
-        LOG_INFO("[WebRTCSession] ✓ Maximized d3dvideosink window and brought to front (attempt {})", window_maximize_attempts_);
-
-        // Success! Cancel timer
-        window_maximize_timer_id_ = 0;
-        return G_SOURCE_REMOVE;  // Stop timer
-    }
-
-    // Window not found yet
-    if (window_maximize_attempts_ >= max_retries) {
-        LOG_WARN("[WebRTCSession] Failed to find d3dvideosink window after {} attempts", max_retries);
-        window_maximize_timer_id_ = 0;
-        return G_SOURCE_REMOVE;  // Stop timer
-    }
-
-    // Retry
-    LOG_DEBUG("[WebRTCSession] d3dvideosink window not found yet (attempt {})", window_maximize_attempts_);
-    return G_SOURCE_CONTINUE;  // Continue timer
-}
-#endif
 
 // ============================================================================
 // Instance Signal Handlers

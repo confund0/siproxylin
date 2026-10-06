@@ -43,6 +43,7 @@ if(WIN32)
         "${GSTREAMER_ROOT}/lib/gstwebrtc-1.0.lib"
         "${GSTREAMER_ROOT}/lib/gstsdp-1.0.lib"
         "${GSTREAMER_ROOT}/lib/gstvideo-1.0.lib"
+        "${GSTREAMER_ROOT}/lib/gstapp-1.0.lib"
         "${GSTREAMER_ROOT}/lib/gobject-2.0.lib"
         "${GSTREAMER_ROOT}/lib/glib-2.0.lib"
     )
@@ -163,7 +164,8 @@ add_executable(${BINARY_NAME}
     ${GRPC_SRCS}
 )
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+# Linux and Windows: video frames to the app over shared memory
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32)
     target_sources(${BINARY_NAME} PRIVATE src/video_shm.cpp)
 endif()
 
