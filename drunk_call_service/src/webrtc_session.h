@@ -44,6 +44,7 @@ public:
 
     void set_state_callback(StateCallback callback) override;
     void set_stats_callback(StatsCallback callback) override;  // NEW: periodic stats updates
+    void set_error_callback(ErrorCallback callback) override;
 
     bool set_mute(bool muted) override;
     bool is_muted() const override { return is_muted_; }
@@ -100,6 +101,12 @@ private:
     ICECandidateCallback ice_callback_;
     StateCallback state_callback_;
     StatsCallback stats_callback_;  // NEW: periodic stats callback
+    ErrorCallback error_callback_;
+
+    // Mic, speaker and camera errors go to error_callback_ only once per session
+    bool audio_src_error_sent_;
+    bool audio_sink_error_sent_;
+    bool video_src_error_sent_;
 
     // Synchronization for async SDP operations
     std::mutex sdp_mutex_;

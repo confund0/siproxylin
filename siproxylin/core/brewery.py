@@ -89,6 +89,7 @@ class XMPPAccount(QObject):
     call_accepted = Signal(int, str)  # (account_id, session_id)
     call_terminated = Signal(int, str, str, str)  # (account_id, session_id, reason, peer_jid)
     call_state_changed = Signal(int, str, str)  # (account_id, session_id, state)
+    call_error = Signal(int, str, str)  # (account_id, session_id, message)
 
     def __init__(self, account_id: int, account_data: dict):
         """
@@ -143,6 +144,7 @@ class XMPPAccount(QObject):
             'call_accepted': self.call_accepted,
             'call_terminated': self.call_terminated,
             'call_state_changed': self.call_state_changed,
+            'call_error': self.call_error,
         }
 
         # Initialize ConnectionBarrel (handles connection/disconnection)

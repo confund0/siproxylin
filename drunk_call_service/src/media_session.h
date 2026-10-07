@@ -56,6 +56,10 @@ public:
     using StateCallback = std::function<void(ConnectionState state)>;
     virtual void set_state_callback(StateCallback callback) = 0;
 
+    // Error callback (mic, speaker or camera failed; the call stays up)
+    using ErrorCallback = std::function<void(const std::string &message)>;
+    virtual void set_error_callback(ErrorCallback callback) = 0;
+
     // Audio control
     virtual bool set_mute(bool muted) = 0;
     virtual bool is_muted() const = 0;

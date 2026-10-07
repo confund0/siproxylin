@@ -59,6 +59,9 @@ void RTPSession::set_stats_callback(StatsCallback callback) {
     // TODO: Implement for RTP session
 }
 
+void RTPSession::set_error_callback(ErrorCallback callback) {
+}
+
 bool RTPSession::set_mute(bool muted) {
     return false;
 }

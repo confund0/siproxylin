@@ -43,6 +43,7 @@ class JingleAdapter:
                  on_ice_candidate_received: Optional[Callable] = None,
                  on_call_state_changed: Optional[Callable] = None,
                  on_candidates_ready: Optional[Callable] = None,
+                 on_call_error: Optional[Callable] = None,
                  logger: Optional[logging.Logger] = None):
         """
         Initialize Jingle adapter.
@@ -56,6 +57,7 @@ class JingleAdapter:
             on_ice_candidate_received: Callback for ICE candidates (session_id, candidate) - optional
             on_call_state_changed: Callback for connection state changes (session_id, state) - optional
             on_candidates_ready: Callback when candidates arrive for trickle-only offers (session_id) - optional
+            on_call_error: Callback for call errors, e.g. mic, speaker or camera failed (session_id, message) - optional
             logger: Logger instance (optional)
         """
         self.xmpp = xmpp_client
@@ -66,6 +68,7 @@ class JingleAdapter:
         self.on_ice_candidate_received = on_ice_candidate_received  # Optional - for trickle ICE
         self.on_call_state_changed = on_call_state_changed  # Optional - for connection state updates
         self.on_candidates_ready = on_candidates_ready  # Optional - for deferred answer creation
+        self.on_call_error = on_call_error  # Optional - for mic, speaker or camera errors
         self.logger = logger or logging.getLogger(__name__)
 
         # Initialize SDP ↔ Jingle converter (pure conversion, no business logic)
@@ -160,6 +163,7 @@ class JingleAdapter:
         # Set callbacks on bridge to forward events to Jingle handlers
         self.bridge.on_ice_candidate = self._on_bridge_ice_candidate
         self.bridge.on_connection_state = self._on_bridge_connection_state
+        self.bridge.on_error = self._on_bridge_error
         self.logger.debug("Wired CallBridge callbacks")
 
     def _register_jingle_message_handlers(self):
@@ -1285,6 +1289,19 @@ class JingleAdapter:
             await self.on_call_state_changed(session_id, state)
         else:
             self.logger.debug(f"No on_call_state_changed callback set for {session_id}")
+
+    async def _on_bridge_error(self, session_id: str, message: str):
+        """
+        Handle a call error from CallBridge (Go service), e.g. mic, speaker or camera failed.
+
+        Forwards the error to AccountManager for the call window. The call stays up.
+
+        Args:
+            session_id: Jingle session ID
+            message: Error text
+        """
+        if self.on_call_error:
+            await self.on_call_error(session_id, message)
 
     def _validate_sdp(self, sdp: str, sdp_type: str, session_id: str):
         """

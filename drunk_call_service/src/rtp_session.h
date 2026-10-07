@@ -37,6 +37,7 @@ public:
 
     void set_state_callback(StateCallback callback) override;
     void set_stats_callback(StatsCallback callback) override;
+    void set_error_callback(ErrorCallback callback) override;
 
     bool set_mute(bool muted) override;
     bool is_muted() const override { return false; }  // TODO

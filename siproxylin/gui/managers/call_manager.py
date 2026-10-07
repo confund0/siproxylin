@@ -54,6 +54,7 @@ class CallManager:
         self.incoming_call_dialogs: Dict[str, IncomingCallDialog] = {}  # {session_id: dialog}
         self.outgoing_call_dialogs: Dict[str, OutgoingCallDialog] = {}  # {session_id: dialog}
         self.call_session_map: Dict[str, tuple] = {}  # {session_id: (account_id, jid)}
+        self.call_errors: Dict[tuple, list] = {}  # {(account_id, session_id): [message]} errors before the call window opens
 
         # Go call service (app-level, shared by all accounts)
         self.go_call_service: Optional[object] = None
@@ -74,6 +75,7 @@ class CallManager:
         account.call_accepted.connect(self.on_call_accepted)
         account.call_terminated.connect(self.on_call_terminated)
         account.call_state_changed.connect(self.on_call_state_changed)
+        account.call_error.connect(self.on_call_error)
         logger.debug(f"Connected call signals for account {account.account_id}")
 
     async def start_service(self):
@@ -350,6 +352,14 @@ class CallManager:
                 )
             )
 
+            # Show mic, speaker or camera errors in the call window
+            account.call_error.connect(
+                lambda aid, sid, message: (
+                    call_window.on_call_error(message)
+                    if sid == session_id else None
+                )
+            )
+
             # Update call window when call terminates
             account.call_terminated.connect(
                 lambda aid, sid, reason, peer: (
@@ -365,6 +375,10 @@ class CallManager:
 
         # Track window
         self.call_windows[session_id] = call_window
+
+        # Show errors that came before the window opened (mic starts with the offer)
+        for message in self.call_errors.pop((account_id, session_id), []):
+            call_window.on_call_error(message)
 
         # Show window (video window opens maximized)
         if call_window.has_video_view:
@@ -385,6 +399,29 @@ class CallManager:
         # State updates are already forwarded to call window via signal connections
         # in _open_call_window, so nothing more to do here
 
+    def on_call_error(self, account_id: int, session_id: str, message: str):
+        """
+        Keep a call error (mic, speaker or camera failed) until the call window opens.
+
+        An open window gets the error through its own signal connection
+        in _open_call_window. Errors are kept per account: another account
+        can have a call with the same session id (a call to an own account).
+
+        Args:
+            account_id: Account in call
+            session_id: Jingle session ID
+            message: Error text
+        """
+        call_window = self.call_windows.get(session_id)
+        if call_window is not None and call_window.account_id == account_id:
+            return
+        # Drop errors of a call this account does not have (or has ended)
+        account = self.account_manager.get_account(account_id)
+        calls = getattr(account, 'calls', None)
+        if calls is None or not calls._knows_call(session_id):
+            return
+        self.call_errors.setdefault((account_id, session_id), []).append(message)
+
     def on_call_terminated(self, account_id: int, session_id: str, reason: str, peer_jid: str):
         """
         Handle call termination - cleanup call window and dialogs.
@@ -401,6 +438,9 @@ class CallManager:
         if session_id in self.call_session_map:
             acc_id, jid = self.call_session_map.pop(session_id)
             self.contact_list.update_call_indicator(acc_id, jid, None)
+
+        # Drop errors of a call that ended before its window opened
+        self.call_errors.pop((account_id, session_id), None)
 
         # Handle call notification based on termination reason
         if reason == 'timeout':

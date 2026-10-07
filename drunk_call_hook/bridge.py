@@ -481,7 +481,8 @@ class CallBridge:
     def __init__(self,
                  logger: Optional[logging.Logger] = None,
                  on_ice_candidate: Optional[Callable] = None,
-                 on_connection_state: Optional[Callable] = None):
+                 on_connection_state: Optional[Callable] = None,
+                 on_error: Optional[Callable] = None):
         """
         Initialize CallBridge gRPC client.
 
@@ -489,10 +490,12 @@ class CallBridge:
             logger: Logger instance
             on_ice_candidate: Callback for ICE candidates from Go (session_id, candidate_dict)
             on_connection_state: Callback for connection state changes (session_id, state_str)
+            on_error: Callback for call errors, e.g. mic, speaker or camera failed (session_id, message)
         """
         self.logger = logger or logging.getLogger(__name__)
         self.on_ice_candidate = on_ice_candidate
         self.on_connection_state = on_connection_state
+        self.on_error = on_error
 
         self._grpc_channel: Optional[grpc.aio.Channel] = None
         self._stub: Optional[call_pb2_grpc.CallServiceStub] = None
@@ -1128,6 +1131,17 @@ class CallBridge:
             self.logger.error(
                 f"Error event from Go service for {session_id}: {error_event.message}"
             )
+
+            if self.on_error:
+                try:
+                    # Call callback (may be sync or async)
+                    result = self.on_error(session_id, error_event.message)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as e:
+                    self.logger.error(f"Error in on_error callback: {e}")
+                    import traceback
+                    self.logger.error(traceback.format_exc())
 
         else:
             self.logger.warning(f"Unknown event type for {session_id}: {event_type}")

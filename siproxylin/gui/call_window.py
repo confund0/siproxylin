@@ -258,6 +258,17 @@ class CallWindow(QWidget):
         self.duration_label = QLabel("--:--")
         self.duration_label.setStyleSheet("font-weight: bold; font-size: 18px;")
         left_layout.addWidget(self.duration_label)
+
+        # Error label (mic, speaker or camera failed) between the time and the
+        # center buttons, hidden until an error comes. It can shrink and wraps.
+        self._error_names = []    # short error names shown, in order
+        self._error_details = []  # full error texts for the tooltip
+        self.error_label = QLabel("")
+        self.error_label.setStyleSheet("color: #e05050;")
+        self.error_label.setWordWrap(True)
+        self.error_label.setMinimumWidth(1)
+        self.error_label.setVisible(False)
+        left_layout.addWidget(self.error_label, 1)
         left_layout.addStretch()
 
         # Mute button
@@ -419,6 +430,13 @@ class CallWindow(QWidget):
         status_font.setPointSize(12)
         self.full_status_label.setFont(status_font)
         full_layout.addWidget(self.full_status_label)
+
+        # Error text in the full mode (the control bar with error_label is hidden there)
+        self.full_error_label = QLabel("")
+        self.full_error_label.setStyleSheet("color: #e05050;")
+        self.full_error_label.setWordWrap(True)
+        self.full_error_label.setVisible(False)
+        full_layout.addWidget(self.full_error_label)
 
         # Call duration
         self.full_duration_label = QLabel("Duration: --:--:--")
@@ -769,6 +787,31 @@ class CallWindow(QWidget):
                     self.self_view.stop()
                 QTimer.singleShot(2000, self.close)
 
+        except RuntimeError:
+            # Widget was deleted
+            pass
+
+    def on_call_error(self, message: str):
+        """
+        Show a call error (mic, speaker or camera failed). The call stays up.
+
+        Args:
+            message: Error text from the call service
+        """
+        logger.warning(f"Call error: {message}")
+        try:
+            # Short name in the label ("Camera error"), each name once on one
+            # line; the full GStreamer text goes to the tooltip
+            name = message.split(':', 1)[0].strip()
+            if name not in self._error_names:
+                self._error_names.append(name)
+            self._error_details.append(message)
+            for label in (self.error_label, getattr(self, 'full_error_label', None)):
+                if label is None:
+                    continue
+                label.setText(", ".join(self._error_names))
+                label.setToolTip("\n".join(self._error_details))
+                label.setVisible(True)
         except RuntimeError:
             # Widget was deleted
             pass

@@ -370,6 +370,7 @@ class CallBarrel:
                 on_ice_candidate_received=self._on_ice_candidate_received,
                 on_call_state_changed=self._on_call_state_changed,
                 on_candidates_ready=self._on_candidates_ready,
+                on_call_error=self._on_call_error,
                 logger=self.logger
             )
 
@@ -1174,6 +1175,14 @@ class CallBarrel:
 
         # Emit signal to GUI
         self.signals['call_state_changed'].emit(self.account_id, session_id, state)
+
+    async def _on_call_error(self, session_id: str, message: str):
+        """Handle a call error (mic, speaker or camera failed). The call stays up."""
+        if self.logger:
+            self.logger.warning(f"Call error: {message} (session {session_id})")
+
+        # Emit signal to GUI
+        self.signals['call_error'].emit(self.account_id, session_id, message)
 
     async def start_call(self, peer_jid: str, media: list = None) -> str:
         """

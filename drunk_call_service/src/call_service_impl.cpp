@@ -170,6 +170,20 @@ grpc::Status CallServiceImpl::CreateSession(
                      session->session_id, static_cast<int>(state));
         });
 
+        // Error callback (mic, speaker or camera failed) - fires in GLib thread, pushes to queue
+        session->webrtc->set_error_callback([weak_session](const std::string& message) {
+            auto session = weak_session.lock();
+            if (!session) {
+                return;
+            }
+
+            call::CallEvent event;
+            event.set_session_id(session->session_id);
+            event.mutable_error()->set_message(message);
+            session->event_queue->push(event);
+            LOG_DEBUG("Session {}: Error event pushed to queue", session->session_id);
+        });
+
         // Initialize WebRTC session
         LOG_DEBUG("Session {}: Calling webrtc->initialize()", session_id);
         if (!session->webrtc->initialize(config)) {

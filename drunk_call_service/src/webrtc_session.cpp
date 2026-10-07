@@ -285,6 +285,9 @@ WebRTCSession::WebRTCSession()
     , negotiated_video_payload_(-1)  // Will be parsed from video offer SDP
     , audio_ssrc_(0)
     , video_ssrc_(0)
+    , audio_src_error_sent_(false)
+    , audio_sink_error_sent_(false)
+    , video_src_error_sent_(false)
     , sdp_done_(false)
     , stats_timer_id_(0)
     , last_bytes_sent_(0)
@@ -473,6 +476,10 @@ void WebRTCSession::set_stats_callback(StatsCallback callback) {
     stats_callback_ = callback;
     // TODO: Start g_timeout_add timer when callback is set
     // For now, just store the callback
+}
+
+void WebRTCSession::set_error_callback(ErrorCallback callback) {
+    error_callback_ = callback;
 }
 
 // ============================================================================
@@ -840,9 +847,38 @@ gboolean WebRTCSession::bus_message_handler(GstBus *bus, GstMessage *msg) {
                          err ? err->message : "no message",
                          debug_info ? debug_info : "no debug info");
 
-                // TODO: Propagate to Python via ErrorEvent
-                // This requires event_queue access (not currently available in WebRTCSession)
-                // Will be implemented when error event types are added to proto
+                // Mic, speaker or camera error: tell the app once per element.
+                // autoaudiosrc/autoaudiosink/autovideosrc send it from a child
+                // element, so walk up the parents to "audio_src", "audio_sink"
+                // or "video_src".
+                const char *device = nullptr;
+                bool *sent = nullptr;
+                for (GstObject *obj = GST_MESSAGE_SRC(msg); obj; obj = GST_OBJECT_PARENT(obj)) {
+                    const gchar *name = GST_OBJECT_NAME(obj);
+                    if (!name) {
+                        continue;
+                    }
+                    if (strcmp(name, "audio_src") == 0) {
+                        device = "Microphone";
+                        sent = &audio_src_error_sent_;
+                        break;
+                    }
+                    if (strcmp(name, "audio_sink") == 0) {
+                        device = "Speaker";
+                        sent = &audio_sink_error_sent_;
+                        break;
+                    }
+                    if (strcmp(name, "video_src") == 0) {
+                        device = "Camera";
+                        sent = &video_src_error_sent_;
+                        break;
+                    }
+                }
+                if (device && !*sent && error_callback_) {
+                    *sent = true;
+                    error_callback_(std::string(device) + " error: " +
+                                    (err ? err->message : "unknown error"));
+                }
 
                 g_error_free(err);
                 g_free(debug_info);
