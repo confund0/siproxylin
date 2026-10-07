@@ -4,6 +4,19 @@ All notable changes to Siproxylin are documented in this file.
 
 ---
 
+## [0.0.33 - Dublin deluge] - 2026-10-07
+
+- Call video shows in the call window on Linux and Windows, not in a separate window.
+- Self-view: your own camera in a corner of the call video. Drag it to another corner, or hide it. Both choices are saved.
+- New control bar in the video call window: status, call time, mute, hang up, self-view and technical details.
+- The call window shows a short error when the microphone, the speaker or the camera fails.
+- The Windows installer is back.
+- Sent video uses less bandwidth: 640x480 at up to 15 fps, 600 kbps.
+- Closing the call window or quitting the app ends the call.
+- Fixed a short audio drop at the start of a call.
+- Fixed a call that ended when the called contact is also one of your accounts in the app.
+- Fixed an OMEMO message received while offline that could show as not decrypted.
+
 ## [0.0.32 - Morning beer] - 2026-10-03
 
 Updating from 0.0.31: a group chat that is not in your server bookmarks is no longer joined at login. To join it at every login, and to see it on your other devices, turn on Auto-join (right-click the room, or open the room details).

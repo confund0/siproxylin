@@ -6,6 +6,12 @@
 
 ## News
 
+**2026-10-07 v0.0.33 "Dublin deluge" released: call video in the app window**
+
+Call video now shows in the Siproxylin call window on Linux and Windows, with your own camera in a corner and a control bar for mute, hang up, self-view and technical details. The Windows installer is back.
+
+**On Windows:** turn on "Let desktop apps access your microphone" and the same switch for the camera in the Windows privacy settings. Windows does not ask; without it the call window shows "Microphone error" or "Camera error".
+
 **2026-10-03 v0.0.32 "Morning beer" released: live bookmark sync**
 
 Group chat bookmarks now sync live with your other devices. A room you add, remove or change on your phone is joined or left here at once, without a restart.

@@ -230,6 +230,11 @@ When starting the call service, automatically adds bundled libraries to PATH:
 - Windows Settings → Privacy → Microphone: turn on "Let desktop apps access your microphone". Windows does not ask; without it the microphone fails with "access denied".
 - On Windows Server, start the Windows Audio service (Audiosrv) and set it to start automatically.
 
+**Call window shows a camera error**:
+- Windows Settings → Privacy → Camera: turn on "Let desktop apps access your camera".
+- Windows N editions (for example Windows 11 Pro N) have no Media Foundation: install the Media Feature Pack (Settings → Apps → Optional features).
+- On Windows Server, install the Media Foundation feature (Server-Media-Foundation).
+
 ---
 
 ## Status
